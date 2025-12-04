@@ -1,0 +1,8 @@
+~$1234_проверка.xlsx
+1234_проверка.xlsx
+**/*.cpython-313.pyc
+data/projects/**/*.xlsx
+data/projects/**/*.xls
+*.xlsx
+*.xls
+budget_forms.db
