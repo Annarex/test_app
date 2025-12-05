@@ -77,7 +77,7 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(splitter)
         
         # Создаем тулбар
-        self.create_toolbar()
+        # self.create_toolbar()
         
         # Создаем статусбар
         self.status_bar = QStatusBar()
@@ -484,44 +484,44 @@ class MainWindow(QMainWindow):
                 proj_item.setData(0, Qt.UserRole, proj["id"])
                 year_item.addChild(proj_item)
 
-                # Если у проекта есть формы с ревизиями, добавляем вложенность
+                # Формы/периоды/ревизии (показываем даже пустые, с заглушками)
                 if proj.get("forms"):
                     for form in proj["forms"]:
-                        # Показываем форму только если есть периоды с ревизиями
-                        periods_with_revisions = [p for p in form["periods"] if p.get("revisions")]
-                        if not periods_with_revisions:
-                            continue
-                        
                         form_label = f"{form['form_name']} ({form['form_code']})"
                         form_item = QTreeWidgetItem([form_label])
                         proj_item.addChild(form_item)
 
-                        # Для каждого периода создаём свой узел и вешаем на него только его ревизии
-                        for period in form["periods"]:
-                            revisions = period.get("revisions", [])
-                            if not revisions:
-                                continue
+                        periods = form.get("periods") or []
+                        if not periods:
+                            form_item.addChild(QTreeWidgetItem(["Нет периодов"]))
+                            continue
 
-                            period_label = period["period_name"]
+                        for period in periods:
+                            period_label = period.get("period_name") or period.get("period_code") or "—"
                             period_item = QTreeWidgetItem([period_label])
                             form_item.addChild(period_item)
 
-                            for rev in revisions:
-                                status_icon = "✅" if rev["status"] == "calculated" else "📝"
-                                rev_text = f"{status_icon} рев. {rev['revision']}"
-                                rev_item = QTreeWidgetItem([rev_text])
-                                # Сохраняем ID проекта и ID ревизии
-                                rev_item.setData(0, Qt.UserRole, rev["project_id"])
-                                revision_id = rev.get("revision_id")
-                                rev_item.setData(0, Qt.UserRole + 1, revision_id)
-                                # Отладочная информация
-                                if revision_id:
-                                    print(
-                                        f"Сохранена ревизия в дереве: "
-                                        f"revision_id={revision_id}, project_id={rev['project_id']}, revision={rev['revision']}"
-                                    )
-                                period_item.addChild(rev_item)
-                # Если у проекта нет форм (нет ревизий), проект показывается без вложенности
+                            revisions = period.get("revisions") or []
+                            if revisions:
+                                for rev in revisions:
+                                    status_icon = "✅" if rev["status"] == "calculated" else "📝"
+                                    rev_text = f"{status_icon} рев. {rev['revision']}"
+                                    rev_item = QTreeWidgetItem([rev_text])
+                                    rev_item.setData(0, Qt.UserRole, rev.get("project_id"))
+                                    revision_id = rev.get("revision_id")
+                                    rev_item.setData(0, Qt.UserRole + 1, revision_id)
+                                    if revision_id:
+                                        print(
+                                            f"Сохранена ревизия в дереве: "
+                                            f"revision_id={revision_id}, project_id={rev.get('project_id')}, revision={rev.get('revision')}"
+                                        )
+                                    period_item.addChild(rev_item)
+                            else:
+                                period_item.addChild(QTreeWidgetItem(["Нет ревизий"]))
+                else:
+                    # Совсем нет форм — заглушка
+                    placeholder = QTreeWidgetItem(["Нет ревизий"])
+                    proj_item.addChild(placeholder)
 
         # Разворачиваем верхние уровни (год, проект, форма, период)
         # Ревизии остаются свернутыми по умолчанию
@@ -540,8 +540,22 @@ class MainWindow(QMainWindow):
 
     def on_project_tree_double_clicked(self, item, column):
         """Обработка двойного клика по дереву проектов"""
-        project_id = item.data(0, Qt.UserRole)
-        revision_id = item.data(0, Qt.UserRole + 1)
+        # Поднимаемся по дереву, чтобы найти project_id/revision_id даже при клике на заглушки
+        def _resolve_ids(it):
+            proj_id = None
+            rev_id = None
+            cur = it
+            while cur:
+                if proj_id is None:
+                    proj_id = cur.data(0, Qt.UserRole)
+                if rev_id is None:
+                    rev_id = cur.data(0, Qt.UserRole + 1)
+                if proj_id is not None and rev_id is not None:
+                    break
+                cur = cur.parent()
+            return proj_id, rev_id
+
+        project_id, revision_id = _resolve_ids(item)
         
         if not project_id:
             return
@@ -560,13 +574,18 @@ class MainWindow(QMainWindow):
                         is_revision = True
         
         if is_revision:
+            # Подтягиваем параметры формы из ревизии для последующей загрузки файлов
+            self.controller.set_form_params_from_revision(revision_id)
             # Загружаем конкретную ревизию
             print(f"Загрузка ревизии {revision_id} для проекта {project_id}")
             self.controller.load_revision(revision_id, project_id)
         else:
-            # Клик по проекту/форме/периоду - не загружаем ничего
-            # Проект без ревизий не должен пытаться загружать данные
-            print(f"Клик по узлу проекта {project_id} (не ревизия) - загрузка не выполняется")
+            # Клик по проекту/форме/периоду/заглушке — выбираем проект, чтобы можно было загрузить новую форму
+            if project_id:
+                print(f"Выбор проекта {project_id}")
+                self.controller.project_controller.load_project(project_id)
+            else:
+                print("Проект не определён для выбранного узла")
 
     def show_project_context_menu(self, position):
         """Контекстное меню для дерева проектов"""
@@ -900,17 +919,45 @@ class MainWindow(QMainWindow):
             self.data_table.setHorizontalHeaderLabels(headers)
 
             self.data_table.setRowCount(len(data))
+            error_color = QColor("#FF6B6B")
+
             for row_idx, item in enumerate(data):
                 self.data_table.setItem(row_idx, 0, QTableWidgetItem(str(item.get("наименование_показателя", ""))))
                 self.data_table.setItem(row_idx, 1, QTableWidgetItem(str(item.get("код_строки", ""))))
                 self.data_table.setItem(row_idx, 2, QTableWidgetItem(str(item.get("код_классификации", ""))))
                 self.data_table.setItem(row_idx, 3, QTableWidgetItem(str(item.get("уровень", 0))))
 
+                # Оригинальные значения поступлений (вложенный словарь или плоские поля)
                 поступления = item.get("поступления", {}) or {}
+
                 for col_idx, col_name in enumerate(cons_cols, start=len(base_headers)):
-                    value = поступления.get(col_name, "")
-                    text = "" if value in (None, "x") else f"{value:,.2f}" if isinstance(value, (int, float)) else str(value)
-                    self.data_table.setItem(row_idx, col_idx, QTableWidgetItem(text))
+                    original_value = (
+                        поступления.get(col_name, 0)
+                        if isinstance(поступления, dict) else item.get(f"поступления_{col_name}", 0)
+                    )
+                    calculated_value = item.get(f"расчетный_поступления_{col_name}")
+                    if calculated_value is None:
+                        calculated_value = original_value
+
+                    cell = QTableWidgetItem()
+
+                    # Отображаем расхождения так же, как в дереве: значение и расчет в скобках
+                    # Для консолидированных расчетов проверяем на всех уровнях (как в дереве)
+                    level = item.get("уровень", 0)
+                    is_total_column = (col_name == 'ИТОГО')
+                    should_check = (level < 6) or is_total_column
+                    
+                    if should_check and self._is_value_different(original_value, calculated_value):
+                        if isinstance(original_value, (int, float)) and isinstance(calculated_value, (int, float)):
+                            display_value = f"{original_value:,.2f} ({calculated_value:,.2f})"
+                        else:
+                            display_value = f"{original_value} ({calculated_value})"
+                        cell.setText(display_value)
+                        cell.setForeground(QBrush(error_color))
+                    else:
+                        cell.setText(self.format_budget_value(original_value))
+
+                    self.data_table.setItem(row_idx, col_idx, cell)
 
             self.hide_zero_columns_in_table(section_key, data)
 
@@ -1471,10 +1518,10 @@ class MainWindow(QMainWindow):
                             # Fallback на оригинальное значение, если расчетного нет
                             calculated_value = original_value
                         
-                        # Проверяем несоответствие (для уровней < 2, как в _validate_consolidated_cells)
-                        # Для столбца "ИТОГО" проверяем на всех уровнях, так как это итоговая сумма
+                        # Проверяем несоответствие (аналогично бюджетным разделам — до 5 уровня),
+                        # а для столбца "ИТОГО" проверяем на всех уровнях, так как это итоговая сумма
                         is_total_column = (col == 'ИТОГО')
-                        should_check = (level < 2) or (is_total_column and level < 3)
+                        should_check = (level < 6) or is_total_column
                         
                         if should_check and self._is_value_different(original_value, calculated_value):
                             # Показываем значение с расчетным в скобках
@@ -1820,6 +1867,13 @@ class MainWindow(QMainWindow):
     
     def load_form_file(self):
         """Загрузка файла формы"""
+        # Если проект не выбран, пытаемся выбрать из текущего выделения в дереве
+        if not self.controller.current_project:
+            item = self.projects_tree.currentItem()
+            if item:
+                proj_id = item.data(0, Qt.UserRole) or (item.parent().data(0, Qt.UserRole) if item.parent() else None)
+                if proj_id:
+                    self.controller.project_controller.load_project(proj_id)
         if not self.controller.current_project:
             QMessageBox.warning(self, "Ошибка", "Сначала выберите или создайте проект")
             return
@@ -1833,7 +1887,8 @@ class MainWindow(QMainWindow):
         
         if file_path:
             # Перед загрузкой файла спрашиваем тип формы, период и ревизию
-            params_dialog = FormLoadDialog(self.controller.db_manager, self)
+            defaults = self.controller.get_pending_form_params() if hasattr(self.controller, "get_pending_form_params") else {}
+            params_dialog = FormLoadDialog(self.controller.db_manager, self, defaults=defaults)
             if params_dialog.exec_() != QDialog.Accepted:
                 return
 

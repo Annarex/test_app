@@ -17,9 +17,10 @@ class FormLoadDialog(QDialog):
     Типы форм и периоды берутся из справочников ref_form_types и ref_periods.
     """
 
-    def __init__(self, db_manager: DatabaseManager, parent=None):
+    def __init__(self, db_manager: DatabaseManager, parent=None, defaults: dict = None):
         super().__init__(parent)
         self.db_manager = db_manager
+        self._defaults = defaults or {}
 
         self.setWindowTitle("Параметры формы")
         self.resize(400, 220)
@@ -30,6 +31,7 @@ class FormLoadDialog(QDialog):
         self._init_ui()
         self._load_form_types()
         self._reload_periods()
+        self._apply_defaults()
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
@@ -90,6 +92,13 @@ class FormLoadDialog(QDialog):
             # Fallback: добавляем "Год"
             self.period_combo.addItem("Год", "Y")
 
+        # Если есть дефолт по периоду — устанавливаем
+        default_period = self._defaults.get("period_code")
+        if default_period:
+            idx = self.period_combo.findData(default_period)
+            if idx >= 0:
+                self.period_combo.setCurrentIndex(idx)
+
     def _on_accept(self):
         if self.form_type_combo.count() == 0:
             return
@@ -114,5 +123,18 @@ class FormLoadDialog(QDialog):
             "period_code": period_code,
             "revision": revision,
         }
+
+    def _apply_defaults(self):
+        """Устанавливает дефолтные значения, если переданы."""
+        # Тип формы
+        default_form = self._defaults.get("form_code")
+        if default_form:
+            idx = self.form_type_combo.findData(default_form)
+            if idx >= 0:
+                self.form_type_combo.setCurrentIndex(idx)
+        # Ревизия
+        default_rev = self._defaults.get("revision")
+        if default_rev:
+            self.revision_edit.setText(str(default_rev))
 
 

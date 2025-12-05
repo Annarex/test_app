@@ -245,25 +245,25 @@ class DatabaseManager:
             for col_name, col_type in [('level', 'INTEGER'), ('source_row', 'INTEGER')]:
                 try:
                     cursor.execute(f'ALTER TABLE consolidated_values ADD COLUMN {col_name} {col_type}')
-            except sqlite3.OperationalError:
-                pass  # Колонка уже существует
+                except sqlite3.OperationalError:
+                    pass  # Колонка уже существует
 
             # Индексы для ускорения выборок по проекту/ревизии/коду
             for tbl in ('income_values', 'expense_values', 'source_values', 'consolidated_values'):
-            try:
+                try:
                     cursor.execute(
                         f'CREATE INDEX IF NOT EXISTS idx_{tbl}_proj_rev '
                         f'ON {tbl} (project_id, revision_id)'
                     )
-            except sqlite3.OperationalError:
-                pass
-            try:
+                except sqlite3.OperationalError:
+                    pass  # Индекс уже существует
+                try:
                     cursor.execute(
                         f'CREATE INDEX IF NOT EXISTS idx_{tbl}_class_code '
                         f'ON {tbl} (classification_code)'
                     )
-            except sqlite3.OperationalError:
-                pass
+                except sqlite3.OperationalError:
+                    pass
                 # Индекс по уровню для агрегирования и фильтрации
                 try:
                     cursor.execute(
@@ -278,8 +278,8 @@ class DatabaseManager:
                         f'CREATE INDEX IF NOT EXISTS idx_{tbl}_source_row '
                         f'ON {tbl} (source_row)'
                     )
-            except sqlite3.OperationalError:
-                pass
+                except sqlite3.OperationalError:
+                    pass  # Индекс уже существует
 
             conn.commit()
             
@@ -688,9 +688,9 @@ class DatabaseManager:
             if not only_calculated:
                 vec = []
                 has_value = False
+                source_dict = row.get('поступления') or {}
                 for col in consolidated_columns:
-                    key = f'поступления_{col}'
-                    v = row.get(key)
+                    v = source_dict.get(col)
                     if isinstance(v, str) and v.lower() == 'x':
                         v = None
                     if v is not None:
@@ -711,17 +711,23 @@ class DatabaseManager:
                     )
 
             # ВЫЧИСЛЕННЫЕ значения
+            # Для консолидированных расчетов сохраняем вычисленные значения, если они есть
+            # (даже если они равны оригинальным - это важно для сравнения)
             vec = []
-            has_value = False
+            has_calculated_field = False
             for col in consolidated_columns:
                 key = f'расчетный_поступления_{col}'
                 v = row.get(key)
+                # Проверяем наличие ключа в словаре (не только значение)
+                if key in row:
+                    has_calculated_field = True
                 if isinstance(v, str) and v.lower() == 'x':
                     v = None
-                if v is not None:
-                    has_value = True
                 vec.append(v)
-            if has_value:
+            
+            # Сохраняем вычисленные значения, если поле 'расчетный_поступления_*' присутствует в словаре
+            # Это важно для отображения сравнения оригинальных и расчетных значений
+            if has_calculated_field:
                 yield (
                     project_id,
                     revision_id,
@@ -771,8 +777,8 @@ class DatabaseManager:
         if not first_batch:
             return
 
-        placeholders = ", ".join(["?"] * (10 + len(budget_columns)))
-                        cursor.executemany(
+        placeholders = ", ".join(["?"] * (9 + len(budget_columns)))
+        cursor.executemany(
             f'''
             INSERT INTO {table_name} (
                 project_id, revision_id, classification_code, indicator_name,
@@ -788,7 +794,7 @@ class DatabaseManager:
         batch_size = 1000
         batch = list(islice(value_rows_iter, batch_size))
         while batch:
-                        cursor.executemany(
+            cursor.executemany(
                 f'''
                 INSERT INTO {table_name} (
                     project_id, revision_id, classification_code, indicator_name,
@@ -831,7 +837,7 @@ class DatabaseManager:
         if not first_batch:
             return
 
-        placeholders = ", ".join(["?"] * (10 + len(consolidated_columns)))
+        placeholders = ", ".join(["?"] * (9 + len(consolidated_columns)))
         cursor.executemany(
             f'''
             INSERT INTO {table_name} (
@@ -917,7 +923,9 @@ class DatabaseManager:
         Восстанавливает структуру:
         - доходы_data / расходы_data / источники_финансирования_data
           с полями 'утвержденный' / 'исполненный' и, при наличии, 'расчетный_*';
+          Уникальность: (classification_code, indicator_name, line_code)
         - консолидируемые_расчеты_data с полями 'поступления' и 'расчетный_поступления_*'.
+          Уникальность: (indicator_name, line_code) - только наименование и код строки
 
         Служебные поля (mapping, исходная_строка и т.п.) здесь не восстанавливаются
         и при необходимости могут быть дополнительно подчитаны из JSON‑таблиц.
@@ -931,7 +939,7 @@ class DatabaseManager:
         ) -> List[Dict[str, Any]]:
             where_clause = 'project_id=? AND revision_id IS ?' if revision_id is None else 'project_id=? AND revision_id=?'
             params = (project_id, revision_id)
-                cursor.execute(
+            cursor.execute(
                 f'''
                 SELECT classification_code, indicator_name, line_code,
                        budget_type, data_type, level, source_row,
@@ -989,7 +997,7 @@ class DatabaseManager:
         # Консолидируемые расчёты
         where_clause = 'project_id=? AND revision_id IS ?' if revision_id is None else 'project_id=? AND revision_id=?'
         params = (project_id, revision_id)
-                cursor.execute(
+        cursor.execute(
             f'''
             SELECT classification_code, indicator_name, line_code,
                    budget_type, data_type, level, source_row,
@@ -1001,13 +1009,15 @@ class DatabaseManager:
             params,
         )
         rows = cursor.fetchall()
-            if rows:
-            grouped_cons: Dict[Tuple[Optional[str], Optional[str], Optional[str]], Dict[str, Any]] = {}
+        if rows:
+            # Для консолидированных расчетов уникальность определяется только по наименованию и коду строки
+            grouped_cons: Dict[Tuple[Optional[str], Optional[str]], Dict[str, Any]] = {}
             cols_cons = Form0503317Constants.CONSOLIDATED_COLUMNS
 
             for row in rows:
                 classification_code, indicator_name, line_code, budget_type, data_type, level, source_row, *values = row
-                key = (classification_code, indicator_name, line_code)
+                # Уникальный ключ: только наименование и код строки (как для доходов/расходов/источников)
+                key = (indicator_name, line_code)
                 if key not in grouped_cons:
                     grouped_cons[key] = {
                         'код_классификации': classification_code or '',
@@ -1348,6 +1358,62 @@ class DatabaseManager:
                 )
         return result
 
+    def get_project_form_by_id(self, project_form_id: int) -> Optional[ProjectForm]:
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT id, project_id, form_type_id, period_id FROM project_forms WHERE id=?',
+                (project_form_id,),
+            )
+            row = cursor.fetchone()
+            if row:
+                return ProjectForm.from_row(
+                    {'id': row[0], 'project_id': row[1], 'form_type_id': row[2], 'period_id': row[3]}
+                )
+        return None
+
+    def get_form_type_meta_by_id(self, form_type_id: int) -> Optional[FormTypeMeta]:
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT id, code, name, periodicity, column_mapping, is_active FROM ref_form_types WHERE id=?',
+                (form_type_id,),
+            )
+            row = cursor.fetchone()
+            if row:
+                return FormTypeMeta.from_row(
+                    {
+                        'id': row[0],
+                        'code': row[1],
+                        'name': row[2],
+                        'periodicity': row[3],
+                        'column_mapping': row[4],
+                        'is_active': row[5],
+                    }
+                )
+        return None
+
+    def get_period_by_id(self, period_id: int) -> Optional[PeriodRef]:
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT id, code, name, sort_order, form_type_code, is_active FROM ref_periods WHERE id=?',
+                (period_id,),
+            )
+            row = cursor.fetchone()
+            if row:
+                return PeriodRef.from_row(
+                    {
+                        'id': row[0],
+                        'code': row[1],
+                        'name': row[2],
+                        'sort_order': row[3],
+                        'form_type_code': row[4],
+                        'is_active': row[5],
+                    }
+                )
+        return None
+
     def create_or_update_form_revision(
         self,
         project_form_id: int,
@@ -1467,11 +1533,40 @@ class DatabaseManager:
             return cursor.rowcount > 0
     
     def delete_form_revision(self, revision_id: int) -> None:
-        """Удаление одной ревизии формы (без затрагивания проекта и других ревизий)."""
+        """
+        Удаление одной ревизии формы и всех связанных нормализованных данных.
+        Удаляются:
+        - записи в *_values (income/expense/source/consolidated)
+        - revision_metadata
+        - сама запись form_revisions
+        - исходный файл ревизии (если существует)
+        """
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
+            # Сначала пытаемся прочитать путь к файлу ревизии, чтобы удалить файл после транзакции
+            cursor.execute('SELECT file_path FROM form_revisions WHERE id=?', (revision_id,))
+            row = cursor.fetchone()
+            file_path = row[0] if row else None
+
+            tables_with_revision = [
+                'income_values',
+                'expense_values',
+                'source_values',
+                'consolidated_values',
+                'revision_metadata',
+            ]
+            for table in tables_with_revision:
+                cursor.execute(f'DELETE FROM {table} WHERE revision_id=?', (revision_id,))
             cursor.execute('DELETE FROM form_revisions WHERE id=?', (revision_id,))
             conn.commit()
+
+        # Удаляем файл ревизии вне транзакции БД
+        try:
+            if file_path and os.path.exists(file_path):
+                os.remove(file_path)
+        except Exception as e:
+            # Не блокируем удаление ревизии из-за ошибки удаления файла
+            print(f"Не удалось удалить файл ревизии {file_path}: {e}")
     
     def delete_project(self, project_id: int):
         """Удаление проекта"""
@@ -1917,8 +2012,35 @@ class DatabaseManager:
             else:
                 df_calc = form._prepare_consolidated_dataframe_for_calculation(
                     section_data, form.constants.CONSOLIDATED_COLUMNS)
+                
+                # Отладочный вывод: проверяем колонки DataFrame до расчета
+                calc_cols_before = [c for c in df_calc.columns if c.startswith('расчетный_поступления_')]
+                print(f"Консолидированные расчеты: DataFrame имеет {len(calc_cols_before)} расчетных колонок до расчета")
+                
                 df_with_sums = form._calculate_consolidated_sums(df_calc)
-                result[section_name] = df_with_sums.to_dict('records')
+                
+                # Отладочный вывод: проверяем колонки DataFrame после расчета
+                calc_cols_after = [c for c in df_with_sums.columns if c.startswith('расчетный_поступления_')]
+                print(f"Консолидированные расчеты: DataFrame имеет {len(calc_cols_after)} расчетных колонок после расчета")
+                
+                result_rows = df_with_sums.to_dict('records')
+                
+                # Отладочный вывод: проверяем наличие расчетных полей в словаре
+                if result_rows:
+                    sample_row = result_rows[0]
+                    calc_keys = [k for k in sample_row.keys() if k.startswith('расчетный_поступления_')]
+                    print(f"Консолидированные расчеты: {len(result_rows)} строк в словаре, "
+                          f"найдено расчетных полей в первой строке: {len(calc_keys)}")
+                    if calc_keys:
+                        print(f"  Примеры ключей: {calc_keys[:3]}")
+                        # Проверяем, есть ли не-None значения
+                        non_none_count = sum(1 for k in calc_keys if sample_row.get(k) is not None)
+                        print(f"  Не-None значений в первой строке: {non_none_count}")
+                        # Проверяем несколько строк
+                        rows_with_calc = sum(1 for r in result_rows[:10] if any(k.startswith('расчетный_поступления_') for k in r.keys()))
+                        print(f"  Строк с расчетными полями (первые 10): {rows_with_calc}")
+                
+                result[section_name] = result_rows
         
         return result
     
@@ -1989,6 +2111,15 @@ class DatabaseManager:
             
             result.append(row_data)
         
+        # Сортируем: сначала строки "всего", затем по исходной строке, потом по коду строки
+        def sort_key(item: Dict[str, Any]):
+            name_lower = str(item.get('наименование_показателя', '')).lower()
+            is_total = 'всего' in name_lower
+            source_row_val = item.get('исходная_строка')
+            line_code_val = item.get('код_строки') or ''
+            return (0 if is_total else 1, source_row_val if source_row_val is not None else 10**9, line_code_val)
+
+        result.sort(key=sort_key)
         return result
     
     def _convert_consolidated_df_to_calculation_format(
@@ -1996,19 +2127,33 @@ class DatabaseManager:
         df: pd.DataFrame,
         form: Any,
     ) -> List[Dict[str, Any]]:
-        """Преобразует DataFrame из consolidated_values в формат для расчетов."""
+        """
+        Преобразует DataFrame из consolidated_values в формат для расчетов.
+        
+        Уникальность записей определяется только по (indicator_name, line_code),
+        без учета classification_code (в отличие от доходов/расходов/источников).
+        """
         if df.empty:
             return []
         
-        # Группируем по уникальным строкам
-        grouped = df.groupby(['код_классификации', 'наименование_показателя', 'код_строки'])
+        # Группируем по уникальным строкам: только наименование и код строки
+        # (как для доходов/расходов/источников, но без кода классификации)
+        grouped = df.groupby(['наименование_показателя', 'код_строки'])
         
         result = []
         consolidated_cols = form.constants.CONSOLIDATED_COLUMNS
         
-        for (code, name, line_code), group in grouped:
+        for (name, line_code), group in grouped:
+            # Берем код классификации из первой строки группы (если есть)
+            classification_code = None
+            for _, r in group.iterrows():
+                code_val = r.get('код_классификации')
+                if code_val:
+                    classification_code = code_val
+                    break
+            
             row_data = {
-                'код_классификации': code or '',
+                'код_классификации': classification_code or '',
                 'наименование_показателя': name or '',
                 'код_строки': line_code or '',
                 'раздел': 'консолидируемые_расчеты',
@@ -2050,6 +2195,15 @@ class DatabaseManager:
             
             result.append(row_data)
         
+        # Сортируем: строки "всего/итого" наверх, затем по исходной строке, потом по коду
+        def sort_key(item: Dict[str, Any]):
+            name_lower = str(item.get('наименование_показателя', '')).lower()
+            is_total = ('всего' in name_lower) or ('итого' in name_lower)
+            source_row_val = item.get('исходная_строка')
+            line_code_val = item.get('код_строки') or ''
+            return (0 if is_total else 1, source_row_val if source_row_val is not None else 10**9, line_code_val)
+
+        result.sort(key=sort_key)
         return result
     
     def load_revision_metadata(self, revision_id: int) -> Dict[str, Any]:
@@ -2155,6 +2309,15 @@ class DatabaseManager:
             if 'консолидируемые_расчеты_data' in calculated_data:
                 consolidated_rows = calculated_data['консолидируемые_расчеты_data']
                 if consolidated_rows:
+                    # Отладочный вывод: проверяем наличие расчетных полей
+                    sample_row = consolidated_rows[0] if consolidated_rows else None
+                    if sample_row:
+                        calc_keys = [k for k in sample_row.keys() if k.startswith('расчетный_поступления_')]
+                        print(f"Сохранение консолидированных расчетов: {len(consolidated_rows)} строк, "
+                              f"найдено расчетных полей в первой строке: {len(calc_keys)}")
+                        if calc_keys:
+                            print(f"  Примеры ключей: {calc_keys[:3]}")
+                    
                     # Удаляем старые вычисленные значения
                     cursor.execute(
                         'DELETE FROM consolidated_values WHERE project_id=? AND revision_id=? AND data_type=?',

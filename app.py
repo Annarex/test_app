@@ -7,6 +7,7 @@ from PyQt5.QtCore import QTimer
 from PyQt5.QtGui import QFont
 
 from views.main_window import MainWindow
+from logger import logger
 
 def setup_application():
     """Настройка приложения"""
@@ -35,7 +36,7 @@ def main():
         return app.exec_()
         
     except Exception as e:
-        print(f"Ошибка запуска приложения: {e}")
+        logger.error(f"Ошибка запуска приложения: {e}", exc_info=True)
         return 1
 
 if __name__ == "__main__":

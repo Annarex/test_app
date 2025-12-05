@@ -7,6 +7,7 @@ import sqlite3
 import json
 
 from models.database import DatabaseManager
+from logger import logger
 from models.base_models import (
     Project,
     Reference,
@@ -78,6 +79,40 @@ class MainController(QObject):
         # Переинициализируем форму под выбранный тип
         if self.current_project:
             self._initialize_form_for_project()
+
+    def set_form_params_from_revision(self, revision_id: int):
+        """
+        Подтянуть параметры формы (тип, период, номер ревизии) из существующей ревизии.
+        Используется как префилл диалога загрузки новой формы.
+        """
+        try:
+            rev = self.db_manager.get_form_revision_by_id(revision_id)
+            if not rev:
+                return
+            pf = self.db_manager.get_project_form_by_id(rev.project_form_id)
+            form_type_code = None
+            period_code = None
+            if pf:
+                ft = self.db_manager.get_form_type_meta_by_id(pf.form_type_id)
+                if ft:
+                    form_type_code = ft.code
+                period = self.db_manager.get_period_by_id(pf.period_id) if pf.period_id else None
+                if period:
+                    period_code = period.code
+
+            self.pending_form_type_code = form_type_code
+            self.pending_period_code = period_code
+            self.pending_revision = rev.revision or "1.0"
+        except Exception as e:
+            logger.warning(f"Не удалось подтянуть параметры из ревизии {revision_id}: {e}")
+
+    def get_pending_form_params(self) -> Dict[str, Optional[str]]:
+        """Возвращает сохранённые параметры формы для префилла диалога."""
+        return {
+            "form_code": self.pending_form_type_code,
+            "period_code": self.pending_period_code,
+            "revision": self.pending_revision,
+        }
     
     def load_initial_data(self):
         """Загрузка начальных данных"""
@@ -101,7 +136,7 @@ class MainController(QObject):
         try:
             references = self.db_manager.load_references()
         except Exception as e:
-            print(f"Ошибка загрузки метаданных справочников: {e}")
+            logger.error(f"Ошибка загрузки метаданных справочников: {e}", exc_info=True)
             references = []
         
         # Загружаем данные справочников исключительно из индивидуальных SQL-таблиц
@@ -113,11 +148,11 @@ class MainController(QObject):
             income_df = self.db_manager.load_income_reference_df()
             if income_df is not None and not income_df.empty:
                 self.references['доходы'] = income_df
-                print(f"Справочник доходов загружен: {income_df.shape}")
+                logger.info(f"Справочник доходов загружен: {income_df.shape}")
             else:
-                print("Справочник доходов пуст или не найден")
+                logger.warning("Справочник доходов пуст или не найден")
         except Exception as e:
-            print(f"Ошибка загрузки справочника доходов из SQL: {e}")
+            logger.error(f"Ошибка загрузки справочника доходов из SQL: {e}", exc_info=True)
             import traceback
             traceback.print_exc()
 
@@ -125,11 +160,11 @@ class MainController(QObject):
             sources_df = self.db_manager.load_sources_reference_df()
             if sources_df is not None and not sources_df.empty:
                 self.references['источники'] = sources_df
-                print(f"Справочник источников загружен: {sources_df.shape}")
+                logger.info(f"Справочник источников загружен: {sources_df.shape}")
             else:
-                print("Справочник источников пуст или не найден")
+                logger.warning("Справочник источников пуст или не найден")
         except Exception as e:
-            print(f"Ошибка загрузки справочника источников из SQL: {e}")
+            logger.error(f"Ошибка загрузки справочника источников из SQL: {e}", exc_info=True)
             import traceback
             traceback.print_exc()
         
@@ -156,6 +191,13 @@ class MainController(QObject):
         """Удаление одной ревизии формы (новая архитектура)"""
         try:
             self.db_manager.delete_form_revision(revision_id)
+            # Сбрасываем текущие ссылки, если удалена активная ревизия
+            if self.current_revision_id == revision_id:
+                self.current_revision_id = None
+                if self.current_project:
+                    self.current_project.data = {}
+                if self.current_form:
+                    self.current_form = None
             # Обновляем список проектов после удаления
             projects = self.project_controller.load_projects()
             self.projects_updated.emit(projects)
@@ -234,11 +276,52 @@ class MainController(QObject):
             # Сохраняем ID текущей ревизии ДО инициализации формы
             # Это нужно, чтобы _initialize_form_for_project мог определить тип формы из ревизии
             self.current_revision_id = revision_id
+            # Инициализируем форму заранее, чтобы при необходимости можно было спарсить файл
+            self._initialize_form_for_project(form_meta=form_meta)
             
             # Загружаем данные ревизии
             revision_data = self.db_manager.load_revision_data(project_id, revision_id)
-            
-            if not revision_data:
+            need_sections = ['доходы_data', 'расходы_data', 'источники_финансирования_data', 'консолидируемые_расчеты_data']
+            has_sections = revision_data and any(revision_data.get(k) for k in need_sections)
+
+            # Если данных в *_values нет (например, ревизия только с legacy-данными), пробуем распарсить исходный файл и сохранить
+            if not has_sections:
+                source_file_path = revision_record.file_path
+                if not source_file_path or not os.path.exists(source_file_path):
+                    self.error_occurred.emit("Данные ревизии не найдены и отсутствует исходный файл для загрузки")
+                    return
+                try:
+                    # Загружаем справочники при необходимости
+                    reference_data_доходы = self.references.get('доходы')
+                    if reference_data_доходы is None or reference_data_доходы.empty:
+                        reference_data_доходы = self.db_manager.load_income_reference_df()
+                        self.references['доходы'] = reference_data_доходы
+                    reference_data_источники = self.references.get('источники')
+                    if reference_data_источники is None or reference_data_источники.empty:
+                        reference_data_источники = self.db_manager.load_sources_reference_df()
+                        self.references['источники'] = reference_data_источники
+
+                    if not self.current_form:
+                        self.error_occurred.emit("Форма не инициализирована для парсинга исходного файла")
+                        return
+
+                    parsed_data = self.current_form.parse_excel(
+                        source_file_path,
+                        reference_data_доходы,
+                        reference_data_источники,
+                    )
+                    if not parsed_data:
+                        self.error_occurred.emit("Не удалось распарсить исходный файл ревизии")
+                        return
+                    # Сохраняем распарсенные данные в *_values и метаданные
+                    self.db_manager.save_revision_data(project_id, revision_id, parsed_data)
+                    revision_data = self.db_manager.load_revision_data(project_id, revision_id)
+                    has_sections = revision_data and any(revision_data.get(k) for k in need_sections)
+                except Exception as e:
+                    self.error_occurred.emit(f"Не удалось восстановить данные ревизии: {e}")
+                    return
+
+            if not has_sections:
                 self.error_occurred.emit("Данные ревизии не найдены")
                 return
             
@@ -275,9 +358,9 @@ class MainController(QObject):
                             self.current_project.data = updated_data
                             # Перезагружаем данные в форму с пересчитанными значениями
                             self.current_form.load_saved_data(updated_data)
-                            print("Уровни и значения пересчитаны на основе справочников")
+                            logger.info("Уровни и значения пересчитаны на основе справочников")
                 except Exception as e:
-                    print(f"Ошибка пересчета уровней и значений: {e}")
+                    logger.error(f"Ошибка пересчета уровней и значений: {e}", exc_info=True)
                     import traceback
                     traceback.print_exc()
                     # Не блокируем загрузку ревизии из-за ошибки пересчета
@@ -289,9 +372,7 @@ class MainController(QObject):
                 
         except Exception as e:
             self.error_occurred.emit(f"Ошибка загрузки ревизии: {str(e)}")
-            print(f"Ошибка загрузки ревизии: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error(f"Ошибка загрузки ревизии: {e}", exc_info=True)
     
     def _on_project_loaded(self, project: Project):
         """Обработка загруженного проекта"""
@@ -337,16 +418,14 @@ class MainController(QObject):
                     if updated_data:
                         self.current_project.data = updated_data
                         self.db_manager.save_project(self.current_project)
-                        print("Уровни строк пересчитаны на основе справочников")
+                        logger.info("Уровни строк пересчитаны на основе справочников")
 
                 # Инициализируем форму данными проекта, чтобы экспорт/проверка
                 # работали сразу после загрузки без повторного парсинга файла.
                 self.current_form.load_saved_data(self.current_project.data)
             except Exception as e:
                 error_msg = f"Ошибка пересчета уровней при загрузке проекта: {e}"
-                print(error_msg)
-                import traceback
-                traceback.print_exc()
+                logger.error(error_msg, exc_info=True)
                 # Не блокируем загрузку проекта из-за ошибки пересчета
 
         self.project_loaded.emit(project)
@@ -375,9 +454,7 @@ class MainController(QObject):
                         if form_meta_from_db:
                             form_type_code = form_meta_from_db.code
             except Exception as e:
-                print(f"Ошибка определения типа формы из ревизии: {e}")
-                import traceback
-                traceback.print_exc()
+                logger.warning(f"Ошибка определения типа формы из ревизии: {e}", exc_info=True)
 
         # 2) Fallback на переданный form_meta (если есть)
         if not form_type_code and form_meta:
@@ -400,13 +477,13 @@ class MainController(QObject):
                 column_mapping = None
 
             self.current_form = Form0503317(revision_str, column_mapping=column_mapping)
-            print(f"Форма 0503317 инициализирована с ревизией {revision_str}")
+            logger.info(f"Форма 0503317 инициализирована с ревизией {revision_str}")
         else:
             self.current_form = None
             if form_type_code:
-                print(f"Форма типа '{form_type_code}' не поддерживается")
+                logger.warning(f"Форма типа '{form_type_code}' не поддерживается")
             else:
-                print("Не удалось определить тип формы для инициализации")
+                logger.warning("Не удалось определить тип формы для инициализации")
     
     def _copy_form_file_to_project(self, source_file_path: str, project_id: int) -> str:
         """Копирование файла формы в папку проекта с префиксом даты/времени"""
@@ -461,7 +538,7 @@ class MainController(QObject):
                 )
                 self.error_occurred.emit(msg)
             
-            print(
+            logger.debug(
                 f"Загрузка справочников: доходы={reference_data_доходы is not None}, "
                 f"источники={reference_data_источники is not None}"
             )
@@ -509,9 +586,7 @@ class MainController(QObject):
                 )
             except Exception as e:
                 # Не блокируем работу, если новая архитектура ревизий дала сбой
-                print(f"Ошибка регистрации ревизии формы: {e}")
-                import traceback
-                traceback.print_exc()
+                logger.error(f"Ошибка регистрации ревизии формы: {e}", exc_info=True)
             
             # Сохраняем данные ревизии отдельно, если ревизия создана
             # Включаем meta_info и результат_исполнения_data, которые относятся к этой ревизии
@@ -533,25 +608,23 @@ class MainController(QObject):
                         revision_data
                     )
                 except Exception as e:
-                    print(f"Ошибка сохранения данных ревизии: {e}")
+                    logger.error(f"Ошибка сохранения данных ревизии: {e}", exc_info=True)
 
                 # После успешного создания/обновления ревизии обновляем дерево проектов
                 try:
                     projects = self.project_controller.load_projects()
                     self.projects_updated.emit(projects)
                 except Exception as e:
-                    print(f"Ошибка обновления списка проектов после сохранения ревизии: {e}")
+                    logger.error(f"Ошибка обновления списка проектов после сохранения ревизии: {e}", exc_info=True)
 
-            print(f"Форма успешно загружена. Данные: {len(form_data.get('доходы_data', []))} доходов, "
+            logger.info(f"Форма успешно загружена. Данные: {len(form_data.get('доходы_data', []))} доходов, "
                   f"{len(form_data.get('расходы_data', []))} расходов")
             
             return True
             
         except Exception as e:
             self.error_occurred.emit(f"Ошибка загрузки файла: {str(e)}")
-            print(f"Ошибка загрузки формы: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error(f"Ошибка загрузки формы: {e}", exc_info=True)
             return False
     
     def calculate_sums(self):
@@ -606,9 +679,9 @@ class MainController(QObject):
                             status=ProjectStatus.CALCULATED,
                             file_path=revision_record.file_path or ""
                         )
-                        print(f"Статус ревизии {self.current_revision_id} обновлен на CALCULATED")
+                        logger.info(f"Статус ревизии {self.current_revision_id} обновлен на CALCULATED")
                 except Exception as e:
-                    print(f"Ошибка обновления статуса ревизии после расчёта: {e}")
+                    logger.error(f"Ошибка обновления статуса ревизии после расчёта: {e}", exc_info=True)
             
             # Сохраняем обновленные данные ревизии (включая meta_info и результат_исполнения_data)
             if self.current_revision_id:
@@ -636,17 +709,38 @@ class MainController(QObject):
                                     (self.current_revision_id, meta_info_json, результат_исполнения_json)
                                 )
                             conn.commit()
+
+                    # После сохранения вычисленных значений перезагружаем ревизию из БД,
+                    # чтобы в current_project.data были полные данные (оригинал + расчётные)
+                    revision_data = self.db_manager.load_revision_data(
+                        self.current_project.id,
+                        self.current_revision_id,
+                    )
+                    if revision_data:
+                        self.current_project.data = revision_data
+                        # Обновляем форму с перезагруженными данными (включая расчетные значения)
+                        if self.current_form:
+                            self.current_form.load_saved_data(revision_data)
+                        
+                        # Отладочный вывод: проверяем наличие расчетных значений для консолидированных расчетов
+                        cons_data = revision_data.get('консолидируемые_расчеты_data', [])
+                        if cons_data:
+                            sample_item = cons_data[0] if len(cons_data) > 0 else None
+                            if sample_item:
+                                has_calc = any(k.startswith('расчетный_поступления_') for k in sample_item.keys())
+                                logger.debug(f"Консолидированные расчеты: {len(cons_data)} строк, расчетные значения: {'есть' if has_calc else 'отсутствуют'}")
+                                if has_calc:
+                                    calc_keys = [k for k in sample_item.keys() if k.startswith('расчетный_поступления_')]
+                                    logger.debug(f"  Примеры ключей расчетных значений: {calc_keys[:3]}")
                 except Exception as e:
-                    print(f"Ошибка сохранения данных ревизии после расчёта: {e}")
-                    import traceback
-                    traceback.print_exc()
+                    logger.error(f"Ошибка сохранения данных ревизии после расчёта: {e}", exc_info=True)
             
-            print("Расчет агрегированных сумм завершен")
+            logger.info("Расчет агрегированных сумм завершен")
             self.calculation_completed.emit(calculation_results)
             
         except Exception as e:
             self.error_occurred.emit(f"Ошибка расчета: {str(e)}")
-            print(f"Ошибка расчета: {e}")
+            logger.error(f"Ошибка расчета: {e}", exc_info=True)
     
     def export_validation(self, output_path: str) -> bool:
         """Экспорт формы с проверкой"""
@@ -662,49 +756,43 @@ class MainController(QObject):
                 if revision_record and revision_record.file_path:
                     source_file_path = revision_record.file_path
             except Exception as e:
-                print(f"Ошибка получения пути к файлу из ревизии: {e}")
+                logger.warning(f"Ошибка получения пути к файлу из ревизии: {e}", exc_info=True)
         
         # Fallback на старый способ
         if not source_file_path:
             source_file_path = getattr(self.current_project, 'file_path', None)
         
         if not source_file_path or not os.path.exists(source_file_path):
-            self.error_occurred.emit("Файл формы не загружен или не найден")
-            return False
+            # Для экспорта рассчитываем по данным из БД, исходный файл не обязателен
+            source_file_path = output_path  # будет перезаписан export_validation
         
         try:
-            # Пытаемся использовать уже сохранённые нормализованные данные из БД (с кэшированными level/source_row),
-            # чтобы не выполнять повторный парсинг Excel. Если что-то пойдет не так — откатимся к parse_excel.
-            refreshed = False
-            if self.current_revision_id:
-                try:
-                    values_data = self.db_manager.load_project_data_values(
-                        self.current_project.id,
-                        self.current_revision_id,
-                    )
-                    # Обновляем данные формы из БД
-                    self.current_form.доходы_data = values_data.get('доходы_data', [])
-                    self.current_form.расходы_data = values_data.get('расходы_data', [])
-                    self.current_form.источники_финансирования_data = values_data.get('источники_финансирования_data', [])
-                    self.current_form.консолидируемые_расчеты_data = values_data.get('консолидируемые_расчеты_data', [])
-                    # Обновляем кэш проекта
-                    self.current_project.data.update(values_data)
-                    refreshed = True
-                except Exception as e:
-                    print(f"Не удалось загрузить данные формы из *_values для экспорта, fallback на parse_excel: {e}")
+            # Всегда используем данные из нормализованных таблиц *_values (level/source_row уже сохранены).
+            # Если данных нет — возвращаем ошибку, парсинг Excel не выполняем.
+            if not self.current_revision_id:
+                self.error_occurred.emit("Ревизия не выбрана, данные для экспорта недоступны")
+                return False
 
-            if not refreshed:
-                reference_data_доходы = self.references.get('доходы')
-                reference_data_источники = self.references.get('источники')
-                if isinstance(self.current_form, Form0503317):
-                    self.current_form.parse_excel(
-                        source_file_path,
-                        reference_data_доходы,
-                        reference_data_источники,
-                    )
+            values_data = self.db_manager.load_project_data_values(
+                self.current_project.id,
+                self.current_revision_id,
+            )
+            if not any(values_data.get(k) for k in (
+                'доходы_data', 'расходы_data', 'источники_финансирования_data', 'консолидируемые_расчеты_data'
+            )):
+                self.error_occurred.emit("Нет данных в *_values для экспорта")
+                return False
+
+            # Обновляем данные формы из БД
+            self.current_form.доходы_data = values_data.get('доходы_data', [])
+            self.current_form.расходы_data = values_data.get('расходы_data', [])
+            self.current_form.источники_финансирования_data = values_data.get('источники_финансирования_data', [])
+            self.current_form.консолидируемые_расчеты_data = values_data.get('консолидируемые_расчеты_data', [])
+            # Обновляем кэш проекта
+            self.current_project.data.update(values_data)
 
             output_file = self.current_form.export_validation(
-                source_file_path, 
+                source_file_path,
                 output_path
             )
             
@@ -720,9 +808,9 @@ class MainController(QObject):
                             status=ProjectStatus.EXPORTED,
                             file_path=output_file  # Обновляем путь на экспортированный файл
                         )
-                        print(f"Статус ревизии {self.current_revision_id} обновлен на EXPORTED")
+                        logger.info(f"Статус ревизии {self.current_revision_id} обновлен на EXPORTED")
                 except Exception as e:
-                    print(f"Ошибка обновления статуса ревизии после экспорта: {e}")
+                    logger.error(f"Ошибка обновления статуса ревизии после экспорта: {e}", exc_info=True)
             
             # Сохраняем обновленные данные ревизии (включая meta_info и результат_исполнения_data)
             if self.current_revision_id:
@@ -742,7 +830,7 @@ class MainController(QObject):
                         revision_data
                     )
                 except Exception as e:
-                    print(f"Ошибка сохранения данных ревизии после экспорта: {e}")
+                    logger.error(f"Ошибка сохранения данных ревизии после экспорта: {e}", exc_info=True)
             
             self.export_completed.emit(output_file)
             return True
@@ -784,13 +872,13 @@ class MainController(QObject):
                 form_type_code = str(form_type_enum).strip()
         
         if not form_type_code:
-            print("Не удалось определить тип формы для регистрации ревизии")
+            logger.warning("Не удалось определить тип формы для регистрации ревизии")
             return None
 
         # Мета‑информация по типу формы
         form_meta = self.db_manager.get_form_type_meta_by_code(form_type_code)
         if not form_meta:
-            print(f"Тип формы '{form_type_code}' не найден в справочнике форм.")
+            logger.warning(f"Тип формы '{form_type_code}' не найден в справочнике форм.")
             return None
 
         # Определяем период
@@ -808,7 +896,7 @@ class MainController(QObject):
             if period:
                 period_id = period.id
             else:
-                print(f"Период '{period_code}' не найден для формы '{form_meta.code}'")
+                logger.warning(f"Период '{period_code}' не найден для формы '{form_meta.code}'")
 
         # Создаём/находим ProjectForm для (проект, форма, период)
         project_form = self.db_manager.get_or_create_project_form(
@@ -817,7 +905,7 @@ class MainController(QObject):
             period_id=period_id,
         )
         
-        print(f"Создан/найден ProjectForm: id={project_form.id}, project_id={project.id}, "
+        logger.debug(f"Создан/найден ProjectForm: id={project_form.id}, project_id={project.id}, "
               f"form_type_id={form_meta.id}, period_id={period_id}")
 
         # Определяем номер ревизии
@@ -838,7 +926,7 @@ class MainController(QObject):
             file_path=file_path or "",
         )
         
-        print(f"Создана/обновлена ревизия: id={revision_record.id}, revision={revision}, "
+        logger.debug(f"Создана/обновлена ревизия: id={revision_record.id}, revision={revision}, "
               f"project_form_id={project_form.id}")
         
         return revision_record
@@ -902,6 +990,8 @@ class MainController(QObject):
         # Год → { project_id → ... }
         years_map = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(list))))
 
+        project_forms_map: Dict[int, list] = {}
+
         for project in projects:
             # Определяем год из year_id (новая архитектура) - используем предзагруженный словарь
             year = None
@@ -912,8 +1002,12 @@ class MainController(QObject):
             
             year_key = str(year) if year else "Без года"
 
+            # Гарантируем наличие узла проекта в years_map (чтобы проект не пропадал при отсутствии ревизий)
+            _ = years_map[year_key][project.id]
+
             # Загружаем project_forms и form_revisions для данного проекта
             project_forms = self.db_manager.load_project_forms(project.id)
+            project_forms_map[project.id] = project_forms or []
 
             # Если у проекта нет ревизий (нет загруженных форм), 
             # добавляем проект в years_map с пустым forms_map
@@ -980,36 +1074,45 @@ class MainController(QObject):
                     "forms": [],
                 }
 
-                # Если у проекта есть формы с ревизиями, добавляем их
-                if forms_map:
-                    for form_code, periods_map in forms_map.items():
-                        # Используем словарь для быстрого поиска типа формы
-                        ft_meta = form_types_meta_by_code.get(form_code)
+                # Используем формы, связанные с проектом (даже если нет ревизий)
+                project_forms = project_forms_map.get(project_id, [])
+                if project_forms:
+                    for pf in project_forms:
+                        # Код/название формы
+                        ft_meta = form_types_meta.get(pf.form_type_id)
+                        form_code = ft_meta.code if ft_meta else "UNKNOWN"
+                        form_name = ft_meta.name if ft_meta else f"Форма {form_code}"
+
                         form_entry = {
                             "form_code": form_code,
-                            "form_name": ft_meta.name if ft_meta else f"Форма {form_code}",
+                            "form_name": form_name,
                             "periods": [],
                         }
 
-                        for period_code, revisions_list in periods_map.items():
-                            period_name = period_code
-                            # Оптимизация: используем предзагруженный словарь для быстрого поиска
-                            period_obj = periods_by_code.get(period_code)
-                            if period_obj:
-                                period_name = period_obj.name
-                            period_entry = {
-                                "period_code": period_code,
-                                "period_name": period_name,
-                                "revisions": sorted(
-                                    revisions_list,
-                                    key=lambda r: r["revision"],
-                                ),
-                            }
-                            form_entry["periods"].append(period_entry)
+                        # Код/название периода
+                        period_obj = periods_by_id.get(pf.period_id) if pf.period_id else None
+                        period_code = period_obj.code if period_obj else "Y"
+                        period_name = period_obj.name if period_obj else period_code
 
-                        # Сортируем периоды по коду для предсказуемости
-                        form_entry["periods"].sort(key=lambda p: p["period_code"])
+                        # Ревизии берём из years_map (быстрее и учитывает только нужный проект/форму/период)
+                        revisions = forms_map.get(form_code, {}).get(period_code, [])
+
+                        period_entry = {
+                            "period_code": period_code,
+                            "period_name": period_name,
+                            "revisions": sorted(
+                                revisions,
+                                key=lambda r: r["revision"],
+                            ),
+                        }
+
+                        form_entry["periods"].append(period_entry)
                         proj_entry["forms"].append(form_entry)
+
+                    # Сортируем формы/периоды
+                    proj_entry["forms"].sort(key=lambda f: f["form_code"])
+                    for f in proj_entry["forms"]:
+                        f["periods"].sort(key=lambda p: p["period_code"])
 
                     # Сортируем формы по коду
                     proj_entry["forms"].sort(key=lambda f: f["form_code"])
@@ -1028,7 +1131,7 @@ class MainController(QObject):
         try:
             # Читаем Excel файл в DataFrame
             df = pd.read_excel(file_path)
-            print(f"Справочник загружен: {df.shape}, колонки: {list(df.columns)}")
+            logger.info(f"Справочник загружен: {df.shape}, колонки: {list(df.columns)}")
 
             # Нормализуем названия колонок (убираем пробелы по краям)
             df.columns = [str(c).strip() for c in df.columns]
