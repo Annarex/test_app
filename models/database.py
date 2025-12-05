@@ -1,7 +1,7 @@
 import sqlite3
 import json
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Iterable, Tuple
 from datetime import datetime
 import pandas as pd
 from .base_models import (
@@ -16,6 +16,7 @@ from .base_models import (
     ProjectForm,
     FormRevisionRecord,
 )
+from .form_0503317 import Form0503317Constants
 
 class DatabaseManager:
     """Менеджер базы данных"""
@@ -121,9 +122,16 @@ class DatabaseManager:
                     code TEXT NOT NULL UNIQUE,
                     name TEXT,
                     periodicity TEXT,         -- годовая, квартальная, полугодовая и т.п.
+                    column_mapping TEXT,       -- JSON с mapping колонок для экспорта/валидации
                     is_active INTEGER NOT NULL DEFAULT 1
                 )
             ''')
+            
+            # Миграция: добавляем поле column_mapping в существующую таблицу
+            try:
+                cursor.execute('ALTER TABLE ref_form_types ADD COLUMN column_mapping TEXT')
+            except sqlite3.OperationalError:
+                pass  # Колонка уже существует
 
             # Справочник периодов (год, кварталы, полугодия и т.п.)
             cursor.execute('''
@@ -176,58 +184,100 @@ class DatabaseManager:
             self._seed_config_dictionaries(cursor)
 
             # --------------------------------------------------
-            # Таблицы строк форм по разделам
-            # (пока привязаны к project_id, позже будем привязывать
-            #  к form_revisions.id, но для совместимости оставляем)
+            # НОВЫЕ НОРМАЛИЗОВАННЫЕ ТАБЛИЦЫ ДЛЯ ЗНАЧЕНИЙ РАЗДЕЛОВ
             # --------------------------------------------------
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS income_rows (
+            budget_cols = Form0503317Constants.BUDGET_COLUMNS
+            consolidated_cols = Form0503317Constants.CONSOLIDATED_COLUMNS
+
+            def _build_value_columns_sql(col_count: int) -> str:
+                # v1..vN – значения по столбцам бюджета; отображение в человекочитаемые
+                # названия хранится только в коде, а не в БД (mapping в программной части).
+                return ", ".join(f"v{i+1} REAL" for i in range(col_count))
+
+            budget_values_columns_sql = _build_value_columns_sql(len(budget_cols))
+            consolidated_values_columns_sql = _build_value_columns_sql(len(consolidated_cols))
+
+            # Доходы / Расходы / Источники – общая схема
+            for table_name in ("income_values", "expense_values", "source_values"):
+                cursor.execute(
+                    f'''
+                    CREATE TABLE IF NOT EXISTS {table_name} (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     project_id INTEGER NOT NULL,
                     revision_id INTEGER,
-                    row_data TEXT NOT NULL
+                        classification_code TEXT,
+                        indicator_name TEXT,
+                        line_code TEXT,
+                        budget_type TEXT NOT NULL,   -- 'утвержденный' / 'исполненный'
+                        data_type TEXT NOT NULL,     -- 'оригинальные' / 'вычисленные'
+                        level INTEGER,                -- уровень строки (0-6), кэшируется для ускорения расчетов
+                        source_row INTEGER,          -- исходная строка в Excel (для экспорта)
+                        {budget_values_columns_sql}
+                    )
+                    '''
                 )
-            ''')
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS expense_rows (
+                # Миграция: добавляем новые поля в существующие таблицы
+                for col_name, col_type in [('level', 'INTEGER'), ('source_row', 'INTEGER')]:
+                    try:
+                        cursor.execute(f'ALTER TABLE {table_name} ADD COLUMN {col_name} {col_type}')
+                    except sqlite3.OperationalError:
+                        pass  # Колонка уже существует
+
+            # Консолидируемые расчёты – отдельная таблица
+            cursor.execute(
+                f'''
+                CREATE TABLE IF NOT EXISTS consolidated_values (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     project_id INTEGER NOT NULL,
                     revision_id INTEGER,
-                    row_data TEXT NOT NULL
+                    classification_code TEXT,
+                    indicator_name TEXT,
+                    line_code TEXT,
+                    budget_type TEXT NOT NULL,   -- всегда 'поступления'
+                    data_type TEXT NOT NULL,     -- 'оригинальные' / 'вычисленные'
+                    level INTEGER,                -- уровень строки (0-2), кэшируется для ускорения расчетов
+                    source_row INTEGER,          -- исходная строка в Excel (для экспорта)
+                    {consolidated_values_columns_sql}
                 )
-            ''')
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS source_rows (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    project_id INTEGER NOT NULL,
-                    revision_id INTEGER,
-                    row_data TEXT NOT NULL
-                )
-            ''')
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS consolidated_rows (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    project_id INTEGER NOT NULL,
-                    revision_id INTEGER,
-                    row_data TEXT NOT NULL
-                )
-            ''')
-            
-            # Добавляем поле revision_id в существующие таблицы, если его нет
-            try:
-                cursor.execute('ALTER TABLE income_rows ADD COLUMN revision_id INTEGER')
+                '''
+            )
+            # Миграция: добавляем новые поля в существующую таблицу
+            for col_name, col_type in [('level', 'INTEGER'), ('source_row', 'INTEGER')]:
+                try:
+                    cursor.execute(f'ALTER TABLE consolidated_values ADD COLUMN {col_name} {col_type}')
             except sqlite3.OperationalError:
                 pass  # Колонка уже существует
+
+            # Индексы для ускорения выборок по проекту/ревизии/коду
+            for tbl in ('income_values', 'expense_values', 'source_values', 'consolidated_values'):
             try:
-                cursor.execute('ALTER TABLE expense_rows ADD COLUMN revision_id INTEGER')
+                    cursor.execute(
+                        f'CREATE INDEX IF NOT EXISTS idx_{tbl}_proj_rev '
+                        f'ON {tbl} (project_id, revision_id)'
+                    )
             except sqlite3.OperationalError:
                 pass
             try:
-                cursor.execute('ALTER TABLE source_rows ADD COLUMN revision_id INTEGER')
+                    cursor.execute(
+                        f'CREATE INDEX IF NOT EXISTS idx_{tbl}_class_code '
+                        f'ON {tbl} (classification_code)'
+                    )
             except sqlite3.OperationalError:
                 pass
-            try:
-                cursor.execute('ALTER TABLE consolidated_rows ADD COLUMN revision_id INTEGER')
+                # Индекс по уровню для агрегирования и фильтрации
+                try:
+                    cursor.execute(
+                        f'CREATE INDEX IF NOT EXISTS idx_{tbl}_level '
+                        f'ON {tbl} (level)'
+                    )
+                except sqlite3.OperationalError:
+                    pass
+                # Индекс по исходной строке для экспорта
+                try:
+                    cursor.execute(
+                        f'CREATE INDEX IF NOT EXISTS idx_{tbl}_source_row '
+                        f'ON {tbl} (source_row)'
+                    )
             except sqlite3.OperationalError:
                 pass
 
@@ -349,12 +399,15 @@ class DatabaseManager:
         count_forms = cursor.fetchone()[0]
         if count_forms == 0:
             # Базовая форма 0503317 (годовая/квартальная)
+            # Сохраняем mapping колонок для формы 0503317
+            from models.form_0503317 import Form0503317Constants
+            mapping_json = json.dumps(Form0503317Constants.COLUMN_MAPPING, ensure_ascii=False)
             forms = [
-                (503317, "0503317", "Форма 0503317", "Квартальная/6М/9М/12М", 1),
+                (503317, "0503317", "Форма 0503317", "Квартальная/6М/9М/12М", mapping_json, 1),
             ]
             cursor.executemany(
-                'INSERT INTO ref_form_types (id,code, name, periodicity, is_active) '
-                'VALUES (?, ?, ?, ?, ?)',
+                'INSERT INTO ref_form_types (id, code, name, periodicity, column_mapping, is_active) '
+                'VALUES (?, ?, ?, ?, ?, ?)',
                 forms,
             )
 
@@ -461,51 +514,353 @@ class DatabaseManager:
             return project.id
     
     def _save_project_data(self, cursor, project_id: int, data: Dict[str, Any], revision_id: Optional[int] = None):
-        """Сохранение данных проекта в таблицы строк (без метаданных)"""
+        """
+        Сохранение данных проекта в нормализованные таблицы *_values.
+
+        Старые JSON‑таблицы *_rows больше не используются для новых/обновлённых ревизий.
+        """
         # Удаляем старые данные для этой ревизии (если указана) или для всего проекта
         if revision_id:
-            cursor.execute('DELETE FROM income_rows WHERE project_id=? AND revision_id=?', (project_id, revision_id))
-            cursor.execute('DELETE FROM expense_rows WHERE project_id=? AND revision_id=?', (project_id, revision_id))
-            cursor.execute('DELETE FROM source_rows WHERE project_id=? AND revision_id=?', (project_id, revision_id))
-            cursor.execute('DELETE FROM consolidated_rows WHERE project_id=? AND revision_id=?', (project_id, revision_id))
+            params = (project_id, revision_id)
+            cursor.execute('DELETE FROM income_values WHERE project_id=? AND revision_id=?', params)
+            cursor.execute('DELETE FROM expense_values WHERE project_id=? AND revision_id=?', params)
+            cursor.execute('DELETE FROM source_values WHERE project_id=? AND revision_id=?', params)
+            cursor.execute('DELETE FROM consolidated_values WHERE project_id=? AND revision_id=?', params)
         else:
-            cursor.execute('DELETE FROM income_rows WHERE project_id=?', (project_id,))
-            cursor.execute('DELETE FROM expense_rows WHERE project_id=?', (project_id,))
-            cursor.execute('DELETE FROM source_rows WHERE project_id=?', (project_id,))
-            cursor.execute('DELETE FROM consolidated_rows WHERE project_id=?', (project_id,))
+            params = (project_id,)
+            cursor.execute('DELETE FROM income_values WHERE project_id=?', params)
+            cursor.execute('DELETE FROM expense_values WHERE project_id=?', params)
+            cursor.execute('DELETE FROM source_values WHERE project_id=?', params)
+            cursor.execute('DELETE FROM consolidated_values WHERE project_id=?', params)
         
-        # Сохраняем данные по разделам (исключаем метаданные)
-        section_tables = {
-            'доходы_data': 'income_rows',
-            'расходы_data': 'expense_rows',
-            'источники_финансирования_data': 'source_rows',
-            'консолидируемые_расчеты_data': 'consolidated_rows'
-        }
+        # Сохраняем нормализованные значения в *_values
+        budget_cols = Form0503317Constants.BUDGET_COLUMNS
+        consolidated_cols = Form0503317Constants.CONSOLIDATED_COLUMNS
+
+        self._save_section_values(
+            cursor=cursor,
+            project_id=project_id,
+            revision_id=revision_id,
+            section_rows=data.get('доходы_data') or [],
+            table_name='income_values',
+            budget_columns=budget_cols,
+        )
+        self._save_section_values(
+            cursor=cursor,
+            project_id=project_id,
+            revision_id=revision_id,
+            section_rows=data.get('расходы_data') or [],
+            table_name='expense_values',
+            budget_columns=budget_cols,
+        )
+        self._save_section_values(
+            cursor=cursor,
+            project_id=project_id,
+            revision_id=revision_id,
+            section_rows=data.get('источники_финансирования_data') or [],
+            table_name='source_values',
+            budget_columns=budget_cols,
+        )
+        self._save_consolidated_values(
+            cursor=cursor,
+            project_id=project_id,
+            revision_id=revision_id,
+            section_rows=data.get('консолидируемые_расчеты_data') or [],
+            table_name='consolidated_values',
+            consolidated_columns=consolidated_cols,
+        )
+
+    # ------------------------------------------------------------------
+    # ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ ДЛЯ *_values И МИГРАЦИИ
+    # ------------------------------------------------------------------
+
+    def _iter_value_rows_for_budget_section(
+        self,
+        project_id: int,
+        revision_id: Optional[int],
+        section_rows: Iterable[Dict[str, Any]],
+        budget_columns: List[str],
+        only_calculated: bool = False,
+    ) -> Iterable[Tuple]:
+        """
+        Преобразует одну логическую строку раздела (доходы/расходы/источники)
+        в набор строк для *_values в формате:
+        (project_id, revision_id, classification_code, indicator_name, line_code,
+         budget_type, data_type, v1..vN)
         
-        # Оптимизация: используем batch INSERT вместо множественных INSERT в цикле
-        for section_key, table_name in section_tables.items():
-            if section_key in data and data[section_key]:
-                rows = data[section_key]
-                if isinstance(rows, list):
-                    # Подготавливаем данные для batch insert
-                    if revision_id:
-                        batch_data = [
-                            (project_id, revision_id, json.dumps(row, ensure_ascii=False, default=str))
-                            for row in rows
-                        ]
-                        cursor.executemany(
-                            f'INSERT INTO {table_name} (project_id, revision_id, row_data) VALUES (?, ?, ?)',
-                            batch_data
+        Args:
+            only_calculated: Если True, возвращает только вычисленные значения
+        """
+        for row in section_rows:
+            if not isinstance(row, dict):
+                continue
+
+            classification_code = row.get('код_классификации') or None
+            indicator_name = row.get('наименование_показателя') or None
+            line_code = row.get('код_строки') or None
+            level = row.get('уровень')  # Кэшированный уровень
+            source_row = row.get('исходная_строка')  # Исходная строка для экспорта
+
+            # ОРИГИНАЛЬНЫЕ значения (пропускаем, если only_calculated=True)
+            if not only_calculated:
+                for budget_type in ('утвержденный', 'исполненный'):
+                    values_dict = row.get(budget_type) or {}
+                    vec = []
+                    has_value = False
+                    for col in budget_columns:
+                        v = values_dict.get(col)
+                        # 'x' трактуем как отсутствие значения
+                        if isinstance(v, str) and v.lower() == 'x':
+                            v = None
+                        if v is not None:
+                            has_value = True
+                        vec.append(v)
+                    if has_value:
+                        yield (
+                            project_id,
+                            revision_id,
+                            classification_code,
+                            indicator_name,
+                            line_code,
+                            budget_type,
+                            'оригинальные',
+                            level,
+                            source_row,
+                            *vec,
                         )
-                    else:
-                        batch_data = [
-                            (project_id, json.dumps(row, ensure_ascii=False, default=str))
-                            for row in rows
-                        ]
+
+            # ВЫЧИСЛЕННЫЕ значения (если есть расчетные колонки)
+            # Ключи формата: 'расчетный_утвержденный_{budget_col}'
+            for budget_type, prefix in (('утвержденный', 'расчетный_утвержденный_'),
+                                        ('исполненный', 'расчетный_исполненный_')):
+                vec = []
+                has_value = False
+                for col in budget_columns:
+                    key = f'{prefix}{col}'
+                    v = row.get(key)
+                    if isinstance(v, str) and v.lower() == 'x':
+                        v = None
+                    if v is not None:
+                        has_value = True
+                    vec.append(v)
+                if has_value:
+                    yield (
+                        project_id,
+                        revision_id,
+                        classification_code,
+                        indicator_name,
+                        line_code,
+                        budget_type,
+                        'вычисленные',
+                        level,
+                        source_row,
+                        *vec,
+                    )
+
+    def _iter_value_rows_for_consolidated_section(
+        self,
+        project_id: int,
+        revision_id: Optional[int],
+        section_rows: Iterable[Dict[str, Any]],
+        consolidated_columns: List[str],
+        only_calculated: bool = False,
+    ) -> Iterable[Tuple]:
+        """
+        Преобразует одну логическую строку консолидируемых расчётов
+        в набор строк для consolidated_values:
+        (project_id, revision_id, classification_code, indicator_name, line_code,
+         budget_type, data_type, level, source_row, v1..vN)
+        
+        Args:
+            only_calculated: Если True, возвращает только вычисленные значения
+        """
+        for row in section_rows:
+            if not isinstance(row, dict):
+                continue
+
+            classification_code = row.get('код_классификации') or None
+            indicator_name = row.get('наименование_показателя') or None
+            line_code = row.get('код_строки') or None
+            level = row.get('уровень')  # Кэшированный уровень
+            source_row = row.get('исходная_строка')  # Исходная строка для экспорта
+
+            # ОРИГИНАЛЬНЫЕ значения (словарь 'поступления')
+            if not only_calculated:
+                vec = []
+                has_value = False
+                for col in consolidated_columns:
+                    key = f'поступления_{col}'
+                    v = row.get(key)
+                    if isinstance(v, str) and v.lower() == 'x':
+                        v = None
+                    if v is not None:
+                        has_value = True
+                    vec.append(v)
+                if has_value:
+                    yield (
+                        project_id,
+                        revision_id,
+                        classification_code,
+                        indicator_name,
+                        line_code,
+                        'поступления',
+                        'оригинальные',
+                        level,
+                        source_row,
+                        *vec,
+                    )
+
+            # ВЫЧИСЛЕННЫЕ значения
+            vec = []
+            has_value = False
+            for col in consolidated_columns:
+                key = f'расчетный_поступления_{col}'
+                v = row.get(key)
+                if isinstance(v, str) and v.lower() == 'x':
+                    v = None
+                if v is not None:
+                    has_value = True
+                vec.append(v)
+            if has_value:
+                yield (
+                    project_id,
+                    revision_id,
+                    classification_code,
+                    indicator_name,
+                    line_code,
+                    'поступления',
+                    'вычисленные',
+                    level,
+                    source_row,
+                    *vec,
+                )
+
+    def _save_section_values(
+        self,
+        cursor: sqlite3.Cursor,
+        project_id: int,
+        revision_id: Optional[int],
+        section_rows: List[Dict[str, Any]],
+        table_name: str,
+        budget_columns: List[str],
+        only_calculated: bool = False,
+    ) -> None:
+        """Сохраняет нормализованные значения для разделов доходы/расходы/источники.
+        
+        Args:
+            only_calculated: Если True, сохраняет только вычисленные значения (data_type='вычисленные')
+        """
+        # Данные раздела могут отсутствовать (например, если форма без этого блока)
+        # В таком случае просто ничего не делаем.
+        # Очищение по project_id/revision_id уже сделано в _save_project_data.
+        from itertools import islice
+
+        if not section_rows:
+            return
+
+        value_rows_iter = self._iter_value_rows_for_budget_section(
+            project_id=project_id,
+            revision_id=revision_id,
+            section_rows=section_rows,
+            budget_columns=budget_columns,
+            only_calculated=only_calculated,
+        )
+
+        # Предварительно берём несколько строк, чтобы не выполнять пустой executemany
+        first_batch = list(islice(value_rows_iter, 1000))
+        if not first_batch:
+            return
+
+        placeholders = ", ".join(["?"] * (10 + len(budget_columns)))
                         cursor.executemany(
-                            f'INSERT INTO {table_name} (project_id, row_data) VALUES (?, ?)',
-                            batch_data
-                        )
+            f'''
+            INSERT INTO {table_name} (
+                project_id, revision_id, classification_code, indicator_name,
+                line_code, budget_type, data_type, level, source_row,
+                {", ".join(f"v{i+1}" for i in range(len(budget_columns)))}
+            )
+            VALUES ({placeholders})
+            ''',
+            first_batch,
+        )
+
+        # Дозагружаем остальные строки батчами
+        batch_size = 1000
+        batch = list(islice(value_rows_iter, batch_size))
+        while batch:
+                        cursor.executemany(
+                f'''
+                INSERT INTO {table_name} (
+                    project_id, revision_id, classification_code, indicator_name,
+                    line_code, budget_type, data_type, level, source_row,
+                    {", ".join(f"v{i+1}" for i in range(len(budget_columns)))}
+                )
+                VALUES ({placeholders})
+                ''',
+                batch,
+            )
+            batch = list(islice(value_rows_iter, batch_size))
+
+    def _save_consolidated_values(
+        self,
+        cursor: sqlite3.Cursor,
+        project_id: int,
+        revision_id: Optional[int],
+        section_rows: List[Dict[str, Any]],
+        table_name: str,
+        consolidated_columns: List[str],
+        only_calculated: bool = False,
+    ) -> None:
+        """Сохраняет нормализованные значения для консолидируемых расчётов.
+        
+        Args:
+            only_calculated: Если True, сохраняет только вычисленные значения (data_type='вычисленные')
+        """
+        from itertools import islice
+        if not section_rows:
+            return
+        value_rows_iter = self._iter_value_rows_for_consolidated_section(
+            project_id=project_id,
+            revision_id=revision_id,
+            section_rows=section_rows,
+            consolidated_columns=consolidated_columns,
+            only_calculated=only_calculated,
+        )
+
+        first_batch = list(islice(value_rows_iter, 1000))
+        if not first_batch:
+            return
+
+        placeholders = ", ".join(["?"] * (10 + len(consolidated_columns)))
+        cursor.executemany(
+            f'''
+            INSERT INTO {table_name} (
+                project_id, revision_id, classification_code, indicator_name,
+                line_code, budget_type, data_type, level, source_row,
+                {", ".join(f"v{i+1}" for i in range(len(consolidated_columns)))}
+            )
+            VALUES ({placeholders})
+            ''',
+            first_batch,
+        )
+
+        batch_size = 1000
+        batch = list(islice(value_rows_iter, batch_size))
+        while batch:
+            cursor.executemany(
+                f'''
+                INSERT INTO {table_name} (
+                    project_id, revision_id, classification_code, indicator_name,
+                    line_code, budget_type, data_type, level, source_row,
+                    {", ".join(f"v{i+1}" for i in range(len(consolidated_columns)))}
+                )
+                VALUES ({placeholders})
+                ''',
+                batch,
+            )
+            batch = list(islice(value_rows_iter, batch_size))
+
+    # Легаси-миграция удалена: старые таблицы *_rows больше не поддерживаются.
     
     def load_projects(self) -> List[Project]:
         """Загрузка всех проектов (новая архитектура)."""
@@ -535,37 +890,145 @@ class DatabaseManager:
         return projects
     
     def _load_project_data(self, cursor, project_id: int, revision_id: Optional[int] = None) -> Dict[str, Any]:
-        """Загрузка данных проекта из таблиц строк (без метаданных)"""
-        data = {}
-        
-        section_tables = {
-            'доходы_data': 'income_rows',
-            'расходы_data': 'expense_rows',
-            'источники_финансирования_data': 'source_rows',
-            'консолидируемые_расчеты_data': 'consolidated_rows'
-        }
-        
-        for section_key, table_name in section_tables.items():
-            if revision_id:
+        """
+        Загрузка данных проекта.
+
+        Данные собираются только из новых нормализованных таблиц *_values.
+        Для старых проектов миграция из *_rows выполняется один раз при инициализации БД.
+        """
+        data_from_values = self._load_project_data_from_values(cursor, project_id, revision_id)
+        return data_from_values
+
+    def load_project_data_values(self, project_id: int, revision_id: Optional[int] = None) -> Dict[str, Any]:
+        """Публичный метод загрузки данных проекта из нормализованных таблиц *_values."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            return self._load_project_data_from_values(cursor, project_id, revision_id)
+
+    def _load_project_data_from_values(
+        self,
+        cursor: sqlite3.Cursor,
+        project_id: int,
+        revision_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Загрузка данных проекта из нормализованных таблиц *_values.
+
+        Восстанавливает структуру:
+        - доходы_data / расходы_data / источники_финансирования_data
+          с полями 'утвержденный' / 'исполненный' и, при наличии, 'расчетный_*';
+        - консолидируемые_расчеты_data с полями 'поступления' и 'расчетный_поступления_*'.
+
+        Служебные поля (mapping, исходная_строка и т.п.) здесь не восстанавливаются
+        и при необходимости могут быть дополнительно подчитаны из JSON‑таблиц.
+        """
+        data: Dict[str, Any] = {}
+
+        # Доходы / Расходы / Источники
+        def load_budget_section_values(
+            table_name: str,
+            section_name: str,
+        ) -> List[Dict[str, Any]]:
+            where_clause = 'project_id=? AND revision_id IS ?' if revision_id is None else 'project_id=? AND revision_id=?'
+            params = (project_id, revision_id)
                 cursor.execute(
-                    f'SELECT row_data FROM {table_name} WHERE project_id=? AND revision_id=? ORDER BY id',
-                    (project_id, revision_id)
-                )
-            else:
+                f'''
+                SELECT classification_code, indicator_name, line_code,
+                       budget_type, data_type, level, source_row,
+                       {", ".join(f"v{i+1}" for i in range(len(Form0503317Constants.BUDGET_COLUMNS)))}
+                FROM {table_name}
+                WHERE {where_clause}
+                ORDER BY id
+                ''',
+                params,
+            )
+            rows = cursor.fetchall()
+            if not rows:
+                return []
+
+            # Группируем по (classification_code, indicator_name, line_code)
+            grouped: Dict[Tuple[Optional[str], Optional[str], Optional[str]], Dict[str, Any]] = {}
+            for row in rows:
+                classification_code, indicator_name, line_code, budget_type, data_type, level, source_row, *values = row
+                key = (classification_code, indicator_name, line_code)
+                if key not in grouped:
+                    grouped[key] = {
+                        'код_классификации': classification_code or '',
+                        'наименование_показателя': indicator_name or '',
+                        'код_строки': line_code or '',
+                        'раздел': section_name,
+                        'уровень': level,  # Используем кэшированный уровень из БД
+                        'исходная_строка': source_row,  # Используем сохраненную исходную строку
+                    }
+
+                target = grouped[key]
+                cols = Form0503317Constants.BUDGET_COLUMNS
+
+                if data_type == 'оригинальные':
+                    bucket = target.setdefault(budget_type, {})
+                    for idx, col_name in enumerate(cols):
+                        bucket[col_name] = values[idx]
+                elif data_type == 'вычисленные':
+                    prefix = 'расчетный_утвержденный_' if budget_type == 'утвержденный' else 'расчетный_исполненный_'
+                    for idx, col_name in enumerate(cols):
+                        target[f'{prefix}{col_name}'] = values[idx]
+
+            return list(grouped.values())
+
+        доходы = load_budget_section_values('income_values', 'доходы')
+        расходы = load_budget_section_values('expense_values', 'расходы')
+        источники = load_budget_section_values('source_values', 'источники_финансирования')
+
+        if доходы:
+            data['доходы_data'] = доходы
+        if расходы:
+            data['расходы_data'] = расходы
+        if источники:
+            data['источники_финансирования_data'] = источники
+
+        # Консолидируемые расчёты
+        where_clause = 'project_id=? AND revision_id IS ?' if revision_id is None else 'project_id=? AND revision_id=?'
+        params = (project_id, revision_id)
                 cursor.execute(
-                    f'SELECT row_data FROM {table_name} WHERE project_id=? AND (revision_id IS NULL OR revision_id=?) ORDER BY id',
-                    (project_id, revision_id or 0)
-                )
-            rows = []
-            for row in cursor.fetchall():
-                try:
-                    row_data = json.loads(row[0])
-                    rows.append(row_data)
-                except (json.JSONDecodeError, TypeError) as e:
-                    print(f"Ошибка загрузки строки из {table_name}: {e}")
-                    continue
+            f'''
+            SELECT classification_code, indicator_name, line_code,
+                   budget_type, data_type, level, source_row,
+                   {", ".join(f"v{i+1}" for i in range(len(Form0503317Constants.CONSOLIDATED_COLUMNS)))}
+            FROM consolidated_values
+            WHERE {where_clause}
+            ORDER BY id
+            ''',
+            params,
+        )
+        rows = cursor.fetchall()
             if rows:
-                data[section_key] = rows
+            grouped_cons: Dict[Tuple[Optional[str], Optional[str], Optional[str]], Dict[str, Any]] = {}
+            cols_cons = Form0503317Constants.CONSOLIDATED_COLUMNS
+
+            for row in rows:
+                classification_code, indicator_name, line_code, budget_type, data_type, level, source_row, *values = row
+                key = (classification_code, indicator_name, line_code)
+                if key not in grouped_cons:
+                    grouped_cons[key] = {
+                        'код_классификации': classification_code or '',
+                        'наименование_показателя': indicator_name or '',
+                        'код_строки': line_code or '',
+                        'раздел': 'консолидируемые_расчеты',
+                        'уровень': level,  # Используем кэшированный уровень из БД
+                        'исходная_строка': source_row,  # Используем сохраненную исходную строку
+                    }
+
+                target = grouped_cons[key]
+
+                if data_type == 'оригинальные':
+                    bucket = target.setdefault('поступления', {})
+                    for idx, col_name in enumerate(cols_cons):
+                        bucket[col_name] = values[idx]
+                elif data_type == 'вычисленные':
+                    for idx, col_name in enumerate(cols_cons):
+                        target[f'расчетный_поступления_{col_name}'] = values[idx]
+
+            data['консолидируемые_расчеты_data'] = list(grouped_cons.values())
         
         return data
 
@@ -679,7 +1142,7 @@ class DatabaseManager:
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute(
-                'SELECT id, code, name, periodicity, is_active FROM ref_form_types WHERE code=?',
+                'SELECT id, code, name, periodicity, column_mapping, is_active FROM ref_form_types WHERE code=?',
                 (code,)
             )
             row = cursor.fetchone()
@@ -687,19 +1150,19 @@ class DatabaseManager:
                 return None
             return FormTypeMeta.from_row(
                 {'id': row[0], 'code': row[1], 'name': row[2],
-                 'periodicity': row[3], 'is_active': row[4]}
+                 'periodicity': row[3], 'column_mapping': row[4], 'is_active': row[5]}
             )
 
     def load_form_types_meta(self) -> List[FormTypeMeta]:
         result: List[FormTypeMeta] = []
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            cursor.execute('SELECT id, code, name, periodicity, is_active FROM ref_form_types ORDER BY code')
+            cursor.execute('SELECT id, code, name, periodicity, column_mapping, is_active FROM ref_form_types ORDER BY code')
             for row in cursor.fetchall():
                 result.append(
                     FormTypeMeta.from_row(
                         {'id': row[0], 'code': row[1], 'name': row[2],
-                         'periodicity': row[3], 'is_active': row[4]}
+                         'periodicity': row[3], 'column_mapping': row[4], 'is_active': row[5]}
                     )
                 )
         return result
@@ -723,14 +1186,16 @@ class DatabaseManager:
                             print(f"Невозможно определить ID для типа формы с кодом '{f.code}', запись пропущена")
                             continue
 
+                    column_mapping_json = json.dumps(f.column_mapping, ensure_ascii=False) if f.column_mapping else None
                     cursor.execute(
-                        'INSERT INTO ref_form_types (id, code, name, periodicity, is_active) '
-                        'VALUES (?, ?, ?, ?, ?)',
+                        'INSERT INTO ref_form_types (id, code, name, periodicity, column_mapping, is_active) '
+                        'VALUES (?, ?, ?, ?, ?, ?)',
                         (
                             form_id,
                             f.code,
                             f.name,
                             f.periodicity or None,
+                            column_mapping_json,
                             1 if f.is_active else 0,
                         ),
                     )
@@ -1151,6 +1616,441 @@ class DatabaseManager:
             '''
             df = pd.read_sql_query(query, conn)
         return df
+
+    # ----- Нормализованные данные форм (values) -----
+
+    def load_income_values_df(self, project_id: Optional[int] = None, revision_id: Optional[int] = None) -> pd.DataFrame:
+        """
+        Загрузка данных раздела «Доходы» из таблицы income_values в виде DataFrame.
+        Удобно для аналитики и внешних расчётов.
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            base_query = '''
+                SELECT
+                    project_id,
+                    revision_id,
+                    classification_code AS код_классификации,
+                    indicator_name     AS наименование_показателя,
+                    line_code          AS код_строки,
+                    budget_type        AS тип_бюджета,
+                    data_type          AS тип_данных,
+                    level              AS level,
+                    source_row         AS source_row,
+                    {value_cols}
+                FROM income_values
+            '''
+            value_cols = ", ".join(f"v{i+1} AS v{i+1}" for i in range(len(Form0503317Constants.BUDGET_COLUMNS)))
+            query = base_query.format(value_cols=value_cols)
+
+            params: list = []
+            where_clauses: list = []
+            if project_id is not None:
+                where_clauses.append("project_id = ?")
+                params.append(project_id)
+            if revision_id is not None:
+                where_clauses.append("revision_id = ?")
+                params.append(revision_id)
+
+            if where_clauses:
+                query += " WHERE " + " AND ".join(where_clauses)
+
+            df = pd.read_sql_query(query, conn, params=params or None)
+        return df
+
+    def load_expense_values_df(self, project_id: Optional[int] = None, revision_id: Optional[int] = None) -> pd.DataFrame:
+        """Загрузка данных раздела «Расходы» из expense_values как DataFrame."""
+        with sqlite3.connect(self.db_path) as conn:
+            base_query = '''
+                SELECT
+                    project_id,
+                    revision_id,
+                    classification_code AS код_классификации,
+                    indicator_name     AS наименование_показателя,
+                    line_code          AS код_строки,
+                    budget_type        AS тип_бюджета,
+                    data_type          AS тип_данных,
+                    level              AS level,
+                    source_row         AS source_row,
+                    {value_cols}
+                FROM expense_values
+            '''
+            value_cols = ", ".join(f"v{i+1} AS v{i+1}" for i in range(len(Form0503317Constants.BUDGET_COLUMNS)))
+            query = base_query.format(value_cols=value_cols)
+
+            params: list = []
+            where_clauses: list = []
+            if project_id is not None:
+                where_clauses.append("project_id = ?")
+                params.append(project_id)
+            if revision_id is not None:
+                where_clauses.append("revision_id = ?")
+                params.append(revision_id)
+
+            if where_clauses:
+                query += " WHERE " + " AND ".join(where_clauses)
+
+            df = pd.read_sql_query(query, conn, params=params or None)
+        return df
+
+    def load_source_values_df(self, project_id: Optional[int] = None, revision_id: Optional[int] = None) -> pd.DataFrame:
+        """Загрузка данных раздела «Источники финансирования» из source_values как DataFrame."""
+        with sqlite3.connect(self.db_path) as conn:
+            base_query = '''
+                SELECT
+                    project_id,
+                    revision_id,
+                    classification_code AS код_классификации,
+                    indicator_name     AS наименование_показателя,
+                    line_code          AS код_строки,
+                    budget_type        AS тип_бюджета,
+                    data_type          AS тип_данных,
+                    level              AS level,
+                    source_row         AS source_row,
+                    {value_cols}
+                FROM source_values
+            '''
+            value_cols = ", ".join(f"v{i+1} AS v{i+1}" for i in range(len(Form0503317Constants.BUDGET_COLUMNS)))
+            query = base_query.format(value_cols=value_cols)
+
+            params: list = []
+            where_clauses: list = []
+            if project_id is not None:
+                where_clauses.append("project_id = ?")
+                params.append(project_id)
+            if revision_id is not None:
+                where_clauses.append("revision_id = ?")
+                params.append(revision_id)
+
+            if where_clauses:
+                query += " WHERE " + " AND ".join(where_clauses)
+
+            df = pd.read_sql_query(query, conn, params=params or None)
+        return df
+
+    def load_consolidated_values_df(self, project_id: Optional[int] = None, revision_id: Optional[int] = None) -> pd.DataFrame:
+        """Загрузка данных раздела «Консолидируемые расчёты» из consolidated_values как DataFrame."""
+        with sqlite3.connect(self.db_path) as conn:
+            base_query = '''
+                SELECT
+                    project_id,
+                    revision_id,
+                    classification_code AS код_классификации,
+                    indicator_name     AS наименование_показателя,
+                    line_code          AS код_строки,
+                    budget_type        AS тип_бюджета,
+                    data_type          AS тип_данных,
+                    level              AS level,
+                    source_row         AS source_row,
+                    {value_cols}
+                FROM consolidated_values
+            '''
+            value_cols = ", ".join(f"v{i+1} AS v{i+1}" for i in range(len(Form0503317Constants.CONSOLIDATED_COLUMNS)))
+            query = base_query.format(value_cols=value_cols)
+
+            params: list = []
+            where_clauses: list = []
+            if project_id is not None:
+                where_clauses.append("project_id = ?")
+                params.append(project_id)
+            if revision_id is not None:
+                where_clauses.append("revision_id = ?")
+                params.append(revision_id)
+
+            if where_clauses:
+                query += " WHERE " + " AND ".join(where_clauses)
+
+            df = pd.read_sql_query(query, conn, params=params or None)
+        return df
+
+    # ----- Аналитика по нормализованным данным -----
+
+    def summarize_budget_by_level(
+        self,
+        section: str,
+        project_id: int,
+        revision_id: Optional[int] = None,
+        budget_type: Optional[str] = None,
+        data_type: str = 'вычисленные',
+    ) -> pd.DataFrame:
+        """
+        Агрегация бюджетных разделов (доходы/расходы/источники) по уровню.
+
+        Возвращает DataFrame с колонками:
+        уровень, v1..vN (сумма по выбранным фильтрам).
+        """
+        table_map = {
+            'доходы': 'income_values',
+            'расходы': 'expense_values',
+            'источники_финансирования': 'source_values',
+        }
+        if section not in table_map:
+            raise ValueError(f'Неизвестный раздел: {section}')
+
+        table = table_map[section]
+        value_cols = Form0503317Constants.BUDGET_COLUMNS
+
+        with sqlite3.connect(self.db_path) as conn:
+            where_clauses = ["project_id = ?"]
+            params: list = [project_id]
+            if revision_id is None:
+                where_clauses.append("revision_id IS NULL")
+            else:
+                where_clauses.append("revision_id = ?")
+                params.append(revision_id)
+
+            if budget_type:
+                where_clauses.append("budget_type = ?")
+                params.append(budget_type)
+            if data_type:
+                where_clauses.append("data_type = ?")
+                params.append(data_type)
+
+            sums = ", ".join(f"SUM(v{i+1}) AS {col}" for i, col in enumerate(value_cols))
+            query = f'''
+                SELECT level AS уровень, {sums}
+                FROM {table}
+                WHERE {' AND '.join(where_clauses)}
+                GROUP BY level
+                ORDER BY level
+            '''
+            return pd.read_sql_query(query, conn, params=params)
+
+    def summarize_consolidated_by_level(
+        self,
+        project_id: int,
+        revision_id: Optional[int] = None,
+        data_type: str = 'вычисленные',
+    ) -> pd.DataFrame:
+        """
+        Агрегация консолидируемых расчётов по уровню.
+
+        Возвращает DataFrame с колонками:
+        уровень, v1..vN (сумма по выбранным фильтрам).
+        """
+        value_cols = Form0503317Constants.CONSOLIDATED_COLUMNS
+        with sqlite3.connect(self.db_path) as conn:
+            where_clauses = ["project_id = ?"]
+            params: list = [project_id]
+            if revision_id is None:
+                where_clauses.append("revision_id IS NULL")
+            else:
+                where_clauses.append("revision_id = ?")
+                params.append(revision_id)
+
+            if data_type:
+                where_clauses.append("data_type = ?")
+                params.append(data_type)
+
+            sums = ", ".join(f"SUM(v{i+1}) AS {col}" for i, col in enumerate(value_cols))
+            query = f'''
+                SELECT level AS уровень, {sums}
+                FROM consolidated_values
+                WHERE {' AND '.join(where_clauses)}
+                GROUP BY level
+                ORDER BY level
+            '''
+            return pd.read_sql_query(query, conn, params=params)
+    
+    def calculate_sums_from_values(
+        self,
+        project_id: int,
+        revision_id: int,
+        reference_data_доходы: Optional[pd.DataFrame] = None,
+        reference_data_источники: Optional[pd.DataFrame] = None,
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Расчет сумм напрямую из нормализованных данных *_values без преобразования в старый формат.
+        
+        Возвращает словарь с ключами:
+        - 'доходы_data', 'расходы_data', 'источники_финансирования_data', 'консолидируемые_расчеты_data'
+        
+        Каждый раздел содержит список словарей с полями:
+        - 'код_классификации', 'наименование_показателя', 'код_строки', 'раздел'
+        - 'утвержденный', 'исполненный' (словари со значениями по бюджетным колонкам)
+        - 'расчетный_утвержденный_...', 'расчетный_исполненный_...' (вычисленные значения)
+        - 'уровень' (пересчитанный на основе справочников)
+        """
+        from models.form_0503317 import Form0503317
+        
+        # Загружаем данные из нормализованных таблиц как DataFrame
+        income_df = self.load_income_values_df(project_id, revision_id)
+        expense_df = self.load_expense_values_df(project_id, revision_id)
+        source_df = self.load_source_values_df(project_id, revision_id)
+        consolidated_df = self.load_consolidated_values_df(project_id, revision_id)
+        
+        # Создаем временную форму для расчетов
+        form = Form0503317()
+        form.reference_data_доходы = reference_data_доходы
+        form.reference_data_источники = reference_data_источники
+        
+        result = {}
+        
+        # Обрабатываем каждый раздел
+        for section_name, df, table_type in [
+            ('доходы_data', income_df, 'budget'),
+            ('расходы_data', expense_df, 'budget'),
+            ('источники_финансирования_data', source_df, 'budget'),
+            ('консолидируемые_расчеты_data', consolidated_df, 'consolidated'),
+        ]:
+            if df.empty:
+                result[section_name] = []
+                continue
+            
+            # Преобразуем DataFrame в формат для расчетов
+            if table_type == 'budget':
+                section_data = self._convert_budget_df_to_calculation_format(df, section_name, form)
+            else:
+                section_data = self._convert_consolidated_df_to_calculation_format(df, form)
+            
+            if not section_data:
+                result[section_name] = []
+                continue
+            
+            # Выполняем расчеты
+            if table_type == 'budget':
+                df_calc = form._prepare_dataframe_for_calculation(section_data, form.constants.BUDGET_COLUMNS)
+                if section_name == 'источники_финансирования_data':
+                    df_with_sums = form._calculate_sources_sums(df_calc, form.constants.BUDGET_COLUMNS)
+                else:
+                    df_with_sums = form._calculate_standard_sums(df_calc, form.constants.BUDGET_COLUMNS)
+                result[section_name] = df_with_sums.to_dict('records')
+            else:
+                df_calc = form._prepare_consolidated_dataframe_for_calculation(
+                    section_data, form.constants.CONSOLIDATED_COLUMNS)
+                df_with_sums = form._calculate_consolidated_sums(df_calc)
+                result[section_name] = df_with_sums.to_dict('records')
+        
+        return result
+    
+    def _convert_budget_df_to_calculation_format(
+        self,
+        df: pd.DataFrame,
+        section_name: str,
+        form: Any,
+    ) -> List[Dict[str, Any]]:
+        """Преобразует DataFrame из *_values в формат для расчетов."""
+        if df.empty:
+            return []
+        
+        # Группируем по уникальным строкам (classification_code, indicator_name, line_code)
+        grouped = df.groupby(['код_классификации', 'наименование_показателя', 'код_строки'])
+        
+        result = []
+        budget_cols = form.constants.BUDGET_COLUMNS
+        
+        for (code, name, line_code), group in grouped:
+            row_data = {
+                'код_классификации': code or '',
+                'наименование_показателя': name or '',
+                'код_строки': line_code or '',
+                'раздел': section_name.replace('_data', ''),
+                'утвержденный': {},
+                'исполненный': {},
+            }
+            
+            # Используем кэшированный уровень из БД, если есть
+            # Иначе определяем заново
+            level = None
+            source_row = None
+            for _, r in group.iterrows():
+                if pd.notna(r.get('level')):
+                    level = int(r['level'])
+                if pd.notna(r.get('source_row')):
+                    source_row = int(r['source_row'])
+                break  # Берем из первой строки группы
+            
+            if level is None:
+                level = form._determine_level(
+                    row_data['код_классификации'],
+                    row_data['раздел'],
+                    row_data['наименование_показателя']
+                )
+            row_data['уровень'] = level
+            if source_row is not None:
+                row_data['исходная_строка'] = source_row
+            
+            # Собираем оригинальные и вычисленные значения
+            for _, r in group.iterrows():
+                budget_type = r['тип_бюджета']
+                data_type = r['тип_данных']
+                
+                values_dict = {}
+                for i, col in enumerate(budget_cols):
+                    val = r.get(f'v{i+1}')
+                    if val is not None:
+                        values_dict[col] = val
+                
+                if data_type == 'оригинальные':
+                    row_data[budget_type] = values_dict
+                elif data_type == 'вычисленные':
+                    prefix = 'расчетный_утвержденный_' if budget_type == 'утвержденный' else 'расчетный_исполненный_'
+                    for col, val in values_dict.items():
+                        row_data[f'{prefix}{col}'] = val
+            
+            result.append(row_data)
+        
+        return result
+    
+    def _convert_consolidated_df_to_calculation_format(
+        self,
+        df: pd.DataFrame,
+        form: Any,
+    ) -> List[Dict[str, Any]]:
+        """Преобразует DataFrame из consolidated_values в формат для расчетов."""
+        if df.empty:
+            return []
+        
+        # Группируем по уникальным строкам
+        grouped = df.groupby(['код_классификации', 'наименование_показателя', 'код_строки'])
+        
+        result = []
+        consolidated_cols = form.constants.CONSOLIDATED_COLUMNS
+        
+        for (code, name, line_code), group in grouped:
+            row_data = {
+                'код_классификации': code or '',
+                'наименование_показателя': name or '',
+                'код_строки': line_code or '',
+                'раздел': 'консолидируемые_расчеты',
+                'поступления': {},
+            }
+            
+            # Используем кэшированный уровень из БД, если есть
+            # Иначе определяем заново
+            level = None
+            source_row = None
+            for _, r in group.iterrows():
+                if r.get('level') is not None:
+                    level = int(r['level'])
+                if r.get('source_row') is not None:
+                    source_row = int(r['source_row'])
+                break  # Берем из первой строки группы
+            
+            if level is None:
+                level = form._determine_consolidated_level(row_data['код_строки'])
+            row_data['уровень'] = level
+            if source_row is not None:
+                row_data['исходная_строка'] = source_row
+            
+            # Собираем оригинальные и вычисленные значения
+            for _, r in group.iterrows():
+                data_type = r['тип_данных']
+                
+                values_dict = {}
+                for i, col in enumerate(consolidated_cols):
+                    val = r.get(f'v{i+1}')
+                    if val is not None:
+                        values_dict[col] = val
+                
+                if data_type == 'оригинальные':
+                    row_data['поступления'] = values_dict
+                elif data_type == 'вычисленные':
+                    for col, val in values_dict.items():
+                        row_data[f'расчетный_поступления_{col}'] = val
+            
+            result.append(row_data)
+        
+        return result
     
     def load_revision_metadata(self, revision_id: int) -> Dict[str, Any]:
         """Загрузка метаданных ревизии из отдельной таблицы"""
@@ -1208,3 +2108,68 @@ class DatabaseManager:
             metadata = self.load_revision_metadata(revision_id)
             data.update(metadata)
             return data
+    
+    def update_calculated_values(self, project_id: int, revision_id: int, calculated_data: Dict[str, List[Dict[str, Any]]]):
+        """
+        Обновление только вычисленных значений в таблицах *_values.
+        calculated_data должен содержать ключи: 'доходы_data', 'расходы_data', 
+        'источники_финансирования_data', 'консолидируемые_расчеты_data'
+        с данными, содержащими поля вида 'расчетный_утвержденный_...', 'расчетный_исполненный_...'
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            budget_cols = Form0503317Constants.BUDGET_COLUMNS
+            consolidated_cols = Form0503317Constants.CONSOLIDATED_COLUMNS
+            
+            # Обновляем вычисленные значения для бюджетных разделов
+            for section_key, table_name in [
+                ('доходы_data', 'income_values'),
+                ('расходы_data', 'expense_values'),
+                ('источники_финансирования_data', 'source_values'),
+            ]:
+                if section_key not in calculated_data:
+                    continue
+                
+                section_rows = calculated_data[section_key]
+                if not section_rows:
+                    continue
+                
+                # Удаляем старые вычисленные значения для этой ревизии
+                cursor.execute(
+                    f'DELETE FROM {table_name} WHERE project_id=? AND revision_id=? AND data_type=?',
+                    (project_id, revision_id, 'вычисленные')
+                )
+                
+                # Сохраняем новые вычисленные значения
+                self._save_section_values(
+                    cursor=cursor,
+                    project_id=project_id,
+                    revision_id=revision_id,
+                    section_rows=section_rows,
+                    table_name=table_name,
+                    budget_columns=budget_cols,
+                    only_calculated=True,  # Сохраняем только вычисленные значения
+                )
+            
+            # Обновляем вычисленные значения для консолидируемых расчетов
+            if 'консолидируемые_расчеты_data' in calculated_data:
+                consolidated_rows = calculated_data['консолидируемые_расчеты_data']
+                if consolidated_rows:
+                    # Удаляем старые вычисленные значения
+                    cursor.execute(
+                        'DELETE FROM consolidated_values WHERE project_id=? AND revision_id=? AND data_type=?',
+                        (project_id, revision_id, 'вычисленные')
+                    )
+                    
+                    # Сохраняем новые вычисленные значения
+                    self._save_consolidated_values(
+                        cursor=cursor,
+                        project_id=project_id,
+                        revision_id=revision_id,
+                        section_rows=consolidated_rows,
+                        table_name='consolidated_values',
+                        consolidated_columns=consolidated_cols,
+                        only_calculated=True,
+                    )
+            
+            conn.commit()

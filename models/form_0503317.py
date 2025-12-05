@@ -103,9 +103,12 @@ class StyleConstants:
 class Form0503317(BaseFormModel):
     """Модель для формы 0503317"""
     
-    def __init__(self, revision: str = "1.0"):
+    def __init__(self, revision: str = "1.0", column_mapping: Optional[dict] = None):
         super().__init__(FormType.FORM_0503317, revision)
         self.constants = Form0503317Constants()
+        if column_mapping:
+            # Позволяем переопределять mapping колонок из справочника типов форм
+            self.constants.COLUMN_MAPPING = column_mapping
         self.meta_info = {}
         self.доходы_data = []
         self.расходы_data = []
@@ -447,7 +450,6 @@ class Form0503317(BaseFormModel):
             'раздел': 'консолидируемые_расчеты',
             'поступления': поступления,
             'исходная_строка': row_idx + 1,
-            'mapping': mapping
         }
     
     def _determine_consolidated_level(self, code: str) -> int:
@@ -537,7 +539,6 @@ class Form0503317(BaseFormModel):
             'утвержденный': утвержденный,
             'исполненный': исполненный,
             'исходная_строка': row_idx + 1,
-            'mapping': mapping
         }
     
     def _extract_budget_data(self, sheet: pd.DataFrame, row_idx: int, columns: list, budget_columns: list) -> dict:
@@ -994,7 +995,7 @@ class Form0503317(BaseFormModel):
         """Применение проверки к строке консолидируемых расчетов"""
         level = row_data['уровень']
         original_row = row_data['исходная_строка']
-        mapping = row_data['mapping']
+        mapping = self.constants.COLUMN_MAPPING['консолидируемые_расчеты']
         
         if level in StyleConstants.LEVEL_COLORS:
             self._fill_consolidated_row_with_level_color(ws, original_row, level)
@@ -1144,15 +1145,15 @@ class Form0503317(BaseFormModel):
         zero_columns = self.zero_columns.get(section_name, [])
         
         for row_idx, (_, row_data) in enumerate(df.iterrows(), 0):
-            self._apply_row_validation(ws, row_data, budget_columns, zero_columns)
+            self._apply_row_validation(ws, row_data, budget_columns, zero_columns, section_name)
         
         self._hide_zero_columns(ws, section_name, zero_columns)
     
-    def _apply_row_validation(self, ws, row_data: dict, budget_columns: list, zero_columns: list):
+    def _apply_row_validation(self, ws, row_data: dict, budget_columns: list, zero_columns: list, section_name: str):
         """Применение проверки к строке"""
         level = row_data['уровень']
         original_row = row_data['исходная_строка']
-        mapping = row_data['mapping']
+        mapping = self.constants.COLUMN_MAPPING[section_name]
         
         if level in StyleConstants.LEVEL_COLORS:
             self._fill_row_with_level_color(ws, original_row, level)

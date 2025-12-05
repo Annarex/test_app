@@ -3,6 +3,8 @@ from typing import List, Optional, Dict, Any
 import os
 from pathlib import Path
 import pandas as pd
+import sqlite3
+import json
 
 from models.database import DatabaseManager
 from models.base_models import (
@@ -388,7 +390,16 @@ class MainController(QObject):
 
         # Инициализируем форму по типу
         if form_type_code == "0503317" or form_type_code == FormType.FORM_0503317.value:
-            self.current_form = Form0503317(revision_str)
+            # Пытаемся взять mapping колонок из справочника форм, если он задан
+            column_mapping = None
+            try:
+                form_meta_from_db = self.db_manager.get_form_type_meta_by_code("0503317")
+                if form_meta_from_db and form_meta_from_db.column_mapping:
+                    column_mapping = form_meta_from_db.column_mapping
+            except Exception:
+                column_mapping = None
+
+            self.current_form = Form0503317(revision_str, column_mapping=column_mapping)
             print(f"Форма 0503317 инициализирована с ревизией {revision_str}")
         else:
             self.current_form = None
@@ -567,8 +578,18 @@ class MainController(QObject):
                 return
         
         try:
-            # Выполняем расчет
-            calculation_results = self.current_form.calculate_sums()
+            # Оптимизация: используем расчет напрямую из нормализованных данных БД
+            # вместо преобразования в старый формат и обратно
+            if self.current_revision_id:
+                calculation_results = self.db_manager.calculate_sums_from_values(
+                    project_id=self.current_project.id,
+                    revision_id=self.current_revision_id,
+                    reference_data_доходы=reference_data_доходы,
+                    reference_data_источники=reference_data_источники,
+                )
+            else:
+                # Fallback на старый метод, если ревизия не загружена
+                calculation_results = self.current_form.calculate_sums()
             
             # Обновляем данные проекта (только разделы, meta_info и результат_исполнения_data остаются)
             self.current_project.data.update(calculation_results)
@@ -592,19 +613,33 @@ class MainController(QObject):
             # Сохраняем обновленные данные ревизии (включая meta_info и результат_исполнения_data)
             if self.current_revision_id:
                 try:
-                    # Формируем полные данные ревизии, сохраняя meta_info и результат_исполнения_data
-                    revision_data = {
-                        'meta_info': self.current_project.data.get('meta_info', {}),
-                        'результат_исполнения_data': self.current_project.data.get('результат_исполнения_data'),
-                        **calculation_results  # Данные разделов из расчета
-                    }
-                    self.db_manager.save_revision_data(
+                    # Оптимизация: обновляем только вычисленные значения напрямую в БД
+                    # без полного пересохранения всех данных
+                    self.db_manager.update_calculated_values(
                         self.current_project.id,
                         self.current_revision_id,
-                        revision_data
+                        calculation_results
                     )
+                    
+                    # Также обновляем meta_info и результат_исполнения_data, если они изменились
+                    meta_info = self.current_project.data.get('meta_info')
+                    результат_исполнения_data = self.current_project.data.get('результат_исполнения_data')
+                    if meta_info or результат_исполнения_data:
+                        with sqlite3.connect(self.db_manager.db_path) as conn:
+                            cursor = conn.cursor()
+                            cursor.execute('DELETE FROM revision_metadata WHERE revision_id=?', (self.current_revision_id,))
+                            meta_info_json = json.dumps(meta_info, ensure_ascii=False, default=str) if meta_info else None
+                            результат_исполнения_json = json.dumps(результат_исполнения_data, ensure_ascii=False, default=str) if результат_исполнения_data else None
+                            if meta_info_json or результат_исполнения_json:
+                                cursor.execute(
+                                    'INSERT INTO revision_metadata (revision_id, meta_info, результат_исполнения_data) VALUES (?, ?, ?)',
+                                    (self.current_revision_id, meta_info_json, результат_исполнения_json)
+                                )
+                            conn.commit()
                 except Exception as e:
                     print(f"Ошибка сохранения данных ревизии после расчёта: {e}")
+                    import traceback
+                    traceback.print_exc()
             
             print("Расчет агрегированных сумм завершен")
             self.calculation_completed.emit(calculation_results)
@@ -638,6 +673,36 @@ class MainController(QObject):
             return False
         
         try:
+            # Пытаемся использовать уже сохранённые нормализованные данные из БД (с кэшированными level/source_row),
+            # чтобы не выполнять повторный парсинг Excel. Если что-то пойдет не так — откатимся к parse_excel.
+            refreshed = False
+            if self.current_revision_id:
+                try:
+                    values_data = self.db_manager.load_project_data_values(
+                        self.current_project.id,
+                        self.current_revision_id,
+                    )
+                    # Обновляем данные формы из БД
+                    self.current_form.доходы_data = values_data.get('доходы_data', [])
+                    self.current_form.расходы_data = values_data.get('расходы_data', [])
+                    self.current_form.источники_финансирования_data = values_data.get('источники_финансирования_data', [])
+                    self.current_form.консолидируемые_расчеты_data = values_data.get('консолидируемые_расчеты_data', [])
+                    # Обновляем кэш проекта
+                    self.current_project.data.update(values_data)
+                    refreshed = True
+                except Exception as e:
+                    print(f"Не удалось загрузить данные формы из *_values для экспорта, fallback на parse_excel: {e}")
+
+            if not refreshed:
+                reference_data_доходы = self.references.get('доходы')
+                reference_data_источники = self.references.get('источники')
+                if isinstance(self.current_form, Form0503317):
+                    self.current_form.parse_excel(
+                        source_file_path,
+                        reference_data_доходы,
+                        reference_data_источники,
+                    )
+
             output_file = self.current_form.export_validation(
                 source_file_path, 
                 output_path

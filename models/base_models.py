@@ -161,15 +161,25 @@ class FormTypeMeta:
         self.code: str = ""        # '0503317', '0503314', ...
         self.name: str = ""        # Читаемое название
         self.periodicity: str = "" # 'yearly', 'quarterly', 'half_year', ...
+        self.column_mapping: Optional[Dict[str, Any]] = None  # Mapping колонок для экспорта/валидации
         self.is_active: bool = True
 
     @classmethod
     def from_row(cls, row: Dict[str, Any]) -> "FormTypeMeta":
+        import json
         f = cls()
         f.id = row.get("id")
         f.code = (row.get("code") or "").strip()
         f.name = (row.get("name") or "").strip()
         f.periodicity = (row.get("periodicity") or "").strip()
+        column_mapping_str = row.get("column_mapping")
+        if column_mapping_str:
+            try:
+                f.column_mapping = json.loads(column_mapping_str)
+            except (json.JSONDecodeError, TypeError):
+                f.column_mapping = None
+        else:
+            f.column_mapping = None
         f.is_active = bool(row.get("is_active", 1))
         return f
 
