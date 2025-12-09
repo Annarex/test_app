@@ -21,6 +21,7 @@ from views.excel_viewer import ExcelViewer
 from views.reference_viewer import ReferenceViewer
 from views.dictionaries_dialog import DictionariesDialog
 from views.form_load_dialog import FormLoadDialog
+from views.calculation_errors_dialog import CalculationErrorsDialog
 
 class MainWindow(QMainWindow):
     """Главное окно приложения"""
@@ -36,6 +37,7 @@ class MainWindow(QMainWindow):
         self.projects_toggle_button = None
         self.projects_panel_last_size = 260
         self.reference_window = None
+        self.errors_dialog = None
         self.tree_headers = []
         self.tree_header_tooltips = []
         self.tree_column_mapping = {}
@@ -167,6 +169,15 @@ class MainWindow(QMainWindow):
         calculate_action.setStatusTip("Пересчитать агрегированные суммы")
         calculate_action.triggered.connect(self.calculate_sums)
         data_menu.addAction(calculate_action)
+        
+        data_menu.addSeparator()
+        
+        show_errors_action = QAction("&Ошибки расчетов...", self)
+        show_errors_action.setIcon(self.style().standardIcon(QStyle.SP_MessageBoxWarning))
+        show_errors_action.setShortcut("Ctrl+Shift+E")
+        show_errors_action.setStatusTip("Показать все ошибки расчетов по текущей ревизии")
+        show_errors_action.triggered.connect(self.show_calculation_errors)
+        data_menu.addAction(show_errors_action)
         
         data_menu.addSeparator()
         
@@ -809,6 +820,10 @@ class MainWindow(QMainWindow):
 
             # Загружаем метаданные
             self.load_metadata(project)
+            
+            # Обновляем окно ошибок, если оно открыто
+            if self.errors_dialog and self.errors_dialog.isVisible():
+                self.errors_dialog.load_errors(project.data)
 
             # Загружаем файл в просмотрщик Excel:
             # Используем исходный файл ревизии (form_revisions.file_path), а не экспортированный
@@ -1785,21 +1800,56 @@ class MainWindow(QMainWindow):
     
     def show_reference_viewer(self):
         """Показать просмотрщик справочников в отдельном окне"""
-        from PyQt5.QtWidgets import QMainWindow
+        from PyQt5.QtWidgets import QMainWindow, QToolBar
 
         if self.reference_window is None:
             self.reference_window = QMainWindow(self)
             self.reference_window.setWindowTitle("Справочники")
             self.reference_window.resize(900, 600)
+            # Включаем стандартные кнопки окна (включая максимизацию)
+            self.reference_window.setWindowFlags(self.reference_window.windowFlags() | Qt.WindowMaximizeButtonHint)
+            self.reference_window.is_fullscreen = False
 
             self.reference_viewer = ReferenceViewer()
             self.reference_window.setCentralWidget(self.reference_viewer)
+            
+            # Обработка F11 для полноэкранного режима
+            # Создаем обработчик событий для окна справочников
+            def key_press_handler(event):
+                if event.key() == Qt.Key_F11:
+                    self._toggle_reference_fullscreen()
+                else:
+                    QMainWindow.keyPressEvent(self.reference_window, event)
+            
+            self.reference_window.keyPressEvent = key_press_handler
 
+        # Устанавливаем callback для обновления данных из контроллера
+        def refresh_callback():
+            # Обновляем справочники в контроллере
+            self.controller.refresh_references()
+            # Обновляем данные в окне справочников
+            self.reference_viewer.load_references(self.controller.references)
+        
+        self.reference_viewer.refresh_callback = refresh_callback
+        
         # Загружаем актуальные справочники и показываем окно
         self.reference_viewer.load_references(self.controller.references)
         self.reference_window.show()
         self.reference_window.raise_()
         self.reference_window.activateWindow()
+    
+    def _toggle_reference_fullscreen(self):
+        """Переключение полноэкранного режима для окна справочников"""
+        if self.reference_window is None:
+            return
+        
+        if self.reference_window.is_fullscreen:
+            self.reference_window.showNormal()
+            self.reference_window.is_fullscreen = False
+        else:
+            self.reference_window.showFullScreen()
+            self.reference_window.is_fullscreen = True
+    
 
     def show_config_dictionaries(self):
         """Показать диалог редактирования справочников конфигурации"""
@@ -1944,6 +1994,9 @@ class MainWindow(QMainWindow):
         # Обновляем отображение данных
         if self.controller.current_project:
             self.load_project_data_to_tree(self.controller.current_project)
+            # Обновляем окно ошибок, если оно открыто
+            if self.errors_dialog and self.errors_dialog.isVisible():
+                self.errors_dialog.load_errors(self.controller.current_project.data)
     
     def export_validation(self):
         """Экспорт формы с проверкой"""
@@ -2064,6 +2117,27 @@ class MainWindow(QMainWindow):
             "</ul>"
         )
     
+    def show_calculation_errors(self):
+        """Показать окно с ошибками расчетов"""
+        if not self.controller.current_project or not self.controller.current_project.data:
+            QMessageBox.warning(self, "Предупреждение", "Нет загруженного проекта или данных для анализа ошибок")
+            return
+        
+        if self.errors_dialog is None:
+            self.errors_dialog = CalculationErrorsDialog(self)
+            # Устанавливаем callback для обновления ошибок
+            self.errors_dialog._refresh_callback = lambda: self.errors_dialog.load_errors(
+                self.controller.current_project.data if self.controller.current_project else {}
+            )
+        
+        # Загружаем ошибки из текущих данных проекта
+        self.errors_dialog.load_errors(self.controller.current_project.data)
+        
+        # Показываем окно
+        self.errors_dialog.show()
+        self.errors_dialog.raise_()
+        self.errors_dialog.activateWindow()
+    
     def show_shortcuts(self):
         """Показать список горячих клавиш"""
         shortcuts_text = """
@@ -2078,6 +2152,7 @@ class MainWindow(QMainWindow):
         <tr><td>Удалить проект</td><td><b>Ctrl+Delete</b></td></tr>
         <tr><td>Обновить список</td><td><b>F5</b></td></tr>
         <tr><td>Пересчитать суммы</td><td><b>F9</b></td></tr>
+        <tr><td>Ошибки расчетов</td><td><b>Ctrl+Shift+E</b></td></tr>
         <tr><td>Скрыть нулевые столбцы</td><td><b>Ctrl+H</b></td></tr>
         <tr><td>Просмотр справочников</td><td><b>Ctrl+R</b></td></tr>
         <tr><td>Справочники конфигурации</td><td><b>Ctrl+D</b></td></tr>

@@ -1,7 +1,7 @@
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, 
                              QTableWidget, QTableWidgetItem, QLabel, QComboBox,
-                             QHeaderView, QPushButton, QMessageBox, QTextEdit)
-from PyQt5.QtCore import Qt
+                             QHeaderView, QPushButton, QMessageBox, QTextEdit, QApplication)
+from PyQt5.QtCore import Qt, QTimer
 import pandas as pd
 
 class ReferenceViewer(QWidget):
@@ -10,6 +10,7 @@ class ReferenceViewer(QWidget):
     def __init__(self):
         super().__init__()
         self.references = {}
+        self.refresh_callback = None  # Callback для обновления данных из контроллера
         self.init_ui()
     
     def init_ui(self):
@@ -89,23 +90,49 @@ class ReferenceViewer(QWidget):
     def display_reference_table(self, df):
         """Отображение справочника в таблице"""
         if df is None or df.empty:
+            self.ref_table.setRowCount(0)
+            self.ref_table.setColumnCount(0)
             return
         
-        # Настраиваем таблицу
-        self.ref_table.setRowCount(len(df))
-        self.ref_table.setColumnCount(len(df.columns))
-        self.ref_table.setHorizontalHeaderLabels(df.columns.tolist())
+        # Отключаем сортировку и обновление для ускорения
+        self.ref_table.setSortingEnabled(False)
+        self.ref_table.setUpdatesEnabled(False)
         
-        # Заполняем данные
-        for row_idx, row in df.iterrows():
-            for col_idx, value in enumerate(row):
-                item = QTableWidgetItem(str(value) if pd.notna(value) else "")
-                self.ref_table.setItem(row_idx, col_idx, item)
-        
-        # Настраиваем заголовки
-        header = self.ref_table.horizontalHeader()
-        for i in range(len(df.columns)):
-            header.setSectionResizeMode(i, QHeaderView.ResizeToContents)
+        try:
+            # Настраиваем таблицу
+            row_count = len(df)
+            col_count = len(df.columns)
+            
+            self.ref_table.setRowCount(row_count)
+            self.ref_table.setColumnCount(col_count)
+            self.ref_table.setHorizontalHeaderLabels(df.columns.tolist())
+            
+            # Заполняем данные порциями для предотвращения зависания UI
+            batch_size = 100  # Количество строк за один проход
+            total_batches = (row_count + batch_size - 1) // batch_size
+            
+            for batch_idx in range(total_batches):
+                start_idx = batch_idx * batch_size
+                end_idx = min(start_idx + batch_size, row_count)
+                
+                # Заполняем батч данных
+                for row_idx in range(start_idx, end_idx):
+                    row = df.iloc[row_idx]
+                    for col_idx, value in enumerate(row):
+                        item = QTableWidgetItem(str(value) if pd.notna(value) else "")
+                        self.ref_table.setItem(row_idx, col_idx, item)
+                
+                # Обновляем UI после каждого батча
+                QApplication.processEvents()
+            
+            # Настраиваем заголовки
+            header = self.ref_table.horizontalHeader()
+            for i in range(col_count):
+                header.setSectionResizeMode(i, QHeaderView.ResizeToContents)
+        finally:
+            # Включаем обратно обновление и сортировку
+            self.ref_table.setUpdatesEnabled(True)
+            self.ref_table.setSortingEnabled(True)
     
     def display_reference_info(self, df, ref_type):
         """Отображение информации о справочнике"""
@@ -151,5 +178,10 @@ class ReferenceViewer(QWidget):
     
     def refresh_data(self):
         """Обновление данных"""
+        # Если есть callback для обновления данных из контроллера, вызываем его
+        if self.refresh_callback:
+            self.refresh_callback()
+        
+        # Обновляем отображение текущего справочника
         if self.ref_combo.currentText():
             self.on_reference_changed(self.ref_combo.currentText())
