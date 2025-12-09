@@ -153,8 +153,6 @@ class MainController(QObject):
                 logger.warning("Справочник доходов пуст или не найден")
         except Exception as e:
             logger.error(f"Ошибка загрузки справочника доходов из SQL: {e}", exc_info=True)
-            import traceback
-            traceback.print_exc()
 
         try:
             sources_df = self.db_manager.load_sources_reference_df()
@@ -165,8 +163,6 @@ class MainController(QObject):
                 logger.warning("Справочник источников пуст или не найден")
         except Exception as e:
             logger.error(f"Ошибка загрузки справочника источников из SQL: {e}", exc_info=True)
-            import traceback
-            traceback.print_exc()
         
         return references
     
@@ -361,8 +357,6 @@ class MainController(QObject):
                             logger.info("Уровни и значения пересчитаны на основе справочников")
                 except Exception as e:
                     logger.error(f"Ошибка пересчета уровней и значений: {e}", exc_info=True)
-                    import traceback
-                    traceback.print_exc()
                     # Не блокируем загрузку ревизии из-за ошибки пересчета
             
             # current_revision_id уже установлен выше, перед инициализацией формы
@@ -1153,7 +1147,7 @@ class MainController(QObject):
                     .str.replace('\u00A0', '', regex=False)
                     .str.zfill(20)
                 )
-                print(f"Колонка '{code_column}' нормализована для справочника '{name}'")
+                logger.debug(f"Колонка '{code_column}' нормализована для справочника '{name}'")
             
             # Проверяем необходимые колонки
             required_columns = []
@@ -1190,12 +1184,12 @@ class MainController(QObject):
             references = self.db_manager.load_references()
             self.references_updated.emit(references)
             
-            print(f"Справочник '{name}' успешно загружен. Уровни: {df['уровень_кода'].unique()}")
+            logger.info(f"Справочник '{name}' успешно загружен. Уровни: {df['уровень_кода'].unique()}")
             return True
             
         except Exception as e:
             self.error_occurred.emit(f"Ошибка загрузки справочника: {str(e)}")
-            print(f"Ошибка загрузки справочника: {e}")
+            logger.error(f"Ошибка загрузки справочника: {e}", exc_info=True)
             return False
     
     def delete_project(self, project_id: int):

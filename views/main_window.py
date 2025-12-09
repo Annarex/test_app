@@ -13,6 +13,7 @@ from pathlib import Path
 import pandas as pd
 
 from controllers.main_controller import MainController
+from logger import logger
 from models.form_0503317 import Form0503317Constants
 from views.project_dialog import ProjectDialog
 from views.reference_dialog import ReferenceDialog
@@ -511,7 +512,7 @@ class MainWindow(QMainWindow):
                                     revision_id = rev.get("revision_id")
                                     rev_item.setData(0, Qt.UserRole + 1, revision_id)
                                     if revision_id:
-                                        print(
+                                        logger.debug(
                                             f"Сохранена ревизия в дереве: "
                                             f"revision_id={revision_id}, project_id={rev.get('project_id')}, revision={rev.get('revision')}"
                                         )
@@ -577,15 +578,15 @@ class MainWindow(QMainWindow):
             # Подтягиваем параметры формы из ревизии для последующей загрузки файлов
             self.controller.set_form_params_from_revision(revision_id)
             # Загружаем конкретную ревизию
-            print(f"Загрузка ревизии {revision_id} для проекта {project_id}")
+            logger.info(f"Загрузка ревизии {revision_id} для проекта {project_id}")
             self.controller.load_revision(revision_id, project_id)
         else:
             # Клик по проекту/форме/периоду/заглушке — выбираем проект, чтобы можно было загрузить новую форму
             if project_id:
-                print(f"Выбор проекта {project_id}")
+                logger.debug(f"Выбор проекта {project_id}")
                 self.controller.project_controller.load_project(project_id)
             else:
-                print("Проект не определён для выбранного узла")
+                logger.warning("Проект не определён для выбранного узла")
 
     def show_project_context_menu(self, position):
         """Контекстное меню для дерева проектов"""
@@ -768,9 +769,7 @@ class MainWindow(QMainWindow):
                         status_text = getattr(project.status, "value", str(project.status)) if project.status else "—"
                         form_text = getattr(project.form_type, "value", str(project.form_type)) if project.form_type else "—"
                 except Exception as e:
-                    print(f"Ошибка получения информации о ревизии: {e}")
-                    import traceback
-                    traceback.print_exc()
+                    logger.error(f"Ошибка получения информации о ревизии: {e}", exc_info=True)
                     # Fallback на старые поля проекта
                     revision_text = project.revision or "—"
                     status_text = getattr(project.status, "value", str(project.status)) if project.status else "—"
@@ -791,7 +790,7 @@ class MainWindow(QMainWindow):
                     if municip_ref:
                         municipality_text = municip_ref.name or municipality_text
             except Exception as e:
-                print(f"Ошибка получения МО для проекта {project.id}: {e}")
+                logger.warning(f"Ошибка получения МО для проекта {project.id}: {e}", exc_info=True)
 
             # Обновляем информацию о проекте
             info_text = (
@@ -822,12 +821,10 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage(f"Проект '{project.name}' загружен")
         except Exception as e:
             error_msg = f"Ошибка при загрузке проекта: {e}"
-            print(error_msg)
+            logger.error(error_msg, exc_info=True)
             self.status_bar.setVisible(True)
             self.status_bar.showMessage(error_msg)
             self.progress_bar.setVisible(False)
-            import traceback
-            traceback.print_exc()
     
     def load_project_data_to_tree(self, project):
         """Загрузка данных проекта в древовидное представление"""
@@ -894,10 +891,8 @@ class MainWindow(QMainWindow):
                 self.status_bar.showMessage(f"Раздел '{self.current_section}' не найден в данных проекта")
         except Exception as e:
             error_msg = f"Ошибка загрузки данных в дерево: {e}"
-            print(error_msg)
+            logger.error(error_msg, exc_info=True)
             self.status_bar.showMessage(error_msg)
-            import traceback
-            traceback.print_exc()
 
     def load_project_data_to_table(self, section_key: str, data):
         """Загрузка данных проекта в табличное представление (все столбцы)"""
@@ -1155,7 +1150,7 @@ class MainWindow(QMainWindow):
                     pass
                 header.sectionResized.connect(self._on_tree_header_section_resized)
         except Exception as e:
-            print(f"Ошибка подключения обработчика sectionResized: {e}")
+            logger.warning(f"Ошибка подключения обработчика sectionResized: {e}", exc_info=True)
 
         # Для консолидируемых расчетов колонку "Код классификации" не показываем
         if section_name == "Консолидируемые расчеты" and len(display_headers) > 2:
@@ -1199,6 +1194,7 @@ class MainWindow(QMainWindow):
             new_height = line_height * max_lines + 6
             header.setFixedHeight(new_height)
         except Exception as e:
+            logger.warning(f"Ошибка обновления высоты заголовка дерева: {e}", exc_info=True)
             # В случае ошибки используем минимальную высоту
             try:
                 header = self.data_tree.header()
@@ -1213,7 +1209,7 @@ class MainWindow(QMainWindow):
         try:
             QTimer.singleShot(100, self._update_tree_header_height)
         except Exception as e:
-            print(f"Ошибка в _on_tree_header_section_resized: {e}")
+            logger.warning(f"Ошибка в _on_tree_header_section_resized: {e}", exc_info=True)
 
     def hide_zero_columns_in_tree(self, section_key: str, data):
         """
@@ -1384,7 +1380,7 @@ class MainWindow(QMainWindow):
                     items_created += 1
                 except Exception as e:
                     items_failed += 1
-                    print(f"Ошибка создания элемента дерева: {e}")
+                    logger.warning(f"Ошибка создания элемента дерева: {e}", exc_info=True)
                     continue
             
             # Разворачиваем уровень 0
@@ -1403,10 +1399,8 @@ class MainWindow(QMainWindow):
                 self.status_bar.showMessage("Не удалось построить дерево: все элементы содержат ошибки")
         except Exception as e:
             error_msg = f"Ошибка построения дерева: {e}"
-            print(error_msg)
+            logger.error(error_msg, exc_info=True)
             self.status_bar.showMessage(error_msg)
-            import traceback
-            traceback.print_exc()
     
     def create_tree_item(self, item, level_colors):
         """Создание элемента дерева"""
@@ -1490,7 +1484,7 @@ class MainWindow(QMainWindow):
                             if executed_start + idx < column_count:
                                 tree_item.setText(executed_start + idx, executed_value)
                     except Exception as e:
-                        print(f"Ошибка обработки несоответствий для колонки {col}: {e}")
+                        logger.warning(f"Ошибка обработки несоответствий для колонки {col}: {e}", exc_info=True)
                         pass
 
             elif column_type == "consolidated":
@@ -1538,9 +1532,7 @@ class MainWindow(QMainWindow):
                             if value_start + idx < column_count:
                                 tree_item.setText(value_start + idx, self.format_budget_value(original_value))
                     except Exception as e:
-                        print(f"Ошибка обработки несоответствий для консолидируемых расчетов, колонка {col}: {e}")
-                        import traceback
-                        traceback.print_exc()
+                        logger.warning(f"Ошибка обработки несоответствий для консолидируемых расчетов, колонка {col}: {e}", exc_info=True)
                         pass
             
             # Устанавливаем цвет фона
@@ -1572,9 +1564,7 @@ class MainWindow(QMainWindow):
             
             return tree_item
         except Exception as e:
-            print(f"Ошибка создания элемента дерева: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error(f"Ошибка создания элемента дерева: {e}", exc_info=True)
             # Возвращаем пустой элемент в случае ошибки
             column_count = max(self.data_tree.columnCount(), 1)
             tree_item = QTreeWidgetItem([""] * column_count)
@@ -1927,7 +1917,7 @@ class MainWindow(QMainWindow):
                 self.status_bar.showMessage("Ошибка загрузки формы")
         except Exception as e:
             error_msg = f"Ошибка обработки файла формы: {e}"
-            print(error_msg)
+            logger.error(error_msg, exc_info=True)
             QMessageBox.critical(self, "Ошибка", error_msg)
             self.status_bar.showMessage(error_msg)
         finally:

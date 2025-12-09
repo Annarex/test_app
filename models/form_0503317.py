@@ -6,6 +6,7 @@ import shutil
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 from .base_models import BaseFormModel, FormType
+from logger import logger
 
 class Form0503317Constants:
     """Константы для формы 0503317"""
@@ -146,9 +147,9 @@ class Form0503317(BaseFormModel):
         for sheet_name in self.constants.SHEETS:
             try:
                 sheets[sheet_name] = pd.read_excel(file_path, sheet_name=sheet_name, header=None)
-                print(f"Лист '{sheet_name}' загружен")
+                logger.debug(f"Лист '{sheet_name}' загружен")
             except Exception as e:
-                print(f"Лист '{sheet_name}' не найден: {e}")
+                logger.warning(f"Лист '{sheet_name}' не найден: {e}")
         
         if 'стр. 1-2' in sheets:
             self._extract_metadata(sheets['стр. 1-2'])
@@ -370,7 +371,7 @@ class Form0503317(BaseFormModel):
         start_row = self._find_section_start(sheet, 'консолидируемые_расчеты', search_column=1)
         
         if start_row is None:
-            print("Таблица консолидируемых расчетов не найдена")
+            logger.warning("Таблица консолидируемых расчетов не найдена")
             return
         
         table_start_row = start_row + 2
@@ -396,7 +397,7 @@ class Form0503317(BaseFormModel):
                 current_row += 1
         
         self.консолидируемые_расчеты_data = data_parts
-        print(f"Извлечено {len(data_parts)} записей из таблицы консолидируемых расчетов")
+        logger.info(f"Извлечено {len(data_parts)} записей из таблицы консолидируемых расчетов")
     
     def _extract_consolidated_part_data(self, sheet: pd.DataFrame, start_row: int, mapping: dict, consolidated_columns: list) -> list:
         """Извлечение данных части таблицы консолидируемых расчетов"""
@@ -474,10 +475,10 @@ class Form0503317(BaseFormModel):
         start_row = self._find_section_start(sheet, section_type, search_column)
         
         if start_row is None:
-            print(f"Раздел '{section_type}' не найден")
+            logger.warning(f"Раздел '{section_type}' не найден")
             return
             
-        print(f"Раздел '{section_type}' начинается со строки {start_row + 1}")
+        logger.debug(f"Раздел '{section_type}' начинается со строки {start_row + 1}")
         header_row = start_row + 3
         self._extract_table_data(sheet, header_row, section_type)
     
@@ -503,7 +504,7 @@ class Form0503317(BaseFormModel):
         if total_row_data:
             zero_columns = self._get_zero_columns(total_row_data, budget_columns)
             self.zero_columns[section_type] = zero_columns
-            print(f"Для раздела '{section_type}' нулевые столбцы: {zero_columns}")
+            logger.debug(f"Для раздела '{section_type}' нулевые столбцы: {zero_columns}")
     
     def _extract_row_data(self, sheet: pd.DataFrame, row_idx: int, mapping: dict, budget_columns: list, section_type: str) -> dict:
         """Извлечение данных строки"""
@@ -618,7 +619,7 @@ class Form0503317(BaseFormModel):
                     return int(level) if pd.notna(level) else 0
         
         except Exception as e:
-            print(f"Ошибка получения уровня из справочника: {e}")
+            logger.warning(f"Ошибка получения уровня из справочника: {e}", exc_info=True)
         
         return 0
     

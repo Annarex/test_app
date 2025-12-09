@@ -4,6 +4,8 @@ from pathlib import Path
 from typing import List, Optional, Dict, Any, Iterable, Tuple
 from datetime import datetime
 import pandas as pd
+import os
+from logger import logger
 from .base_models import (
     Project,
     Reference,
@@ -320,11 +322,11 @@ class DatabaseManager:
                         # Пробуем с .xlsx
                         file_path = ref_paths_xlsx.get(ref_type)
                         if not file_path or not file_path.exists():
-                            print(f"Автозагрузка справочника '{ref_type}': файл не найден по пути {file_path}")
+                            logger.warning(f"Автозагрузка справочника '{ref_type}': файл не найден по пути {file_path}")
                             continue
                     
                     try:
-                        print(f"Автозагрузка справочника '{ref_type}' из {file_path}")
+                        logger.info(f"Автозагрузка справочника '{ref_type}' из {file_path}")
                         
                         # Определяем имя справочника
                         name = file_path.stem
@@ -368,13 +370,11 @@ class DatabaseManager:
                         reference_data = df.to_dict('records')
                         self.save_reference_records(ref_type, reference_data)
                         
-                        print(f"Справочник '{ref_type}' успешно загружен автоматически")
+                        logger.info(f"Справочник '{ref_type}' успешно загружен автоматически")
                     except Exception as e:
-                        print(f"Ошибка автозагрузки справочника '{ref_type}': {e}")
-                        import traceback
-                        traceback.print_exc()
+                        logger.error(f"Ошибка автозагрузки справочника '{ref_type}': {e}", exc_info=True)
         except Exception as e:
-            print(f"Ошибка при проверке необходимости автозагрузки справочников: {e}")
+            logger.error(f"Ошибка при проверке необходимости автозагрузки справочников: {e}", exc_info=True)
             # Не блокируем работу приложения из-за ошибки автозагрузки
     
     def _seed_config_dictionaries(self, cursor: sqlite3.Cursor) -> None:
@@ -1193,7 +1193,7 @@ class DatabaseManager:
                             form_id = int(str(f.code).lstrip("0") or "0")
                         except ValueError:
                             # На крайний случай – не сохраняем такую строку, чтобы не ломать связи
-                            print(f"Невозможно определить ID для типа формы с кодом '{f.code}', запись пропущена")
+                            logger.warning(f"Невозможно определить ID для типа формы с кодом '{f.code}', запись пропущена")
                             continue
 
                     column_mapping_json = json.dumps(f.column_mapping, ensure_ascii=False) if f.column_mapping else None
@@ -1566,7 +1566,7 @@ class DatabaseManager:
                 os.remove(file_path)
         except Exception as e:
             # Не блокируем удаление ревизии из-за ошибки удаления файла
-            print(f"Не удалось удалить файл ревизии {file_path}: {e}")
+            logger.warning(f"Не удалось удалить файл ревизии {file_path}: {e}", exc_info=True)
     
     def delete_project(self, project_id: int):
         """Удаление проекта"""
@@ -2015,13 +2015,13 @@ class DatabaseManager:
                 
                 # Отладочный вывод: проверяем колонки DataFrame до расчета
                 calc_cols_before = [c for c in df_calc.columns if c.startswith('расчетный_поступления_')]
-                print(f"Консолидированные расчеты: DataFrame имеет {len(calc_cols_before)} расчетных колонок до расчета")
+                logger.debug(f"Консолидированные расчеты: DataFrame имеет {len(calc_cols_before)} расчетных колонок до расчета")
                 
                 df_with_sums = form._calculate_consolidated_sums(df_calc)
                 
                 # Отладочный вывод: проверяем колонки DataFrame после расчета
                 calc_cols_after = [c for c in df_with_sums.columns if c.startswith('расчетный_поступления_')]
-                print(f"Консолидированные расчеты: DataFrame имеет {len(calc_cols_after)} расчетных колонок после расчета")
+                logger.debug(f"Консолидированные расчеты: DataFrame имеет {len(calc_cols_after)} расчетных колонок после расчета")
                 
                 result_rows = df_with_sums.to_dict('records')
                 
@@ -2029,16 +2029,16 @@ class DatabaseManager:
                 if result_rows:
                     sample_row = result_rows[0]
                     calc_keys = [k for k in sample_row.keys() if k.startswith('расчетный_поступления_')]
-                    print(f"Консолидированные расчеты: {len(result_rows)} строк в словаре, "
+                    logger.debug(f"Консолидированные расчеты: {len(result_rows)} строк в словаре, "
                           f"найдено расчетных полей в первой строке: {len(calc_keys)}")
                     if calc_keys:
-                        print(f"  Примеры ключей: {calc_keys[:3]}")
+                        logger.debug(f"  Примеры ключей: {calc_keys[:3]}")
                         # Проверяем, есть ли не-None значения
                         non_none_count = sum(1 for k in calc_keys if sample_row.get(k) is not None)
-                        print(f"  Не-None значений в первой строке: {non_none_count}")
+                        logger.debug(f"  Не-None значений в первой строке: {non_none_count}")
                         # Проверяем несколько строк
                         rows_with_calc = sum(1 for r in result_rows[:10] if any(k.startswith('расчетный_поступления_') for k in r.keys()))
-                        print(f"  Строк с расчетными полями (первые 10): {rows_with_calc}")
+                        logger.debug(f"  Строк с расчетными полями (первые 10): {rows_with_calc}")
                 
                 result[section_name] = result_rows
         
@@ -2221,13 +2221,13 @@ class DatabaseManager:
                     try:
                         result['meta_info'] = json.loads(meta_row[0])
                     except (json.JSONDecodeError, TypeError) as e:
-                        print(f"Ошибка загрузки meta_info для ревизии {revision_id}: {e}")
+                        logger.warning(f"Ошибка загрузки meta_info для ревизии {revision_id}: {e}", exc_info=True)
                 
                 if meta_row[1]:  # результат_исполнения_data
                     try:
                         result['результат_исполнения_data'] = json.loads(meta_row[1])
                     except (json.JSONDecodeError, TypeError) as e:
-                        print(f"Ошибка загрузки результат_исполнения_data для ревизии {revision_id}: {e}")
+                        logger.warning(f"Ошибка загрузки результат_исполнения_data для ревизии {revision_id}: {e}", exc_info=True)
         return result
     
     def save_revision_data(self, project_id: int, revision_id: int, data: Dict[str, Any]):
@@ -2313,10 +2313,10 @@ class DatabaseManager:
                     sample_row = consolidated_rows[0] if consolidated_rows else None
                     if sample_row:
                         calc_keys = [k for k in sample_row.keys() if k.startswith('расчетный_поступления_')]
-                        print(f"Сохранение консолидированных расчетов: {len(consolidated_rows)} строк, "
+                        logger.debug(f"Сохранение консолидированных расчетов: {len(consolidated_rows)} строк, "
                               f"найдено расчетных полей в первой строке: {len(calc_keys)}")
                         if calc_keys:
-                            print(f"  Примеры ключей: {calc_keys[:3]}")
+                            logger.debug(f"  Примеры ключей: {calc_keys[:3]}")
                     
                     # Удаляем старые вычисленные значения
                     cursor.execute(
