@@ -105,15 +105,64 @@ class DatabaseManager:
                 )
             ''')
 
-            # Справочник муниципальных образований
+            # Справочник видов муниципальных образований
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS ref_municipality_types (
+                    код_вида_МО VARCHAR(1) PRIMARY KEY,
+                    наименование TEXT NOT NULL
+                )
+            ''')
+            
+            # Справочник муниципальных образований (расширенный)
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS ref_municipalities (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    code TEXT,
+                    code VARCHAR(3) UNIQUE,
                     name TEXT NOT NULL,
+                    код_вида_МО VARCHAR(1) REFERENCES ref_municipality_types(код_вида_МО),
+                    код_МО VARCHAR(3),  -- для обратной совместимости
+                    родительный_падеж TEXT,
+                    адрес_совет TEXT,
+                    адрес_администрация TEXT,
+                    совет_почта VARCHAR(50),
+                    администрация_почта VARCHAR(50),
+                    должность_совет VARCHAR(30),
+                    фамилия_совет VARCHAR(30),
+                    имя_совет VARCHAR(30),
+                    отчество_совет VARCHAR(30),
+                    должность_администрация VARCHAR(30),
+                    фамилия_администрация VARCHAR(30),
+                    имя_администрация VARCHAR(30),
+                    отчество_администрация VARCHAR(30),
+                    дата_соглашения DATE,
+                    дата_решения DATE,
+                    номер_решения VARCHAR(50),
+                    начальная_доходы REAL,
+                    начальная_расходы REAL,
+                    начальная_дефицит REAL,
                     is_active INTEGER NOT NULL DEFAULT 1
                 )
             ''')
+            
+            # Миграция: добавляем новые поля в существующую таблицу
+            for col_name, col_type in [
+                ('код_МО', 'VARCHAR(3)'), ('код_вида_МО', 'VARCHAR(1)'),
+                ('родительный_падеж', 'TEXT'),
+                ('адрес_совет', 'TEXT'), ('адрес_администрация', 'TEXT'),
+                ('совет_почта', 'VARCHAR(50)'), ('администрация_почта', 'VARCHAR(50)'),
+                ('должность_совет', 'VARCHAR(30)'), ('фамилия_совет', 'VARCHAR(30)'),
+                ('имя_совет', 'VARCHAR(30)'), ('отчество_совет', 'VARCHAR(30)'),
+                ('должность_администрация', 'VARCHAR(30)'), ('фамилия_администрация', 'VARCHAR(30)'),
+                ('имя_администрация', 'VARCHAR(30)'), ('отчество_администрация', 'VARCHAR(30)'),
+                ('дата_соглашения', 'DATE'), ('дата_решения', 'DATE'),
+                ('номер_решения', 'VARCHAR(50)'),
+                ('начальная_доходы', 'REAL'), ('начальная_расходы', 'REAL'),
+                ('начальная_дефицит', 'REAL')
+            ]:
+                try:
+                    cursor.execute(f'ALTER TABLE ref_municipalities ADD COLUMN {col_name} {col_type}')
+                except sqlite3.OperationalError:
+                    pass  # Колонка уже существует
 
             # Справочник типов форм (0503317, 0503314 и т.д.)
             # ID задаём вручную в коде (не полагаемся на AUTOINCREMENT),
@@ -135,17 +184,29 @@ class DatabaseManager:
             except sqlite3.OperationalError:
                 pass  # Колонка уже существует
 
-            # Справочник периодов (год, кварталы, полугодия и т.п.)
+            # Справочник периодов (расширенный)
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS ref_periods (
-                    id INTEGER PRIMARY KEY,
+                    код_периода VARCHAR(2),
+                    наименование VARCHAR(30),
+                    отчет_на_дату DATE,
+                    id INTEGER PRIMARY KEY,  -- для обратной совместимости
                     code TEXT NOT NULL,       -- Y, Q1, Q2, Q3, Q4, H1, H2 и т.п.
-                    name TEXT NOT NULL,
                     sort_order INTEGER NOT NULL DEFAULT 0,
                     form_type_code TEXT,      -- опциональная привязка к форме
                     is_active INTEGER NOT NULL DEFAULT 1
                 )
             ''')
+            
+            # Миграция: добавляем новые поля
+            for col_name, col_type in [
+                ('код_периода', 'VARCHAR(2)'), ('наименование', 'VARCHAR(30)'),
+                ('отчет_на_дату', 'DATE')
+            ]:
+                try:
+                    cursor.execute(f'ALTER TABLE ref_periods ADD COLUMN {col_name} {col_type}')
+                except sqlite3.OperationalError:
+                    pass
 
             # Связка Проект ↔ Форма ↔ Период
             cursor.execute('''
@@ -181,6 +242,150 @@ class DatabaseManager:
                     FOREIGN KEY (revision_id) REFERENCES form_revisions(id) ON DELETE CASCADE
                 )
             ''')
+
+            # Справочники для классификаций расходов бюджетов
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS ref_grbs (
+                    код_ГРБС VARCHAR(3) PRIMARY KEY,
+                    наименование TEXT NOT NULL
+                )
+            ''')
+            
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS ref_expense_sections (
+                    код_РП VARCHAR(4) PRIMARY KEY,
+                    наименование TEXT NOT NULL,
+                    утверждающий_документ TEXT
+                )
+            ''')
+            
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS ref_target_articles (
+                    код_ЦСР VARCHAR(10) PRIMARY KEY,
+                    наименование TEXT NOT NULL
+                )
+            ''')
+            
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS ref_expense_types (
+                    код_вида_СР VARCHAR(5) PRIMARY KEY,
+                    наименование TEXT NOT NULL
+                )
+            ''')
+            
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS ref_program_nonprogram (
+                    код_ПНС VARCHAR(5) PRIMARY KEY,
+                    наименование TEXT NOT NULL
+                )
+            ''')
+            
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS ref_expense_kinds (
+                    код_ВР VARCHAR(3) PRIMARY KEY,
+                    наименование TEXT NOT NULL,
+                    утверждающий_документ TEXT
+                )
+            ''')
+            
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS ref_national_projects (
+                    код_НПЦСР VARCHAR(1) PRIMARY KEY,
+                    наименование TEXT NOT NULL,
+                    утверждающий_документ TEXT
+                )
+            ''')
+            
+            # Справочники для классификаций доходов бюджетов
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS ref_gadb (
+                    код_ГАДБ VARCHAR(3) PRIMARY KEY,
+                    наименование TEXT
+                )
+            ''')
+            
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS ref_income_groups (
+                    код_группы_ДБ VARCHAR(1) PRIMARY KEY,
+                    наименование TEXT
+                )
+            ''')
+            
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS ref_income_subgroups (
+                    код_подгруппы_ДБ VARCHAR(2) PRIMARY KEY,
+                    наименование TEXT
+                )
+            ''')
+            
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS ref_income_articles (
+                    код_статьи_подстатьи_ДБ VARCHAR(5) PRIMARY KEY,
+                    наименование TEXT
+                )
+            ''')
+            
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS ref_income_elements (
+                    код_элемента_ДБ VARCHAR(2) PRIMARY KEY,
+                    наименование TEXT
+                )
+            ''')
+            
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS ref_income_subkind_groups (
+                    код_группы_ПДБ VARCHAR(4) PRIMARY KEY,
+                    наименование TEXT
+                )
+            ''')
+            
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS ref_income_analytical_groups (
+                    код_группы_АПДБ VARCHAR(3) PRIMARY KEY,
+                    наименование TEXT
+                )
+            ''')
+            
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS ref_income_levels (
+                    код_уровня VARCHAR(2) PRIMARY KEY,
+                    наименование TEXT,
+                    цвет VARCHAR(10)
+                )
+            ''')
+            
+            # Справочники кодов доходов и расходов (для работы с решениями)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS ref_income_codes (
+                    код VARCHAR(20) PRIMARY KEY,
+                    название TEXT,
+                    уровень INTEGER,
+                    наименование TEXT
+                )
+            ''')
+            
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS ref_expense_codes (
+                    код VARCHAR(20) PRIMARY KEY,
+                    название TEXT,
+                    уровень INTEGER,
+                    код_Р VARCHAR(4),
+                    код_ПР VARCHAR(2),
+                    код_ЦС VARCHAR(10),
+                    код_ВР VARCHAR(3)
+                )
+            ''')
+            
+            # Миграция: переименовываем ЛВЛ в уровень, если таблицы уже существуют
+            try:
+                cursor.execute('ALTER TABLE ref_income_codes RENAME COLUMN ЛВЛ TO уровень')
+            except sqlite3.OperationalError:
+                pass  # Колонка уже переименована или не существует
+            
+            try:
+                cursor.execute('ALTER TABLE ref_expense_codes RENAME COLUMN ЛВЛ TO уровень')
+            except sqlite3.OperationalError:
+                pass  # Колонка уже переименована или не существует
 
             # Первичное заполнение справочников (если они пустые)
             self._seed_config_dictionaries(cursor)
@@ -426,7 +631,7 @@ class DatabaseManager:
                 ("M9", "9 месяцев", 6, None, 1),
             ]
             cursor.executemany(
-                'INSERT INTO ref_periods (code, name, sort_order, form_type_code, is_active) '
+                'INSERT INTO ref_periods (code, наименование, sort_order, form_type_code, is_active) '
                 'VALUES (?, ?, ?, ?, ?)',
                 periods,
             )
@@ -1127,6 +1332,51 @@ class DatabaseManager:
                     )
                 )
         return result
+    
+    def get_municipality_by_id(self, municipality_id: int):
+        """Получение расширенной информации о МО по ID"""
+        from models.base_models import ExtendedMunicipalityRef
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT id, code, name, код_вида_МО, код_МО, родительный_падеж,
+                       адрес_совет, адрес_администрация, совет_почта, администрация_почта,
+                       должность_совет, фамилия_совет, имя_совет, отчество_совет,
+                       должность_администрация, фамилия_администрация, имя_администрация, отчество_администрация,
+                       дата_соглашения, дата_решения, номер_решения,
+                       начальная_доходы, начальная_расходы, начальная_дефицит, is_active
+                FROM ref_municipalities WHERE id=?
+            ''', (municipality_id,))
+            row = cursor.fetchone()
+            if row:
+                return ExtendedMunicipalityRef.from_row({
+                    'id': row[0],
+                    'code': row[1],
+                    'name': row[2],
+                    'код_вида_МО': row[3],
+                    'код_МО': row[4],
+                    'родительный_падеж': row[5],
+                    'адрес_совет': row[6],
+                    'адрес_администрация': row[7],
+                    'совет_почта': row[8],
+                    'администрация_почта': row[9],
+                    'должность_совет': row[10],
+                    'фамилия_совет': row[11],
+                    'имя_совет': row[12],
+                    'отчество_совет': row[13],
+                    'должность_администрация': row[14],
+                    'фамилия_администрация': row[15],
+                    'имя_администрация': row[16],
+                    'отчество_администрация': row[17],
+                    'дата_соглашения': row[18],
+                    'дата_решения': row[19],
+                    'номер_решения': row[20],
+                    'начальная_доходы': row[21],
+                    'начальная_расходы': row[22],
+                    'начальная_дефицит': row[23],
+                    'is_active': row[24]
+                })
+        return None
 
     def save_municipalities_bulk(self, municip_list: List[MunicipalityRef]) -> None:
         with sqlite3.connect(self.db_path) as conn:
@@ -1219,19 +1469,19 @@ class DatabaseManager:
             cursor = conn.cursor()
             if form_type_code:
                 cursor.execute(
-                    'SELECT id, code, name, sort_order, form_type_code, is_active '
+                    'SELECT id, code, наименование, sort_order, form_type_code, is_active '
                     'FROM ref_periods WHERE form_type_code=? ORDER BY sort_order, code',
                     (form_type_code,)
                 )
             else:
                 cursor.execute(
-                    'SELECT id, code, name, sort_order, form_type_code, is_active '
+                    'SELECT id, code, наименование, sort_order, form_type_code, is_active '
                     'FROM ref_periods ORDER BY sort_order, code'
                 )
             for row in cursor.fetchall():
                 result.append(
                     PeriodRef.from_row(
-                        {'id': row[0], 'code': row[1], 'name': row[2],
+                        {'id': row[0], 'code': row[1], 'name': row[2],  # маппинг: наименование -> name
                          'sort_order': row[3], 'form_type_code': row[4], 'is_active': row[5]}
                     )
                 )
@@ -1249,20 +1499,20 @@ class DatabaseManager:
             # 1) Пытаемся найти период, привязанный к конкретному типу формы
             if form_type_code:
                 cursor.execute(
-                    'SELECT id, code, name, sort_order, form_type_code, is_active '
+                    'SELECT id, code, наименование, sort_order, form_type_code, is_active '
                     'FROM ref_periods WHERE code=? AND form_type_code=?',
                     (code, form_type_code)
                 )
                 row = cursor.fetchone()
                 if row:
                     return PeriodRef.from_row(
-                        {'id': row[0], 'code': row[1], 'name': row[2],
+                        {'id': row[0], 'code': row[1], 'name': row[2],  # маппинг: наименование -> name
                          'sort_order': row[3], 'form_type_code': row[4], 'is_active': row[5]}
                     )
 
             # 2) Если не нашли — пробуем общий период (form_type_code IS NULL)
             cursor.execute(
-                'SELECT id, code, name, sort_order, form_type_code, is_active '
+                'SELECT id, code, наименование, sort_order, form_type_code, is_active '
                 'FROM ref_periods WHERE code=? AND form_type_code IS NULL',
                 (code,)
             )
@@ -1270,7 +1520,7 @@ class DatabaseManager:
             if not row:
                 return None
             return PeriodRef.from_row(
-                {'id': row[0], 'code': row[1], 'name': row[2],
+                {'id': row[0], 'code': row[1], 'name': row[2],  # маппинг: наименование -> name
                  'sort_order': row[3], 'form_type_code': row[4], 'is_active': row[5]}
             )
 
@@ -1285,12 +1535,12 @@ class DatabaseManager:
                     period_id = getattr(p, "id", None)
                     if period_id:
                         cursor.execute(
-                            'INSERT INTO ref_periods (id, code, name, sort_order, form_type_code, is_active) '
+                            'INSERT INTO ref_periods (id, code, наименование, sort_order, form_type_code, is_active) '
                             'VALUES (?, ?, ?, ?, ?, ?)',
                             (
                                 period_id,
                                 p.code,
-                                p.name,
+                                p.name,  # маппинг: name -> наименование
                                 p.sort_order,
                                 p.form_type_code or None,
                                 1 if p.is_active else 0,
@@ -1298,11 +1548,11 @@ class DatabaseManager:
                         )
                     else:
                         cursor.execute(
-                            'INSERT INTO ref_periods (code, name, sort_order, form_type_code, is_active) '
+                            'INSERT INTO ref_periods (code, наименование, sort_order, form_type_code, is_active) '
                             'VALUES (?, ?, ?, ?, ?)',
                             (
                                 p.code,
-                                p.name,
+                                p.name,  # маппинг: name -> наименование
                                 p.sort_order,
                                 p.form_type_code or None,
                                 1 if p.is_active else 0,
@@ -1397,7 +1647,7 @@ class DatabaseManager:
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute(
-                'SELECT id, code, name, sort_order, form_type_code, is_active FROM ref_periods WHERE id=?',
+                'SELECT id, code, наименование, sort_order, form_type_code, is_active FROM ref_periods WHERE id=?',
                 (period_id,),
             )
             row = cursor.fetchone()
@@ -1406,7 +1656,7 @@ class DatabaseManager:
                     {
                         'id': row[0],
                         'code': row[1],
-                        'name': row[2],
+                        'name': row[2],  # маппинг: наименование -> name
                         'sort_order': row[3],
                         'form_type_code': row[4],
                         'is_active': row[5],
@@ -2336,3 +2586,241 @@ class DatabaseManager:
                     )
             
             conn.commit()
+    
+    # ------------------------------------------------------------------
+    # Методы загрузки справочников из Excel
+    # ------------------------------------------------------------------
+    
+    def load_reference_from_excel(
+        self,
+        file_path: str,
+        table_name: str,
+        column_mapping: Dict[str, str],
+        primary_key_column: str
+    ) -> int:
+        """
+        Универсальный метод загрузки справочника из Excel файла.
+        
+        Args:
+            file_path: Путь к Excel файлу
+            table_name: Имя таблицы в БД для загрузки
+            column_mapping: Словарь {имя_колонки_в_excel: имя_колонки_в_бд}
+            primary_key_column: Имя колонки, которая является первичным ключом
+        
+        Returns:
+            Количество загруженных записей
+        """
+        try:
+            df = pd.read_excel(file_path)
+            df.columns = [str(c).strip() for c in df.columns]
+            
+            # Нормализуем названия колонок
+            df = df.rename(columns=column_mapping)
+            
+            # Удаляем пустые строки
+            df = df.dropna(subset=[primary_key_column])
+            
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Очищаем таблицу перед загрузкой
+                cursor.execute(f'DELETE FROM {table_name}')
+                
+                # Подготавливаем данные для вставки
+                columns = list(column_mapping.values())
+                placeholders = ', '.join(['?'] * len(columns))
+                
+                count = 0
+                for _, row in df.iterrows():
+                    values = []
+                    for col in columns:
+                        val = row.get(col)
+                        if pd.isna(val):
+                            val = None
+                        else:
+                            val = str(val).strip()
+                            if val == '':
+                                val = None
+                        values.append(val)
+                    
+                    # Пропускаем строки без первичного ключа
+                    if values[columns.index(primary_key_column)] is None:
+                        continue
+                    
+                    try:
+                        cursor.execute(
+                            f'INSERT INTO {table_name} ({", ".join(columns)}) VALUES ({placeholders})',
+                            values
+                        )
+                        count += 1
+                    except sqlite3.IntegrityError as e:
+                        logger.warning(f"Пропущена дублирующая запись в {table_name}: {e}")
+                        continue
+                
+                conn.commit()
+                logger.info(f"Загружено {count} записей в {table_name} из {file_path}")
+                return count
+                
+        except Exception as e:
+            logger.error(f"Ошибка загрузки справочника из {file_path}: {e}", exc_info=True)
+            raise
+    
+    def load_grbs_from_excel(self, file_path: str) -> int:
+        """Загрузка справочника ГРБС из Excel"""
+        return self.load_reference_from_excel(
+            file_path=file_path,
+            table_name='ref_grbs',
+            column_mapping={'код_ГРБС': 'код_ГРБС', 'наименование': 'наименование'},
+            primary_key_column='код_ГРБС'
+        )
+    
+    def load_expense_sections_from_excel(self, file_path: str) -> int:
+        """Загрузка справочника разделов/подразделов расходов из Excel"""
+        return self.load_reference_from_excel(
+            file_path=file_path,
+            table_name='ref_expense_sections',
+            column_mapping={
+                'код_РП': 'код_РП',
+                'наименование': 'наименование',
+                'утверждающий_документ': 'утверждающий_документ'
+            },
+            primary_key_column='код_РП'
+        )
+    
+    def load_target_articles_from_excel(self, file_path: str) -> int:
+        """Загрузка справочника целевых статей расходов из Excel"""
+        return self.load_reference_from_excel(
+            file_path=file_path,
+            table_name='ref_target_articles',
+            column_mapping={'код_ЦСР': 'код_ЦСР', 'наименование': 'наименование'},
+            primary_key_column='код_ЦСР'
+        )
+    
+    def load_expense_types_from_excel(self, file_path: str) -> int:
+        """Загрузка справочника видов статей расходов из Excel"""
+        return self.load_reference_from_excel(
+            file_path=file_path,
+            table_name='ref_expense_types',
+            column_mapping={'код_вида_СР': 'код_вида_СР', 'наименование': 'наименование'},
+            primary_key_column='код_вида_СР'
+        )
+    
+    def load_program_nonprogram_from_excel(self, file_path: str) -> int:
+        """Загрузка справочника программных/непрограммных статей из Excel"""
+        return self.load_reference_from_excel(
+            file_path=file_path,
+            table_name='ref_program_nonprogram',
+            column_mapping={'код_ПНС': 'код_ПНС', 'наименование': 'наименование'},
+            primary_key_column='код_ПНС'
+        )
+    
+    def load_expense_kinds_from_excel(self, file_path: str) -> int:
+        """Загрузка справочника видов расходов из Excel"""
+        return self.load_reference_from_excel(
+            file_path=file_path,
+            table_name='ref_expense_kinds',
+            column_mapping={
+                'код_ВР': 'код_ВР',
+                'наименование': 'наименование',
+                'утверждающий_документ': 'утверждающий_документ'
+            },
+            primary_key_column='код_ВР'
+        )
+    
+    def load_national_projects_from_excel(self, file_path: str) -> int:
+        """Загрузка справочника национальных проектов из Excel"""
+        return self.load_reference_from_excel(
+            file_path=file_path,
+            table_name='ref_national_projects',
+            column_mapping={
+                'код_НПЦСР': 'код_НПЦСР',
+                'наименование': 'наименование',
+                'утверждающий_документ': 'утверждающий_документ'
+            },
+            primary_key_column='код_НПЦСР'
+        )
+    
+    def load_gadb_from_excel(self, file_path: str) -> int:
+        """Загрузка справочника ГАДБ из Excel"""
+        return self.load_reference_from_excel(
+            file_path=file_path,
+            table_name='ref_gadb',
+            column_mapping={'код_ГАДБ': 'код_ГАДБ', 'наименование': 'наименование'},
+            primary_key_column='код_ГАДБ'
+        )
+    
+    def load_income_groups_from_excel(self, file_path: str) -> int:
+        """Загрузка справочника групп доходов из Excel"""
+        return self.load_reference_from_excel(
+            file_path=file_path,
+            table_name='ref_income_groups',
+            column_mapping={'код_группы_ДБ': 'код_группы_ДБ', 'наименование': 'наименование'},
+            primary_key_column='код_группы_ДБ'
+        )
+    
+    def load_income_subgroups_from_excel(self, file_path: str) -> int:
+        """Загрузка справочника подгрупп доходов из Excel"""
+        return self.load_reference_from_excel(
+            file_path=file_path,
+            table_name='ref_income_subgroups',
+            column_mapping={'код_подгруппы_ДБ': 'код_подгруппы_ДБ', 'наименование': 'наименование'},
+            primary_key_column='код_подгруппы_ДБ'
+        )
+    
+    def load_income_articles_from_excel(self, file_path: str) -> int:
+        """Загрузка справочника статей/подстатей доходов из Excel"""
+        return self.load_reference_from_excel(
+            file_path=file_path,
+            table_name='ref_income_articles',
+            column_mapping={'код_статьи_подстатьи_ДБ': 'код_статьи_подстатьи_ДБ', 'наименование': 'наименование'},
+            primary_key_column='код_статьи_подстатьи_ДБ'
+        )
+    
+    def load_income_elements_from_excel(self, file_path: str) -> int:
+        """Загрузка справочника элементов доходов из Excel"""
+        return self.load_reference_from_excel(
+            file_path=file_path,
+            table_name='ref_income_elements',
+            column_mapping={'код_элемента_ДБ': 'код_элемента_ДБ', 'наименование': 'наименование'},
+            primary_key_column='код_элемента_ДБ'
+        )
+    
+    def load_income_subkind_groups_from_excel(self, file_path: str) -> int:
+        """Загрузка справочника групп подвидов доходов из Excel"""
+        return self.load_reference_from_excel(
+            file_path=file_path,
+            table_name='ref_income_subkind_groups',
+            column_mapping={'код_группы_ПДБ': 'код_группы_ПДБ', 'наименование': 'наименование'},
+            primary_key_column='код_группы_ПДБ'
+        )
+    
+    def load_income_analytical_groups_from_excel(self, file_path: str) -> int:
+        """Загрузка справочника аналитических групп подвидов доходов из Excel"""
+        return self.load_reference_from_excel(
+            file_path=file_path,
+            table_name='ref_income_analytical_groups',
+            column_mapping={'код_группы_АПДБ': 'код_группы_АПДБ', 'наименование': 'наименование'},
+            primary_key_column='код_группы_АПДБ'
+        )
+    
+    def load_income_levels_from_excel(self, file_path: str) -> int:
+        """Загрузка справочника уровней доходов из Excel"""
+        return self.load_reference_from_excel(
+            file_path=file_path,
+            table_name='ref_income_levels',
+            column_mapping={
+                'код_уровня': 'код_уровня',
+                'наименование': 'наименование',
+                'цвет': 'цвет'
+            },
+            primary_key_column='код_уровня'
+        )
+    
+    def load_municipality_types_from_excel(self, file_path: str) -> int:
+        """Загрузка справочника видов муниципальных образований из Excel"""
+        return self.load_reference_from_excel(
+            file_path=file_path,
+            table_name='ref_municipality_types',
+            column_mapping={'код_вида_МО': 'код_вида_МО', 'наименование': 'наименование'},
+            primary_key_column='код_вида_МО'
+        )

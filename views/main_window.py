@@ -5,10 +5,12 @@ from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QToolBar, QStatusBar, QAction, QTextEdit,
                              QComboBox, QTreeWidget, QTreeWidgetItem, QMenu, 
                              QInputDialog, QDialog, QDialogButtonBox, QFormLayout,
-                             QLineEdit, QCheckBox, QApplication, QStyle)
-from PyQt5.QtCore import Qt, QTimer
+                             QLineEdit, QCheckBox, QApplication, QStyle, QToolButton)
+from PyQt5.QtCore import Qt, QTimer, QSize
 from PyQt5.QtGui import QFont, QColor, QBrush
 import os
+import subprocess
+import platform
 from pathlib import Path
 import pandas as pd
 
@@ -21,7 +23,69 @@ from views.excel_viewer import ExcelViewer
 from views.reference_viewer import ReferenceViewer
 from views.dictionaries_dialog import DictionariesDialog
 from views.form_load_dialog import FormLoadDialog
-from views.calculation_errors_dialog import CalculationErrorsDialog
+from views.document_dialog import DocumentDialog
+
+
+class DetachedTabWindow(QMainWindow):
+    """Отдельное окно для открепленной вкладки"""
+    
+    def __init__(self, tab_widget, tab_name, parent=None):
+        super().__init__(parent)
+        self.tab_widget = tab_widget
+        self.tab_name = tab_name
+        self.main_window = parent
+        
+        self.setWindowTitle(tab_name)
+        self.setGeometry(100, 100, 1200, 800)
+        
+        # Убеждаемся, что виджет видим и имеет правильный родитель
+        if tab_widget.parent():
+            # Удаляем виджет из старого layout, если он там был
+            old_parent = tab_widget.parent()
+            if isinstance(old_parent, QWidget):
+                old_layout = old_parent.layout()
+                if old_layout:
+                    old_layout.removeWidget(tab_widget)
+        
+        # Устанавливаем виджет как центральный виджет напрямую
+        # Это работает, если tab_widget уже содержит все необходимое
+        self.setCentralWidget(tab_widget)
+        
+        # Убеждаемся, что виджет видим
+        tab_widget.setVisible(True)
+        tab_widget.show()
+
+    def closeEvent(self, event):
+        """Обработка закрытия окна - переопределяем метод closeEvent"""
+        logger.debug(f"closeEvent вызван для окна '{self.tab_name}'")
+        
+        # Проверяем, не происходит ли уже возврат вкладки (чтобы избежать повторного вызова)
+        if self.property("attaching"):
+            logger.debug(f"Флаг 'attaching' установлен, пропускаем возврат вкладки")
+            event.accept()
+            return
+        
+        # При закрытии окна возвращаем вкладку в главное окно
+        if self.main_window:
+            try:
+                # Используем tab_widget из centralWidget, если он доступен
+                tab_widget = self.centralWidget() or self.tab_widget
+                if tab_widget:
+                    logger.debug(f"Вызов attach_tab из closeEvent для '{self.tab_name}'")
+                    self.main_window.attach_tab(self.tab_name, tab_widget)
+                else:
+                    logger.warning(f"Не удалось получить виджет для возврата вкладки '{self.tab_name}'")
+            except Exception as e:
+                logger.error(f"Ошибка при возврате вкладки: {e}", exc_info=True)
+        else:
+            logger.warning(f"main_window не установлен для окна '{self.tab_name}'")
+        
+        event.accept()
+    
+    def get_tab_widget(self):
+        """Получить виджет вкладки"""
+        return self.tab_widget
+
 
 class MainWindow(QMainWindow):
     """Главное окно приложения"""
@@ -37,11 +101,15 @@ class MainWindow(QMainWindow):
         self.projects_toggle_button = None
         self.projects_panel_last_size = 260
         self.reference_window = None
-        self.errors_dialog = None
         self.tree_headers = []
         self.tree_header_tooltips = []
         self.tree_column_mapping = {}
         self._updating_header_height = False  # Флаг для предотвращения бесконечного цикла
+        self.last_exported_file = None  # Путь к последнему экспортированного файла
+        self.errors_tab_fullscreen = False  # Флаг полноэкранного режима вкладки ошибок
+        # Окна для открепленных вкладок
+        self.detached_windows = {}  # {tab_name: QMainWindow}
+        self.tabs_panel = None  # Будет установлен в create_tabs_panel
         self.init_ui()
         self.connect_signals()
         self.controller.load_initial_data()
@@ -127,6 +195,24 @@ class MainWindow(QMainWindow):
         
         file_menu.addSeparator()
         
+        # Открытие файлов
+        open_file_action = QAction("&Открыть файл...", self)
+        open_file_action.setIcon(self.style().standardIcon(QStyle.SP_DirOpenIcon))
+        open_file_action.setShortcut("Ctrl+Shift+O")
+        open_file_action.setStatusTip("Открыть файл (doc, docx, xls, xlsx)")
+        open_file_action.triggered.connect(self.open_file_dialog)
+        file_menu.addAction(open_file_action)
+        
+        # Открыть последний экспортированный файл
+        self.open_last_file_action = QAction("Открыть последний экспортированный файл", self)
+        self.open_last_file_action.setIcon(self.style().standardIcon(QStyle.SP_FileDialogStart))
+        self.open_last_file_action.setStatusTip("Открыть последний экспортированный файл")
+        self.open_last_file_action.setEnabled(False)
+        self.open_last_file_action.triggered.connect(self.open_last_exported_file)
+        file_menu.addAction(self.open_last_file_action)
+        
+        file_menu.addSeparator()
+        
         exit_action = QAction("&Выход", self)
         exit_action.setIcon(self.style().standardIcon(QStyle.SP_DialogCloseButton))
         exit_action.setShortcut("Ctrl+Q")
@@ -163,24 +249,7 @@ class MainWindow(QMainWindow):
         # ========== Меню "Данные" ==========
         data_menu = menubar.addMenu("&Данные")
         
-        calculate_action = QAction("&Пересчитать суммы", self)
-        calculate_action.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
-        calculate_action.setShortcut("F9")
-        calculate_action.setStatusTip("Пересчитать агрегированные суммы")
-        calculate_action.triggered.connect(self.calculate_sums)
-        data_menu.addAction(calculate_action)
-        
-        data_menu.addSeparator()
-        
-        show_errors_action = QAction("&Ошибки расчетов...", self)
-        show_errors_action.setIcon(self.style().standardIcon(QStyle.SP_MessageBoxWarning))
-        show_errors_action.setShortcut("Ctrl+Shift+E")
-        show_errors_action.setStatusTip("Показать все ошибки расчетов по текущей ревизии")
-        show_errors_action.triggered.connect(self.show_calculation_errors)
-        data_menu.addAction(show_errors_action)
-        
-        data_menu.addSeparator()
-        
+        # Действия для работы с данными (не специфичные для ревизии)
         hide_zeros_action = QAction("&Скрыть нулевые столбцы", self)
         hide_zeros_action.setIcon(self.style().standardIcon(QStyle.SP_TrashIcon))
         hide_zeros_action.setShortcut("Ctrl+H")
@@ -273,16 +342,6 @@ class MainWindow(QMainWindow):
         load_form_action.setIcon(self.style().standardIcon(QStyle.SP_DirOpenIcon))
         load_form_action.triggered.connect(self.load_form_file)
         toolbar.addAction(load_form_action)
-        
-        calculate_action = QAction("Пересчитать", self)
-        calculate_action.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
-        calculate_action.triggered.connect(self.calculate_sums)
-        toolbar.addAction(calculate_action)
-        
-        export_action = QAction("Экспорт проверки", self)
-        export_action.setIcon(self.style().standardIcon(QStyle.SP_DialogSaveButton))
-        export_action.triggered.connect(self.export_validation)
-        toolbar.addAction(export_action)
         
         toolbar.addSeparator()
         
@@ -386,13 +445,42 @@ class MainWindow(QMainWindow):
     def create_tabs_panel(self) -> QWidget:
         """Создание панели с вкладками"""
         tabs = QTabWidget()
+        self.tabs_panel = tabs
+        tabs.setTabsClosable(False)  # Отключаем стандартное закрытие вкладок
+        
+        # Добавляем контекстное меню для вкладок
+        tabs.setContextMenuPolicy(Qt.CustomContextMenu)
+        tabs.customContextMenuRequested.connect(self.show_tab_context_menu)
         
         # Вкладка с древовидными данными
         self.tree_tab = QWidget()
+        
         tree_layout = QVBoxLayout(self.tree_tab)
         
         # Панель управления древом
         tree_control_layout = QHBoxLayout()
+        # Кнопки управления деревом (максимально компактные)
+        self.expand_all_btn = QToolButton()
+        self.expand_all_btn.setIcon(self.style().standardIcon(QStyle.SP_ArrowDown))
+        self.expand_all_btn.setToolTip("Развернуть все узлы дерева")
+        self.expand_all_btn.setIconSize(QSize(14, 14))
+        self.expand_all_btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        self.expand_all_btn.setAutoRaise(True)
+        self.expand_all_btn.setFixedSize(22, 22)
+        self.expand_all_btn.clicked.connect(self.expand_all_tree)
+        tree_control_layout.addWidget(self.expand_all_btn)
+        
+        self.collapse_all_btn = QToolButton()
+        self.collapse_all_btn.setIcon(self.style().standardIcon(QStyle.SP_ArrowUp))
+        self.collapse_all_btn.setToolTip("Свернуть все узлы дерева")
+        self.collapse_all_btn.setIconSize(QSize(14, 14))
+        self.collapse_all_btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        self.collapse_all_btn.setAutoRaise(True)
+        self.collapse_all_btn.setFixedSize(22, 22)
+        self.collapse_all_btn.clicked.connect(self.collapse_all_tree)
+        tree_control_layout.addWidget(self.collapse_all_btn)
+        
+        tree_control_layout.addStretch()
         
         # Выбор раздела
         tree_control_layout.addWidget(QLabel("Раздел:"))
@@ -408,7 +496,82 @@ class MainWindow(QMainWindow):
         self.data_type_combo.currentTextChanged.connect(self.on_data_type_changed)
         tree_control_layout.addWidget(self.data_type_combo)
         
-        tree_control_layout.addStretch()
+        # Панель инструментов для ревизии (активна только при выбранной ревизии)
+        self.revision_toolbar = QHBoxLayout()
+        self.revision_toolbar.setSpacing(5)
+        
+        # Кнопка пересчета
+        self.recalculate_btn = QPushButton("Пересчитать")
+        self.recalculate_btn.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
+        self.recalculate_btn.setToolTip("Пересчитать агрегированные суммы (F9)")
+        self.recalculate_btn.setEnabled(False)
+        self.recalculate_btn.clicked.connect(self.calculate_sums)
+        self.revision_toolbar.addWidget(self.recalculate_btn)
+        
+        # Кнопка экспорта пересчитанной таблицы
+        self.export_calculated_btn = QPushButton("Экспорт пересчитанной")
+        self.export_calculated_btn.setIcon(self.style().standardIcon(QStyle.SP_DialogSaveButton))
+        self.export_calculated_btn.setToolTip("Экспортировать форму с пересчитанными значениями")
+        self.export_calculated_btn.setEnabled(False)
+        self.export_calculated_btn.clicked.connect(self.export_calculated_table)
+        self.revision_toolbar.addWidget(self.export_calculated_btn)
+        
+        # Кнопка показа ошибок расчетов
+        self.show_errors_btn = QPushButton("Ошибки расчетов")
+        self.show_errors_btn.setIcon(self.style().standardIcon(QStyle.SP_MessageBoxWarning))
+        self.show_errors_btn.setToolTip("Показать ошибки расчетов")
+        self.show_errors_btn.setEnabled(False)
+        self.show_errors_btn.clicked.connect(self.show_calculation_errors)
+        self.revision_toolbar.addWidget(self.show_errors_btn)
+        
+        # self.revision_toolbar.addSeparator()
+        
+        # Кнопка открытия файла
+        self.open_file_btn = QPushButton("Открыть файл")
+        self.open_file_btn.setIcon(self.style().standardIcon(QStyle.SP_DirOpenIcon))
+        self.open_file_btn.setToolTip("Открыть файл (doc, docx, xls, xlsx)")
+        self.open_file_btn.setEnabled(True)
+        self.open_file_btn.clicked.connect(self.open_file_dialog)
+        self.revision_toolbar.addWidget(self.open_file_btn)
+        
+        # Кнопка открытия последнего экспортированного файла
+        self.open_last_file_btn = QPushButton("Открыть последний")
+        self.open_last_file_btn.setIcon(self.style().standardIcon(QStyle.SP_FileDialogStart))
+        self.open_last_file_btn.setToolTip("Открыть последний экспортированный файл")
+        self.open_last_file_btn.setEnabled(False)
+        self.open_last_file_btn.clicked.connect(self.open_last_exported_file)
+        self.revision_toolbar.addWidget(self.open_last_file_btn)
+        
+        # self.revision_toolbar.addSeparator()
+        
+        # Меню документов
+        self.documents_menu_btn = QPushButton("Документы ▼")
+        self.documents_menu_btn.setIcon(self.style().standardIcon(QStyle.SP_FileDialogNewFolder))
+        self.documents_menu_btn.setToolTip("Формирование документов")
+        self.documents_menu_btn.setEnabled(False)
+        self.documents_menu_btn.setMenu(QMenu(self))
+        documents_menu = self.documents_menu_btn.menu()
+        
+        generate_conclusion_action = QAction("Сформировать заключение...", self)
+        generate_conclusion_action.setIcon(self.style().standardIcon(QStyle.SP_FileDialogNewFolder))
+        generate_conclusion_action.triggered.connect(self.show_document_dialog)
+        documents_menu.addAction(generate_conclusion_action)
+        
+        generate_letters_action = QAction("Сформировать письма...", self)
+        generate_letters_action.setIcon(self.style().standardIcon(QStyle.SP_FileDialogNewFolder))
+        generate_letters_action.triggered.connect(self.show_document_dialog)
+        documents_menu.addAction(generate_letters_action)
+        
+        documents_menu.addSeparator()
+        
+        parse_solution_action = QAction("Обработать решение о бюджете...", self)
+        parse_solution_action.setIcon(self.style().standardIcon(QStyle.SP_DialogOpenButton))
+        parse_solution_action.triggered.connect(self.parse_solution_document)
+        documents_menu.addAction(parse_solution_action)
+        
+        self.revision_toolbar.addWidget(self.documents_menu_btn)
+        
+        tree_control_layout.addLayout(self.revision_toolbar)
         tree_layout.addLayout(tree_control_layout)
         
         # Древовидный виджет (используем стандартный заголовок QTreeWidget)
@@ -430,19 +593,6 @@ class MainWindow(QMainWindow):
         
         tabs.addTab(self.tree_tab, "Древовидные данные")
         
-        # Вкладка с табличными данными
-        self.table_tab = QWidget()
-        table_layout = QVBoxLayout(self.table_tab)
-        
-        # Таблица для отображения данных
-        self.data_table = QTableWidget()
-        self.data_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
-        self.data_table.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.data_table.customContextMenuRequested.connect(self.show_table_context_menu)
-        table_layout.addWidget(self.data_table)
-        
-        tabs.addTab(self.table_tab, "Табличные данные")
-        
         # Вкладка с метаданными
         self.metadata_tab = QWidget()
         metadata_layout = QVBoxLayout(self.metadata_tab)
@@ -456,9 +606,77 @@ class MainWindow(QMainWindow):
         # Вкладка с ошибками
         self.errors_tab = QWidget()
         errors_layout = QVBoxLayout(self.errors_tab)
+        errors_layout.setContentsMargins(5, 5, 5, 5)
         
+        # Заголовок и фильтры
+        header_layout = QHBoxLayout()
+        
+        info_label = QLabel("Ошибки расчетов (несоответствия между оригинальными и расчетными значениями):")
+        info_label.setFont(QFont("Arial", 10, QFont.Bold))
+        header_layout.addWidget(info_label)
+        
+        header_layout.addStretch()
+        
+        # Фильтр по разделу
+        header_layout.addWidget(QLabel("Раздел:"))
+        self.errors_section_filter = QComboBox()
+        self.errors_section_filter.addItems(["Все", "Доходы", "Расходы", "Источники финансирования", "Консолидируемые расчеты"])
+        self.errors_section_filter.currentTextChanged.connect(lambda: self._update_errors_table())
+        header_layout.addWidget(self.errors_section_filter)
+        
+        errors_layout.addLayout(header_layout)
+        
+        # Таблица ошибок
         self.errors_table = QTableWidget()
+        self.errors_table.setColumnCount(9)
+        self.errors_table.setHorizontalHeaderLabels([
+            "Раздел",
+            "Наименование",
+            "Код строки",
+            "Уровень",
+            "Тип",
+            "Колонка",
+            "Оригинальное",
+            "Расчетное",
+            "Разница"
+        ])
+        
+        # Настройка таблицы
+        header = self.errors_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)  # Раздел
+        header.setSectionResizeMode(1, QHeaderView.Stretch)  # Наименование
+        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)  # Код строки
+        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)  # Уровень
+        header.setSectionResizeMode(4, QHeaderView.ResizeToContents)  # Тип
+        header.setSectionResizeMode(5, QHeaderView.ResizeToContents)  # Колонка
+        header.setSectionResizeMode(6, QHeaderView.ResizeToContents)  # Оригинальное
+        header.setSectionResizeMode(7, QHeaderView.ResizeToContents)  # Расчетное
+        header.setSectionResizeMode(8, QHeaderView.ResizeToContents)  # Разница
+        
+        self.errors_table.setAlternatingRowColors(True)
+        self.errors_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.errors_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        
         errors_layout.addWidget(self.errors_table)
+        
+        # Кнопки и статистика
+        buttons_layout = QHBoxLayout()
+        buttons_layout.addStretch()
+        
+        self.errors_export_btn = QPushButton("Экспорт...")
+        self.errors_export_btn.setIcon(self.style().standardIcon(QStyle.SP_DialogSaveButton))
+        self.errors_export_btn.clicked.connect(self._export_errors)
+        buttons_layout.addWidget(self.errors_export_btn)
+        
+        errors_layout.addLayout(buttons_layout)
+        
+        # Статистика
+        self.errors_stats_label = QLabel("Ошибок не найдено")
+        self.errors_stats_label.setFont(QFont("Arial", 9))
+        errors_layout.addWidget(self.errors_stats_label)
+        
+        # Хранилище данных ошибок
+        self.errors_data = []
         
         tabs.addTab(self.errors_tab, "Ошибки")
         
@@ -815,15 +1033,17 @@ class MainWindow(QMainWindow):
             )
             self.project_info_label.setText(info_text)
 
+            # Обновляем состояние кнопок ревизии
+            self.update_revision_buttons_state(rev_id is not None)
+
             # Загружаем данные в древовидное представление
             self.load_project_data_to_tree(project)
 
             # Загружаем метаданные
             self.load_metadata(project)
             
-            # Обновляем окно ошибок, если оно открыто
-            if self.errors_dialog and self.errors_dialog.isVisible():
-                self.errors_dialog.load_errors(project.data)
+            # Обновляем вкладку ошибок
+            self.load_errors_to_tab(project.data)
 
             # Загружаем файл в просмотрщик Excel:
             # Используем исходный файл ревизии (form_revisions.file_path), а не экспортированный
@@ -841,6 +1061,81 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage(error_msg)
             self.progress_bar.setVisible(False)
     
+    def _get_tree_widgets(self):
+        """Получить все виджеты дерева (в главном окне и открепленных)"""
+        widgets = []
+        # Виджет в главном окне
+        if hasattr(self, 'data_tree') and self.data_tree:
+            widgets.append(self.data_tree)
+        
+        # Виджеты в открепленных окнах
+        if "Древовидные данные" in self.detached_windows:
+            detached_window = self.detached_windows["Древовидные данные"]
+            tab_widget = detached_window.get_tab_widget()
+            if tab_widget:
+                for child in tab_widget.findChildren(QTreeWidget):
+                    if child not in widgets:
+                        widgets.append(child)
+        
+        return widgets if widgets else []
+    
+    def _get_errors_widgets(self):
+        """Получить все виджеты ошибок с их фильтрами и метками (в главном окне и открепленных)"""
+        widgets_info = []
+        # Виджет в главном окне
+        if hasattr(self, 'errors_tab') and self.errors_tab and hasattr(self, 'errors_table'):
+            widgets_info.append({
+                'table': self.errors_table,
+                'filter': self.errors_section_filter,
+                'stats': self.errors_stats_label
+            })
+        
+        # Виджеты в открепленных окнах
+        if "Ошибки" in self.detached_windows:
+            detached_window = self.detached_windows["Ошибки"]
+            tab_widget = detached_window.get_tab_widget()
+            if tab_widget:
+                # Ищем таблицу, фильтр и метку статистики в открепленном окне
+                errors_table = None
+                errors_filter = None
+                errors_stats = None
+                for child in tab_widget.findChildren(QTableWidget):
+                    errors_table = child
+                    break
+                for child in tab_widget.findChildren(QComboBox):
+                    errors_filter = child
+                    break
+                for child in tab_widget.findChildren(QLabel):
+                    if "ошибок" in child.text().lower():
+                        errors_stats = child
+                        break
+                if errors_table:
+                    widgets_info.append({
+                        'table': errors_table,
+                        'filter': errors_filter,
+                        'stats': errors_stats
+                    })
+        
+        return widgets_info
+    
+    def _get_metadata_widgets(self):
+        """Получить все виджеты метаданных (в главном окне и открепленных)"""
+        widgets = []
+        # Виджет в главном окне
+        if hasattr(self, 'metadata_text') and self.metadata_text:
+            widgets.append(self.metadata_text)
+        
+        # Виджеты в открепленных окнах
+        if "Метаданные" in self.detached_windows:
+            detached_window = self.detached_windows["Метаданные"]
+            tab_widget = detached_window.get_tab_widget()
+            if tab_widget:
+                for child in tab_widget.findChildren(QTextEdit):
+                    if child not in widgets:
+                        widgets.append(child)
+        
+        return widgets
+    
     def load_project_data_to_tree(self, project):
         """Загрузка данных проекта в древовидное представление"""
         try:
@@ -850,14 +1145,27 @@ class MainWindow(QMainWindow):
             
             if not project.data:
                 self.status_bar.showMessage("В проекте нет данных для отображения")
-                self.data_tree.clear()
-                self.data_table.clear()
-                self.data_table.setRowCount(0)
-                self.data_table.setColumnCount(0)
+                # Очищаем все деревья
+                tree_widgets = self._get_tree_widgets()
+                if tree_widgets:
+                    for tree in tree_widgets:
+                        if tree:
+                            tree.clear()
                 return
             
-            # Очищаем дерево
-            self.data_tree.clear()
+            # Получаем все виджеты дерева
+            tree_widgets = self._get_tree_widgets()
+            
+            # Проверяем, что есть хотя бы одно дерево
+            if not tree_widgets:
+                logger.warning("Не найдены виджеты дерева для загрузки данных")
+                self.status_bar.showMessage("Ошибка: виджеты дерева не инициализированы")
+                return
+            
+            # Очищаем все деревья
+            for tree in tree_widgets:
+                if tree:
+                    tree.clear()
             
             # Загружаем данные текущего раздела
             section_map = {
@@ -887,219 +1195,292 @@ class MainWindow(QMainWindow):
                                     row[f'расчетный_исполненный_{col}'] = результат_data.get('исполненный', {}).get(col, 0)
                                 break
                     
-                    self.build_tree_from_data(data)
-                    self.load_project_data_to_table(section_key, data)
+                    # Строим дерево для всех виджетов (в главном окне и открепленных)
+                    for tree_widget in tree_widgets:
+                        self.build_tree_from_data(data, tree_widget)
+                        # Настраиваем заголовки для каждого дерева
+                        self._configure_tree_headers_for_widget(tree_widget, self.current_section)
+                    
                     # Обновляем высоту заголовка после загрузки данных
                     QTimer.singleShot(100, self._update_tree_header_height)
+                    # Обновляем вкладку ошибок
+                    self.load_errors_to_tab(project.data)
                     self.status_bar.showMessage(f"Загружено {len(data)} записей в разделе '{self.current_section}'")
                 else:
-                    # Если данных нет, очищаем таблицу и показываем сообщение
-                    self.data_table.clear()
-                    self.data_table.setRowCount(0)
-                    self.data_table.setColumnCount(0)
                     self.status_bar.showMessage(f"В разделе '{self.current_section}' нет данных для отображения")
             else:
-                # Если данных нет, очищаем таблицу и показываем сообщение
-                self.data_table.clear()
-                self.data_table.setRowCount(0)
-                self.data_table.setColumnCount(0)
                 self.status_bar.showMessage(f"Раздел '{self.current_section}' не найден в данных проекта")
         except Exception as e:
             error_msg = f"Ошибка загрузки данных в дерево: {e}"
             logger.error(error_msg, exc_info=True)
             self.status_bar.showMessage(error_msg)
 
-    def load_project_data_to_table(self, section_key: str, data):
-        """Загрузка данных проекта в табличное представление (все столбцы)"""
-        self.data_table.clear()
-
-        if not data:
-            self.data_table.setRowCount(0)
-            self.data_table.setColumnCount(0)
+    def load_errors_to_tab(self, project_data):
+        """Загрузка ошибок расчетов во вкладку ошибок"""
+        self.errors_data = []
+        
+        if not project_data:
+            # Обновляем все таблицы ошибок
+            for widget_info in self._get_errors_widgets():
+                self._update_errors_table(
+                    widget_info.get('table'),
+                    widget_info.get('filter'),
+                    widget_info.get('stats')
+                )
             return
-
-        # Общие колонки
-        base_headers = ["Наименование", "Код строки", "Код классификации", "Уровень"]
-
-        if section_key == "консолидируемые_расчеты_data":
-            # Используем CONSOLIDATED_COLUMNS
-            cons_cols = Form0503317Constants.CONSOLIDATED_COLUMNS
-            headers = base_headers + cons_cols
-            self.data_table.setColumnCount(len(headers))
-            self.data_table.setHorizontalHeaderLabels(headers)
-
-            self.data_table.setRowCount(len(data))
-            error_color = QColor("#FF6B6B")
-
-            for row_idx, item in enumerate(data):
-                self.data_table.setItem(row_idx, 0, QTableWidgetItem(str(item.get("наименование_показателя", ""))))
-                self.data_table.setItem(row_idx, 1, QTableWidgetItem(str(item.get("код_строки", ""))))
-                self.data_table.setItem(row_idx, 2, QTableWidgetItem(str(item.get("код_классификации", ""))))
-                self.data_table.setItem(row_idx, 3, QTableWidgetItem(str(item.get("уровень", 0))))
-
-                # Оригинальные значения поступлений (вложенный словарь или плоские поля)
-                поступления = item.get("поступления", {}) or {}
-
-                for col_idx, col_name in enumerate(cons_cols, start=len(base_headers)):
-                    original_value = (
-                        поступления.get(col_name, 0)
-                        if isinstance(поступления, dict) else item.get(f"поступления_{col_name}", 0)
-                    )
-                    calculated_value = item.get(f"расчетный_поступления_{col_name}")
-                    if calculated_value is None:
-                        calculated_value = original_value
-
-                    cell = QTableWidgetItem()
-
-                    # Отображаем расхождения так же, как в дереве: значение и расчет в скобках
-                    # Для консолидированных расчетов проверяем на всех уровнях (как в дереве)
-                    level = item.get("уровень", 0)
-                    is_total_column = (col_name == 'ИТОГО')
-                    should_check = (level < 6) or is_total_column
-                    
-                    if should_check and self._is_value_different(original_value, calculated_value):
-                        if isinstance(original_value, (int, float)) and isinstance(calculated_value, (int, float)):
-                            display_value = f"{original_value:,.2f} ({calculated_value:,.2f})"
-                        else:
-                            display_value = f"{original_value} ({calculated_value})"
-                        cell.setText(display_value)
-                        cell.setForeground(QBrush(error_color))
-                    else:
-                        cell.setText(self.format_budget_value(original_value))
-
-                    self.data_table.setItem(row_idx, col_idx, cell)
-
-            self.hide_zero_columns_in_table(section_key, data)
-
-            # Ограничиваем ширину столбцов
-            header = self.data_table.horizontalHeader()
-            max_width = max(80, self.width() // 8 if self.width() > 0 else 200)
-            for i in range(self.data_table.columnCount()):
-                header.setSectionResizeMode(i, QHeaderView.Interactive)
-                header.resizeSection(i, min(header.sectionSize(i), max_width))
-
-            # Высота заголовка в зависимости от количества строк в названиях колонок
-            font_metrics = header.fontMetrics()
-            max_lines = 1
-            for text in headers:
-                lines = text.count("\n") + 1
-                if lines > max_lines:
-                    max_lines = lines
-            line_height = font_metrics.lineSpacing()
-            header.setFixedHeight(line_height * max_lines + 6)
-            return
-
-        # Для доходов, расходов и источников используем BUDGET_COLUMNS
+        
+        # Проверяем разделы
+        sections = {
+            "Доходы": "доходы_data",
+            "Расходы": "расходы_data",
+            "Источники финансирования": "источники_финансирования_data",
+            "Консолидируемые расчеты": "консолидируемые_расчеты_data"
+        }
+        
+        for section_name, section_key in sections.items():
+            section_data = project_data.get(section_key, [])
+            if not section_data:
+                continue
+            
+            if section_name == "Консолидируемые расчеты":
+                self._check_consolidated_errors(section_data, section_name)
+            else:
+                self._check_budget_errors(section_data, section_name)
+        
+        # Обновляем все таблицы ошибок
+        for widget_info in self._get_errors_widgets():
+            self._update_errors_table(
+                widget_info.get('table'),
+                widget_info.get('filter'),
+                widget_info.get('stats')
+            )
+    
+    def _check_budget_errors(self, data, section_name: str):
+        """Проверка ошибок для бюджетных разделов (доходы, расходы, источники)"""
         budget_cols = Form0503317Constants.BUDGET_COLUMNS
-        approved_headers = [f"Утв: {col}" for col in budget_cols]
-        executed_headers = [f"Исп: {col}" for col in budget_cols]
-
-        headers = base_headers + approved_headers + executed_headers
-        self.data_table.setColumnCount(len(headers))
-        self.data_table.setHorizontalHeaderLabels(headers)
-
-        self.data_table.setRowCount(len(data))
-        for row_idx, item in enumerate(data):
-            self.data_table.setItem(row_idx, 0, QTableWidgetItem(str(item.get("наименование_показателя", ""))))
-            self.data_table.setItem(row_idx, 1, QTableWidgetItem(str(item.get("код_строки", ""))))
-            self.data_table.setItem(row_idx, 2, QTableWidgetItem(str(item.get("код_классификации", ""))))
-            self.data_table.setItem(row_idx, 3, QTableWidgetItem(str(item.get("уровень", 0))))
-
-            approved = item.get("утвержденный", {}) or {}
-            executed = item.get("исполненный", {}) or {}
-
-            # Утвержденные
-            for i, col_name in enumerate(budget_cols):
-                value = approved.get(col_name, 0)
-                text = "" if value in (None, "x") else f"{value:,.2f}" if isinstance(value, (int, float)) else str(value)
-                self.data_table.setItem(row_idx, len(base_headers) + i, QTableWidgetItem(text))
-
-            # Исполненные
-            offset = len(base_headers) + len(budget_cols)
-            for i, col_name in enumerate(budget_cols):
-                value = executed.get(col_name, 0)
-                text = "" if value in (None, "x") else f"{value:,.2f}" if isinstance(value, (int, float)) else str(value)
-                self.data_table.setItem(row_idx, offset + i, QTableWidgetItem(text))
-
-        self.hide_zero_columns_in_table(section_key, data)
-
-        # Ограничиваем ширину столбцов
-        header = self.data_table.horizontalHeader()
-        max_width = max(80, self.width() // 8 if self.width() > 0 else 200)
-        for i in range(self.data_table.columnCount()):
-            header.setSectionResizeMode(i, QHeaderView.Interactive)
-            header.resizeSection(i, min(header.sectionSize(i), max_width))
-
-        # Высота заголовка в зависимости от количества строк в названиях колонок
-        font_metrics = header.fontMetrics()
-        max_lines = 1
-        for text in headers:
-            lines = text.count("\n") + 1
-            if lines > max_lines:
-                max_lines = lines
-        line_height = font_metrics.lineSpacing()
-        header.setFixedHeight(line_height * max_lines + 6)
-
-        # Применяем такое же скрытие нулевых столбцов к дереву
-        self.hide_zero_columns_in_tree(section_key, data)
-
-    def hide_zero_columns_in_table(self, section_key: str, data):
-        """
-        Автоматическое скрытие столбцов, в которых итоговое значение равно 0.
-        Для доходов/расходов/источников ищем строку '...всего', для
-        консолидируемых расчетов — строку с 'итого' или кодом 899.
-        """
-        base_offset = 4  # Наименование, код строки, код классификации, уровень
-
-        if section_key == "консолидируемые_расчеты_data":
-            cons_cols = Form0503317Constants.CONSOLIDATED_COLUMNS
-            # Ищем итоговую строку
-            total_item = None
-            for item in data:
-                name = str(item.get("наименование_показателя", "")).lower()
-                code = str(item.get("код_строки", "")).lower()
-                if "итого" in name or code == "899":
-                    total_item = item
-                    break
-            if not total_item:
-                return
-
-            поступления = total_item.get("поступления", {}) or {}
-            for i, col_name in enumerate(cons_cols):
-                value = поступления.get(col_name, 0)
-                if isinstance(value, (int, float)) and abs(value) < 1e-9:
-                    col_index = base_offset + i
-                    if 0 <= col_index < self.data_table.columnCount():
-                        self.data_table.horizontalHeader().setSectionHidden(col_index, True)
-            return
-
-        # Доходы, расходы, источники
-        budget_cols = Form0503317Constants.BUDGET_COLUMNS
-        total_item = None
+        
         for item in data:
-            name = str(item.get("наименование_показателя", "")).lower()
-            if "всего" in name:
-                total_item = item
-                break
-        if not total_item:
+            level = item.get('уровень', 0)
+            # Проверяем только уровни < 6
+            if level >= 6:
+                continue
+            
+            name = item.get('наименование_показателя', '')
+            code = item.get('код_строки', '')
+            
+            approved_data = item.get('утвержденный', {}) or {}
+            executed_data = item.get('исполненный', {}) or {}
+            
+            for col in budget_cols:
+                # Проверка утвержденных значений
+                original_approved = approved_data.get(col, 0) or 0
+                calculated_approved = item.get(f'расчетный_утвержденный_{col}', original_approved)
+                
+                if self._is_value_different(original_approved, calculated_approved):
+                    diff = self._calculate_error_difference(original_approved, calculated_approved)
+                    self.errors_data.append({
+                        'section': section_name,
+                        'name': name,
+                        'code': code,
+                        'level': level,
+                        'type': 'Утвержденный',
+                        'column': col,
+                        'original': original_approved,
+                        'calculated': calculated_approved,
+                        'difference': diff
+                    })
+                
+                # Проверка исполненных значений
+                original_executed = executed_data.get(col, 0) or 0
+                calculated_executed = item.get(f'расчетный_исполненный_{col}', original_executed)
+                
+                if self._is_value_different(original_executed, calculated_executed):
+                    diff = self._calculate_error_difference(original_executed, calculated_executed)
+                    self.errors_data.append({
+                        'section': section_name,
+                        'name': name,
+                        'code': code,
+                        'level': level,
+                        'type': 'Исполненный',
+                        'column': col,
+                        'original': original_executed,
+                        'calculated': calculated_executed,
+                        'difference': diff
+                    })
+    
+    def _check_consolidated_errors(self, data, section_name: str):
+        """Проверка ошибок для консолидированных расчетов"""
+        cons_cols = Form0503317Constants.CONSOLIDATED_COLUMNS
+        
+        for item in data:
+            level = item.get('уровень', 0)
+            # Для консолидированных расчетов проверяем все уровни для столбца ИТОГО,
+            # и уровни < 6 для остальных столбцов
+            name = item.get('наименование_показателя', '')
+            code = item.get('код_строки', '')
+            
+            cons_data = item.get('поступления', {}) or {}
+            
+            for col in cons_cols:
+                # Оригинальное значение
+                if isinstance(cons_data, dict) and col in cons_data:
+                    original_value = cons_data.get(col, 0) or 0
+                else:
+                    original_value = item.get(f'поступления_{col}', 0) or 0
+                
+                # Расчетное значение
+                calculated_value = item.get(f'расчетный_поступления_{col}')
+                if calculated_value is None:
+                    calculated_value = original_value
+                
+                # Проверяем несоответствие
+                is_total_column = (col == 'ИТОГО')
+                should_check = (level < 6) or is_total_column
+                
+                if should_check and self._is_value_different(original_value, calculated_value):
+                    diff = self._calculate_error_difference(original_value, calculated_value)
+                    self.errors_data.append({
+                        'section': section_name,
+                        'name': name,
+                        'code': code,
+                        'level': level,
+                        'type': 'Поступления',
+                        'column': col,
+                        'original': original_value,
+                        'calculated': calculated_value,
+                        'difference': diff
+                    })
+    
+    def _calculate_error_difference(self, original: float, calculated: float) -> float:
+        """Вычисление разницы между значениями"""
+        try:
+            original_val = float(original) if original not in (None, "", "x") else 0.0
+            calculated_val = float(calculated) if calculated not in (None, "", "x") else 0.0
+            return calculated_val - original_val
+        except (ValueError, TypeError):
+            return 0.0
+    
+    def _update_errors_table(self, errors_table=None, section_filter_widget=None, stats_label=None):
+        """Обновление таблицы с ошибками"""
+        if errors_table is None:
+            errors_table = self.errors_table
+        if section_filter_widget is None:
+            section_filter_widget = self.errors_section_filter
+        if stats_label is None:
+            stats_label = self.errors_stats_label
+        
+        # Фильтрация по разделу
+        section_filter = section_filter_widget.currentText() if section_filter_widget else "Все"
+        filtered_data = self.errors_data
+        if section_filter != "Все":
+            filtered_data = [e for e in self.errors_data if e['section'] == section_filter]
+        
+        # Заполнение таблицы
+        errors_table.setRowCount(len(filtered_data))
+        
+        error_color = QColor("#FF6B6B")
+        
+        for row_idx, error in enumerate(filtered_data):
+            # Раздел
+            errors_table.setItem(row_idx, 0, QTableWidgetItem(error['section']))
+            
+            # Наименование
+            name_item = QTableWidgetItem(error['name'])
+            name_item.setForeground(QBrush(error_color))
+            errors_table.setItem(row_idx, 1, name_item)
+            
+            # Код строки
+            errors_table.setItem(row_idx, 2, QTableWidgetItem(str(error['code'])))
+            
+            # Уровень
+            errors_table.setItem(row_idx, 3, QTableWidgetItem(str(error['level'])))
+            
+            # Тип
+            errors_table.setItem(row_idx, 4, QTableWidgetItem(error['type']))
+            
+            # Колонка
+            errors_table.setItem(row_idx, 5, QTableWidgetItem(error['column']))
+            
+            # Оригинальное значение
+            orig_text = self._format_error_value(error['original'])
+            orig_item = QTableWidgetItem(orig_text)
+            errors_table.setItem(row_idx, 6, orig_item)
+            
+            # Расчетное значение
+            calc_text = self._format_error_value(error['calculated'])
+            calc_item = QTableWidgetItem(calc_text)
+            calc_item.setForeground(QBrush(error_color))
+            errors_table.setItem(row_idx, 7, calc_item)
+            
+            # Разница
+            diff_text = self._format_error_value(error['difference'])
+            diff_item = QTableWidgetItem(diff_text)
+            diff_item.setForeground(QBrush(error_color))
+            errors_table.setItem(row_idx, 8, diff_item)
+        
+        # Обновление статистики
+        if stats_label:
+            total_count = len(self.errors_data)
+            filtered_count = len(filtered_data)
+            if section_filter == "Все":
+                stats_label.setText(f"Всего ошибок: {total_count}")
+            else:
+                stats_label.setText(f"Ошибок в разделе '{section_filter}': {filtered_count} (всего: {total_count})")
+    
+    def _format_error_value(self, value) -> str:
+        """Форматирование значения для отображения"""
+        if value in (None, "", "x"):
+            return ""
+        try:
+            return f"{float(value):,.2f}"
+        except (ValueError, TypeError):
+            return str(value)
+    
+    def _export_errors(self):
+        """Экспорт ошибок в файл"""
+        import csv
+        
+        if not self.errors_data:
+            QMessageBox.information(self, "Информация", "Нет ошибок для экспорта")
             return
-
-        approved = total_item.get("утвержденный", {}) or {}
-        executed = total_item.get("исполненный", {}) or {}
-
-        for i, col_name in enumerate(budget_cols):
-            a_val = approved.get(col_name, 0) or 0
-            e_val = executed.get(col_name, 0) or 0
-            if isinstance(a_val, (int, float)) and isinstance(e_val, (int, float)):
-                if abs(a_val) < 1e-9 and abs(e_val) < 1e-9:
-                    # Скрываем и утвержденный, и исполненный столбец для этой колонки
-                    approved_col_index = base_offset + i
-                    executed_col_index = base_offset + len(budget_cols) + i
-                    if 0 <= approved_col_index < self.data_table.columnCount():
-                        self.data_table.horizontalHeader().setSectionHidden(approved_col_index, True)
-                    if 0 <= executed_col_index < self.data_table.columnCount():
-                        self.data_table.horizontalHeader().setSectionHidden(executed_col_index, True)
-
+        
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Экспорт ошибок расчетов",
+            "ошибки_расчетов.csv",
+            "CSV files (*.csv);;All files (*.*)"
+        )
+        
+        if not file_path:
+            return
+        
+        try:
+            with open(file_path, 'w', newline='', encoding='utf-8-sig') as f:
+                writer = csv.writer(f, delimiter=';')
+                # Заголовки
+                writer.writerow([
+                    "Раздел", "Наименование", "Код строки", "Уровень",
+                    "Тип", "Колонка", "Оригинальное", "Расчетное", "Разница"
+                ])
+                # Данные
+                for error in self.errors_data:
+                    writer.writerow([
+                        error['section'],
+                        error['name'],
+                        error['code'],
+                        error['level'],
+                        error['type'],
+                        error['column'],
+                        self._format_error_value(error['original']),
+                        self._format_error_value(error['calculated']),
+                        self._format_error_value(error['difference'])
+                    ])
+            
+            QMessageBox.information(self, "Успех", f"Ошибки экспортированы в файл:\n{file_path}")
+        except Exception as e:
+            logger.error(f"Ошибка экспорта: {e}", exc_info=True)
+            QMessageBox.critical(self, "Ошибка", f"Не удалось экспортировать ошибки:\n{e}")
+    
     def configure_tree_headers(self, section_name: str):
         """Конфигурация заголовков дерева под выбранный раздел"""
         base_headers = ["Наименование", "Код строки", "Код классификации", "Уровень"]
@@ -1141,9 +1522,24 @@ class MainWindow(QMainWindow):
         self.tree_header_tooltips = tooltip_headers
         self.tree_column_mapping = mapping
 
-        self.data_tree.setColumnCount(len(display_headers))
-        self.data_tree.setHeaderLabels(display_headers)
-        header = self.data_tree.header()
+        # Настраиваем заголовки для всех деревьев
+        for tree_widget in self._get_tree_widgets():
+            self._configure_tree_headers_for_widget(tree_widget, section_name, display_headers, mapping)
+
+        # Вычисляем высоту заголовка с учетом автоматического переноса текста
+        # Используем QTimer для обновления после того, как заголовки будут установлены
+        QTimer.singleShot(50, self._update_tree_header_height)
+    
+    def _configure_tree_headers_for_widget(self, tree_widget, section_name, display_headers=None, mapping=None):
+        """Настройка заголовков для конкретного виджета дерева"""
+        if display_headers is None:
+            display_headers = self.tree_headers
+        if mapping is None:
+            mapping = self.tree_column_mapping
+        
+        tree_widget.setColumnCount(len(display_headers))
+        tree_widget.setHeaderLabels(display_headers)
+        header = tree_widget.header()
         header.setDefaultAlignment(Qt.AlignCenter)
 
         # Ограничиваем ширину колонок
@@ -1152,24 +1548,9 @@ class MainWindow(QMainWindow):
             header.setSectionResizeMode(idx, QHeaderView.Interactive)
             header.resizeSection(idx, min(header.sectionSize(idx), max_width))
 
-        # Вычисляем высоту заголовка с учетом автоматического переноса текста
-        # Используем QTimer для обновления после того, как заголовки будут установлены
-        QTimer.singleShot(50, self._update_tree_header_height)
-        
-        # Подключаем обработчик изменения размера столбцов для обновления высоты заголовка
-        try:
-            if hasattr(header, 'sectionResized'):
-                try:
-                    header.sectionResized.disconnect(self._on_tree_header_section_resized)
-                except:
-                    pass
-                header.sectionResized.connect(self._on_tree_header_section_resized)
-        except Exception as e:
-            logger.warning(f"Ошибка подключения обработчика sectionResized: {e}", exc_info=True)
-
         # Для консолидируемых расчетов колонку "Код классификации" не показываем
         if section_name == "Консолидируемые расчеты" and len(display_headers) > 2:
-            self.data_tree.setColumnHidden(2, True)
+            tree_widget.setColumnHidden(2, True)
 
     def _update_tree_header_height(self):
         """Обновляет высоту заголовка дерева с учетом автоматического переноса текста"""
@@ -1314,26 +1695,29 @@ class MainWindow(QMainWindow):
             return
 
         column_total = len(self.tree_headers)
-        for col in range(column_total):
-            self.data_tree.setColumnHidden(col, False)
+        
+        # Применяем ко всем деревьям
+        for tree_widget in self._get_tree_widgets():
+            for col in range(column_total):
+                tree_widget.setColumnHidden(col, False)
 
-        if self.tree_column_mapping.get("type") != "budget":
-            return
+            if self.tree_column_mapping.get("type") != "budget":
+                continue
 
-        approved_start = self.tree_column_mapping.get("approved_start", 0)
-        executed_start = self.tree_column_mapping.get("executed_start", 0)
-        budget_cols = self.tree_column_mapping.get("budget_columns", [])
+            approved_start = self.tree_column_mapping.get("approved_start", 0)
+            executed_start = self.tree_column_mapping.get("executed_start", 0)
+            budget_cols = self.tree_column_mapping.get("budget_columns", [])
 
-        approved_range = range(approved_start, approved_start + len(budget_cols))
-        executed_range = range(executed_start, executed_start + len(budget_cols))
+            approved_range = range(approved_start, approved_start + len(budget_cols))
+            executed_range = range(executed_start, executed_start + len(budget_cols))
 
-        show_approved = self.current_data_type in ("Утвержденный", "Оба")
-        show_executed = self.current_data_type in ("Исполненный", "Оба")
+            show_approved = self.current_data_type in ("Утвержденный", "Оба")
+            show_executed = self.current_data_type in ("Исполненный", "Оба")
 
-        for idx in approved_range:
-            self.data_tree.setColumnHidden(idx, not show_approved)
-        for idx in executed_range:
-            self.data_tree.setColumnHidden(idx, not show_executed)
+            for idx in approved_range:
+                tree_widget.setColumnHidden(idx, not show_approved)
+            for idx in executed_range:
+                tree_widget.setColumnHidden(idx, not show_executed)
 
     def format_budget_value(self, value):
         """Форматирование значения бюджета для отображения"""
@@ -1346,15 +1730,16 @@ class MainWindow(QMainWindow):
         except (ValueError, TypeError):
             return str(value)
     
-    def build_tree_from_data(self, data):
+    def build_tree_from_data(self, data, tree_widget=None):
         """Построение дерева из данных"""
         try:
+            if tree_widget is None:
+                tree_widget = self.data_tree
+            
             if not data:
-                self.status_bar.showMessage("Нет данных для построения дерева")
                 return
             
             if not isinstance(data, list) or len(data) == 0:
-                self.status_bar.showMessage("Данные пусты или имеют неверный формат")
                 return
             
             # Цвета для уровней
@@ -1377,7 +1762,7 @@ class MainWindow(QMainWindow):
                         continue
                     
                     level = item.get('уровень', 0)
-                    tree_item = self.create_tree_item(item, level_colors)
+                    tree_item = self.create_tree_item(item, level_colors, tree_widget)
                 
                     # Убираем из стека все уровни, которые не могут быть родителями
                     while parents_stack and parents_stack[-1][0] >= level:
@@ -1388,7 +1773,7 @@ class MainWindow(QMainWindow):
                         parents_stack[-1][1].addChild(tree_item)
                     else:
                         # Если родителя нет, это корневой элемент
-                        self.data_tree.addTopLevelItem(tree_item)
+                        tree_widget.addTopLevelItem(tree_item)
 
                     # Запоминаем текущий элемент как последний для своего уровня
                     parents_stack.append((level, tree_item))
@@ -1399,33 +1784,35 @@ class MainWindow(QMainWindow):
                     continue
             
             # Разворачиваем уровень 0
-            for i in range(self.data_tree.topLevelItemCount()):
+            for i in range(tree_widget.topLevelItemCount()):
                 try:
-                    self.data_tree.topLevelItem(i).setExpanded(True)
+                    tree_widget.topLevelItem(i).setExpanded(True)
                 except:
                     pass
             
-            if items_created > 0:
+            if items_created > 0 and tree_widget == self.data_tree:
                 msg = f"Построено дерево: {items_created} элементов"
                 if items_failed > 0:
                     msg += f", ошибок: {items_failed}"
                 self.status_bar.showMessage(msg)
-            else:
-                self.status_bar.showMessage("Не удалось построить дерево: все элементы содержат ошибки")
         except Exception as e:
             error_msg = f"Ошибка построения дерева: {e}"
             logger.error(error_msg, exc_info=True)
-            self.status_bar.showMessage(error_msg)
+            if tree_widget == self.data_tree:
+                self.status_bar.showMessage(error_msg)
     
-    def create_tree_item(self, item, level_colors):
+    def create_tree_item(self, item, level_colors, tree_widget=None):
         """Создание элемента дерева"""
         try:
+            if tree_widget is None:
+                tree_widget = self.data_tree
+            
             level = item.get('уровень', 0)
 
-            column_count = self.data_tree.columnCount()
+            column_count = tree_widget.columnCount()
             if column_count == 0:
                 # Если колонок нет, создаем хотя бы одну
-                self.data_tree.setColumnCount(1)
+                tree_widget.setColumnCount(1)
                 column_count = 1
             
             tree_item = QTreeWidgetItem([""] * column_count)
@@ -1599,25 +1986,35 @@ class MainWindow(QMainWindow):
         # Метаданные должны быть только у ревизии, а не у проекта
         # Проверяем, что загружена ревизия (current_revision_id установлен)
         rev_id = getattr(self.controller, "current_revision_id", None)
+        
+        # Получаем все виджеты метаданных
+        metadata_widgets = self._get_metadata_widgets()
+        
         if not rev_id:
             # Если ревизия не загружена, метаданные не отображаем
-            self.metadata_text.setHtml("")
+            for metadata_widget in metadata_widgets:
+                metadata_widget.setHtml("")
             return
         
         # Метаданные берём из данных проекта (которые загружаются из ревизии)
         if not project or not project.data:
-            self.metadata_text.setHtml("")
+            for metadata_widget in metadata_widgets:
+                metadata_widget.setHtml("")
             return
         
         meta_info = project.data.get('meta_info', {})
         if not meta_info:
-            self.metadata_text.setHtml("")
+            for metadata_widget in metadata_widgets:
+                metadata_widget.setHtml("")
             return
         
         metadata_text = ""
         for key, value in meta_info.items():
             metadata_text += f"<b>{key}:</b> {value}<br>"
-        self.metadata_text.setHtml(metadata_text)
+        
+        # Обновляем все виджеты метаданных
+        for metadata_widget in metadata_widgets:
+            metadata_widget.setHtml(metadata_text)
     
     def on_section_changed(self, section_name):
         """Обработка смены раздела"""
@@ -1634,11 +2031,13 @@ class MainWindow(QMainWindow):
     
     def expand_all_tree(self):
         """Развернуть все узлы дерева"""
-        self.data_tree.expandAll()
+        for tree_widget in self._get_tree_widgets():
+            tree_widget.expandAll()
     
     def collapse_all_tree(self):
         """Свернуть все узлы дерева"""
-        self.data_tree.collapseAll()
+        for tree_widget in self._get_tree_widgets():
+            tree_widget.collapseAll()
     
     def on_tree_item_expanded(self, item):
         """Обработка разворачивания узла дерева"""
@@ -1682,52 +2081,9 @@ class MainWindow(QMainWindow):
             for i in range(self.data_tree.columnCount()):
                 self.data_tree.setColumnHidden(i, False)
     
-    def show_table_context_menu(self, position):
-        """Контекстное меню для таблицы"""
-        menu = QMenu()
-        
-        hide_column_action = menu.addAction("Скрыть столбец")
-        show_all_columns_action = menu.addAction("Показать все столбцы")
-        menu.addSeparator()
-        hide_zero_columns_action = menu.addAction("Скрыть нулевые столбцы")
-        menu.addSeparator()
-        copy_action = menu.addAction("Копировать значение")
-        
-        action = menu.exec_(self.data_table.mapToGlobal(position))
-        
-        if action == hide_column_action:
-            self.hide_current_column()
-        elif action == show_all_columns_action:
-            self.show_all_columns()
-        elif action == hide_zero_columns_action:
-            # Повторно применяем логику скрытия нулевых столбцов для текущих данных
-            if self.controller.current_project and self.controller.current_project.data:
-                section_map = {
-                    "Доходы": "доходы_data",
-                    "Расходы": "расходы_data", 
-                    "Источники финансирования": "источники_финансирования_data",
-                    "Консолидируемые расчеты": "консолидируемые_расчеты_data"
-                }
-                section_key = section_map.get(self.current_section)
-                if section_key and section_key in self.controller.current_project.data:
-                    data = self.controller.current_project.data[section_key]
-                    # Сначала показываем все, затем снова скрываем нулевые
-                    self.show_all_columns()
-                    self.hide_zero_columns_in_table(section_key, data)
-        elif action == copy_action:
-            self.copy_table_cell_value()
-    
-    def hide_current_column(self):
-        """Скрыть текущий столбец"""
-        current_column = self.data_table.currentColumn()
-        if current_column >= 0:
-            self.data_table.horizontalHeader().setSectionHidden(current_column, True)
-    
     def show_all_columns(self):
-        """Показать все столбцы"""
-        for i in range(self.data_table.columnCount()):
-            self.data_table.horizontalHeader().setSectionHidden(i, False)
-        # Показать все столбцы и в дереве (кроме скрытого кода для консолидированных)
+        """Показать все столбцы в дереве"""
+        # Показать все столбцы в дереве (кроме скрытого кода для консолидированных)
         header = self.data_tree.header()
         for i in range(self.data_tree.columnCount()):
             self.data_tree.setColumnHidden(i, False)
@@ -1753,13 +2109,8 @@ class MainWindow(QMainWindow):
 
         # Сначала показываем все столбцы
         self.show_all_columns()
-        for i in range(self.data_tree.columnCount()):
-            self.data_tree.setColumnHidden(i, False)
-        if self.current_section == "Консолидируемые расчеты" and self.data_tree.columnCount() > 2:
-            self.data_tree.setColumnHidden(2, True)
 
         # Применяем скрытие нулевых столбцов
-        self.hide_zero_columns_in_table(section_key, data)
         self.hide_zero_columns_in_tree(section_key, data)
     
     def copy_tree_item_value(self, item):
@@ -1769,12 +2120,6 @@ class MainWindow(QMainWindow):
             clipboard = QApplication.clipboard()
             clipboard.setText(text)
     
-    def copy_table_cell_value(self):
-        """Копировать значение из таблицы"""
-        current_item = self.data_table.currentItem()
-        if current_item:
-            clipboard = QApplication.clipboard()
-            clipboard.setText(current_item.text())
     
     def show_new_project_dialog(self):
         """Показать диалог создания проекта"""
@@ -1973,10 +2318,21 @@ class MainWindow(QMainWindow):
         finally:
             self.progress_bar.setVisible(False)
     
+    def update_revision_buttons_state(self, has_revision: bool):
+        """Обновление состояния кнопок ревизии в зависимости от наличия выбранной ревизии"""
+        if hasattr(self, 'recalculate_btn'):
+            self.recalculate_btn.setEnabled(has_revision)
+        if hasattr(self, 'export_calculated_btn'):
+            self.export_calculated_btn.setEnabled(has_revision)
+        if hasattr(self, 'show_errors_btn'):
+            self.show_errors_btn.setEnabled(has_revision)
+        if hasattr(self, 'documents_menu_btn'):
+            self.documents_menu_btn.setEnabled(has_revision)
+    
     def calculate_sums(self):
         """Расчет агрегированных сумм"""
-        if not self.controller.current_project:
-            QMessageBox.warning(self, "Ошибка", "Сначала выберите проект")
+        if not self.controller.current_project or not self.controller.current_revision_id:
+            QMessageBox.warning(self, "Ошибка", "Сначала выберите проект и загрузите ревизию формы")
             return
         
         self.progress_bar.setVisible(True)
@@ -1994,20 +2350,28 @@ class MainWindow(QMainWindow):
         # Обновляем отображение данных
         if self.controller.current_project:
             self.load_project_data_to_tree(self.controller.current_project)
-            # Обновляем окно ошибок, если оно открыто
-            if self.errors_dialog and self.errors_dialog.isVisible():
-                self.errors_dialog.load_errors(self.controller.current_project.data)
+            # Обновляем вкладку ошибок
+            self.load_errors_to_tab(self.controller.current_project.data)
     
     def export_validation(self):
-        """Экспорт формы с проверкой"""
-        if not self.controller.current_project:
-            QMessageBox.warning(self, "Ошибка", "Сначала выберите проект")
+        """Экспорт формы с проверкой (старый метод, оставлен для совместимости)"""
+        self.export_calculated_table()
+    
+    def export_calculated_table(self):
+        """Экспорт пересчитанной таблицы"""
+        if not self.controller.current_project or not self.controller.current_revision_id:
+            QMessageBox.warning(self, "Ошибка", "Сначала выберите проект и загрузите ревизию формы")
             return
+        
+        # Получаем информацию о ревизии для имени файла
+        rev_id = self.controller.current_revision_id
+        revision = self.controller.db_manager.get_form_revision_by_id(rev_id)
+        revision_text = revision.revision if revision else "unknown"
         
         output_path, _ = QFileDialog.getSaveFileName(
             self,
-            "Сохранить проверенную форму",
-            f"{self.controller.current_project.name}_проверка.xlsx",
+            "Сохранить пересчитанную форму",
+            f"{self.controller.current_project.name}_рев{revision_text}_пересчет.xlsx",
             "Excel files (*.xlsx)"
         )
         
@@ -2023,7 +2387,22 @@ class MainWindow(QMainWindow):
         self.progress_bar.setVisible(False)
         
         if success:
-            QMessageBox.information(self, "Успех", f"Форма экспортирована: {output_path}")
+            # Сохраняем путь к последнему экспортированному файлу
+            self.last_exported_file = output_path
+            self.open_last_file_action.setEnabled(True)
+            if hasattr(self, 'open_last_file_btn'):
+                self.open_last_file_btn.setEnabled(True)
+            
+            # Предлагаем открыть файл
+            reply = QMessageBox.question(
+                self,
+                "Успех",
+                f"Форма экспортирована: {output_path}\n\nОткрыть файл?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes
+            )
+            if reply == QMessageBox.Yes:
+                self.open_file(output_path)
         else:
             QMessageBox.warning(self, "Ошибка", "Не удалось экспортировать форму")
     
@@ -2093,10 +2472,37 @@ class MainWindow(QMainWindow):
     
     def toggle_fullscreen(self, checked: bool):
         """Переключить полноэкранный режим"""
-        if checked:
-            self.showFullScreen()
+        # Проверяем, активна ли вкладка ошибок
+        if self.tabs_panel and self.tabs_panel.currentWidget() == self.errors_tab:
+            self._toggle_errors_tab_fullscreen()
         else:
+            if checked:
+                self.showFullScreen()
+            else:
+                self.showNormal()
+    
+    def _toggle_errors_tab_fullscreen(self):
+        """Переключение полноэкранного режима для вкладки ошибок"""
+        if self.errors_tab_fullscreen:
+            # Выходим из полноэкранного режима
+            self.errors_tab_fullscreen = False
             self.showNormal()
+        else:
+            # Входим в полноэкранный режим
+            self.errors_tab_fullscreen = True
+            self.showFullScreen()
+    
+    def keyPressEvent(self, event):
+        """Обработка нажатий клавиш"""
+        if event.key() == Qt.Key_F11:
+            # Если активна вкладка ошибок, переключаем её полноэкранный режим
+            if self.tabs_panel and self.tabs_panel.currentWidget() == self.errors_tab:
+                self._toggle_errors_tab_fullscreen()
+            else:
+                # Иначе переключаем полноэкранный режим главного окна
+                self.toggle_fullscreen(not self.isFullScreen())
+        else:
+            super().keyPressEvent(event)
     
     def show_about(self):
         """Показать информацию о программе"""
@@ -2118,25 +2524,25 @@ class MainWindow(QMainWindow):
         )
     
     def show_calculation_errors(self):
-        """Показать окно с ошибками расчетов"""
-        if not self.controller.current_project or not self.controller.current_project.data:
-            QMessageBox.warning(self, "Предупреждение", "Нет загруженного проекта или данных для анализа ошибок")
+        """Показать вкладку с ошибками расчетов"""
+        if not self.controller.current_project or not self.controller.current_revision_id:
+            QMessageBox.warning(self, "Ошибка", "Сначала выберите проект и загрузите ревизию формы")
             return
         
-        if self.errors_dialog is None:
-            self.errors_dialog = CalculationErrorsDialog(self)
-            # Устанавливаем callback для обновления ошибок
-            self.errors_dialog._refresh_callback = lambda: self.errors_dialog.load_errors(
-                self.controller.current_project.data if self.controller.current_project else {}
-            )
+        if not self.controller.current_project.data:
+            QMessageBox.warning(self, "Предупреждение", "Нет данных для анализа ошибок")
+            return
         
         # Загружаем ошибки из текущих данных проекта
-        self.errors_dialog.load_errors(self.controller.current_project.data)
+        self.load_errors_to_tab(self.controller.current_project.data)
         
-        # Показываем окно
-        self.errors_dialog.show()
-        self.errors_dialog.raise_()
-        self.errors_dialog.activateWindow()
+        # Переключаемся на вкладку ошибок
+        tabs = self.tabs_panel
+        if tabs:
+            for i in range(tabs.count()):
+                if tabs.tabText(i) == "Ошибки":
+                    tabs.setCurrentIndex(i)
+                    break
     
     def show_shortcuts(self):
         """Показать список горячих клавиш"""
@@ -2165,3 +2571,267 @@ class MainWindow(QMainWindow):
         msg.setText(shortcuts_text)
         msg.setTextFormat(Qt.RichText)
         msg.exec_()
+    
+    def show_document_dialog(self):
+        """Показать диалог формирования документов"""
+        if not self.controller.current_project or not self.controller.current_revision_id:
+            QMessageBox.warning(self, "Ошибка", "Сначала выберите проект и загрузите ревизию формы")
+            return
+        
+        dialog = DocumentDialog(self)
+        dialog.exec_()
+    
+    def parse_solution_document(self):
+        """Обработка решения о бюджете"""
+        if not self.controller.current_project:
+            QMessageBox.warning(self, "Ошибка", "Сначала выберите проект")
+            return
+        
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Выберите файл решения о бюджете",
+            "",
+            "Word Documents (*.docx *.doc);;All Files (*)"
+        )
+        
+        if file_path:
+            try:
+                result = self.controller.parse_solution_document(file_path)
+                if result:
+                    QMessageBox.information(
+                        self,
+                        "Успех",
+                        f"Решение обработано:\n"
+                        f"Доходов: {len(result.get('приложение1', []))}\n"
+                        f"Расходов (общие): {len(result.get('приложение2', []))}\n"
+                        f"Расходов (по ГРБС): {len(result.get('приложение3', []))}"
+                    )
+                else:
+                    QMessageBox.warning(self, "Ошибка", "Не удалось обработать решение")
+            except Exception as e:
+                logger.error(f"Ошибка обработки решения: {e}", exc_info=True)
+                QMessageBox.critical(self, "Ошибка", f"Ошибка обработки решения:\n{str(e)}")
+    
+    def open_file(self, file_path: str):
+        """Открыть файл в системе"""
+        if not file_path or not os.path.exists(file_path):
+            QMessageBox.warning(self, "Ошибка", f"Файл не найден: {file_path}")
+            return
+        
+        try:
+            system = platform.system()
+            if system == "Windows":
+                os.startfile(file_path)
+            elif system == "Darwin":  # macOS
+                subprocess.run(["open", file_path])
+            else:  # Linux
+                subprocess.run(["xdg-open", file_path])
+            self.status_bar.showMessage(f"Файл открыт: {file_path}")
+        except Exception as e:
+            logger.error(f"Ошибка открытия файла: {e}", exc_info=True)
+            QMessageBox.critical(self, "Ошибка", f"Не удалось открыть файл:\n{str(e)}")
+    
+    def open_file_dialog(self):
+        """Диалог выбора файла для открытия"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Выберите файл для открытия",
+            "",
+            "Все поддерживаемые файлы (*.doc *.docx *.xls *.xlsx);;"
+            "Word Documents (*.doc *.docx);;"
+            "Excel Files (*.xls *.xlsx);;"
+            "All Files (*.*)"
+        )
+        
+        if file_path:
+            self.open_file(file_path)
+    
+    def open_last_exported_file(self):
+        """Открыть последний экспортированный файл"""
+        if self.last_exported_file and os.path.exists(self.last_exported_file):
+            self.open_file(self.last_exported_file)
+        else:
+            QMessageBox.warning(
+                self,
+                "Ошибка",
+                "Последний экспортированный файл не найден или не был сохранен"
+            )
+    
+    def show_tab_context_menu(self, position):
+        """Контекстное меню для вкладок"""
+        # position - это позиция клика относительно QTabWidget
+        # Проверяем, что клик был именно на tabBar
+        tab_bar = self.tabs_panel.tabBar()
+        tab_bar_pos = tab_bar.mapFrom(self.tabs_panel, position)
+        tab_index = tab_bar.tabAt(tab_bar_pos)
+        
+        # Если не нашли вкладку по позиции, пробуем найти по текущей выбранной
+        if tab_index < 0:
+            tab_index = self.tabs_panel.currentIndex()
+            if tab_index < 0:
+                return
+        
+        tab_name = self.tabs_panel.tabText(tab_index)
+        if not tab_name:
+            return
+        
+        menu = QMenu(self)
+        
+        # Проверяем, откреплена ли вкладка
+        if tab_name in self.detached_windows:
+            attach_action = menu.addAction("Вернуть во вкладки")
+            attach_action.setIcon(self.style().standardIcon(QStyle.SP_DialogApplyButton))
+            action = menu.exec_(self.tabs_panel.mapToGlobal(position))
+            if action == attach_action:
+                self.attach_tab(tab_name, None)
+        else:
+            detach_action = menu.addAction("Открыть в отдельном окне")
+            detach_action.setIcon(self.style().standardIcon(QStyle.SP_TitleBarNormalButton))
+            action = menu.exec_(self.tabs_panel.mapToGlobal(position))
+            if action == detach_action:
+                self.detach_tab(tab_index, tab_name)
+    
+    def detach_tab(self, tab_index, tab_name):
+        """Открепление вкладки в отдельное окно"""
+        # Получаем виджет вкладки
+        tab_widget = self.tabs_panel.widget(tab_index)
+        if not tab_widget:
+            return
+        
+        # Сохраняем текущий размер виджета
+        widget_size = tab_widget.size()
+        
+        # Удаляем вкладку из главного окна (но не удаляем сам виджет)
+        self.tabs_panel.removeTab(tab_index)
+        
+        # Убеждаемся, что виджет видим и имеет правильный размер
+        tab_widget.setParent(None)
+        tab_widget.setVisible(True)
+        if widget_size.isValid() and widget_size.width() > 0 and widget_size.height() > 0:
+            tab_widget.resize(widget_size)
+        
+        # Создаем отдельное окно
+        detached_window = DetachedTabWindow(tab_widget, tab_name, self)
+        self.detached_windows[tab_name] = detached_window
+        
+        # Показываем окно
+        detached_window.show()
+        detached_window.raise_()
+        detached_window.activateWindow()
+    
+    def attach_tab(self, tab_name, tab_widget=None):
+        """Возврат вкладки в главное окно"""
+        logger.debug(f"attach_tab вызван для вкладки '{tab_name}'")
+        
+        # Проверяем, есть ли эта вкладка в открепленных окнах
+        if tab_name not in self.detached_windows:
+            # Если вкладка уже не в словаре, возможно она уже была возвращена
+            # Проверяем, не находится ли она уже в tabs_panel
+            for i in range(self.tabs_panel.count()):
+                if self.tabs_panel.tabText(i) == tab_name:
+                    logger.debug(f"Вкладка '{tab_name}' уже находится в tabs_panel")
+                    return
+            logger.warning(f"Вкладка '{tab_name}' не найдена в detached_windows и не найдена в tabs_panel")
+            return
+        
+        detached_window = self.detached_windows[tab_name]
+        
+        # Получаем виджет из окна (теперь это центральный виджет напрямую)
+        if tab_widget is None:
+            tab_widget = detached_window.centralWidget()
+        
+        if not tab_widget:
+            logger.error(f"Не удалось получить виджет для вкладки '{tab_name}'")
+            # Если виджет не найден, просто удаляем запись
+            try:
+                detached_window.setProperty("attaching", True)
+                detached_window.close()
+            except:
+                pass
+            if tab_name in self.detached_windows:
+                del self.detached_windows[tab_name]
+            return
+        
+        logger.debug(f"Виджет для вкладки '{tab_name}' получен: {type(tab_widget).__name__}")
+        
+        # Сохраняем размер виджета
+        widget_size = tab_widget.size()
+        logger.debug(f"Размер виджета: {widget_size.width()}x{widget_size.height()}")
+        
+        # Устанавливаем флаг, чтобы closeEvent не вызывал attach_tab повторно
+        detached_window.setProperty("attaching", True)
+        
+        # Удаляем запись из словаря перед добавлением вкладки обратно
+        # Это предотвратит повторные вызовы attach_tab
+        if tab_name in self.detached_windows:
+            del self.detached_windows[tab_name]
+        
+        # Определяем позицию вкладки по имени
+        tab_positions = {
+            "Древовидные данные": 0,
+            "Метаданные": 1,
+            "Ошибки": 2,
+            "Просмотр формы": 3
+        }
+        position = tab_positions.get(tab_name, self.tabs_panel.count())
+        
+        logger.debug(f"Добавление вкладки '{tab_name}' в позицию {position}, текущее количество вкладок: {self.tabs_panel.count()}")
+        logger.debug(f"Виджет имеет layout: {tab_widget.layout() is not None}")
+        logger.debug(f"Виджет имеет родителя: {tab_widget.parent() is not None}, тип родителя: {type(tab_widget.parent()).__name__ if tab_widget.parent() else 'None'}")
+        
+        # ВАЖНО: Не удаляем виджет из окна до добавления в tabs_panel
+        # QTabWidget.insertTab() автоматически установит правильного родителя
+        # и удалит виджет из старого родителя
+        
+        # Убеждаемся, что виджет видим
+        tab_widget.setVisible(True)
+        
+        # Восстанавливаем размер, если он был валидным
+        if widget_size.isValid() and widget_size.width() > 0 and widget_size.height() > 0:
+            tab_widget.resize(widget_size)
+        
+        # Добавляем вкладку обратно в главное окно
+        # insertTab автоматически установит правильного родителя и удалит из старого
+        try:
+            inserted_index = self.tabs_panel.insertTab(position, tab_widget, tab_name)
+            logger.debug(f"Вкладка вставлена на индекс {inserted_index}, новое количество вкладок: {self.tabs_panel.count()}")
+            
+            # Проверяем, что вкладка действительно добавлена
+            if inserted_index >= 0 and inserted_index < self.tabs_panel.count():
+                actual_tab_name = self.tabs_panel.tabText(inserted_index)
+                logger.debug(f"Проверка: вкладка на индексе {inserted_index} имеет имя '{actual_tab_name}'")
+                
+                # Проверяем, что виджет действительно установлен как виджет вкладки
+                widget_at_index = self.tabs_panel.widget(inserted_index)
+                logger.debug(f"Виджет на индексе {inserted_index}: {type(widget_at_index).__name__ if widget_at_index else 'None'}, совпадает с tab_widget: {widget_at_index == tab_widget}")
+                
+                # Убеждаемся, что вкладка видна
+                self.tabs_panel.setCurrentIndex(inserted_index)
+                self.tabs_panel.setTabVisible(inserted_index, True)
+                
+                # Теперь можно удалить виджет из окна, так как он уже в tabs_panel
+                try:
+                    detached_window.setCentralWidget(None)
+                    logger.debug("Центральный виджет удален из окна после добавления в tabs_panel")
+                except Exception as e:
+                    logger.warning(f"Ошибка при удалении центрального виджета: {e}")
+                
+                # Принудительно обновляем отображение
+                tab_widget.show()
+                tab_widget.update()
+                self.tabs_panel.update()
+                
+                # Принудительно перерисовываем
+                QApplication.processEvents()
+            else:
+                logger.error(f"Ошибка: вкладка не была добавлена правильно. inserted_index={inserted_index}, count={self.tabs_panel.count()}")
+        except Exception as e:
+            logger.error(f"Ошибка при добавлении вкладки в tabs_panel: {e}", exc_info=True)
+        
+        # Закрываем окно после того, как вкладка добавлена
+        try:
+            detached_window.close()
+        except Exception as e:
+            logger.warning(f"Ошибка при закрытии окна: {e}")
+        
+        logger.info(f"Вкладка '{tab_name}' успешно возвращена в главное окно на позицию {position}")

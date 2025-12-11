@@ -255,3 +255,377 @@ class FormRevisionRecord:
         created_at = row.get("created_at")
         fr.created_at = datetime.fromisoformat(created_at) if created_at else datetime.now()
         return fr
+
+
+# --------------------------------------------------------------------
+# Модели для справочников классификаций
+# --------------------------------------------------------------------
+
+class IncomeCode:
+    """Модель кода дохода из справочника"""
+    
+    def __init__(self):
+        self.код: str = ""
+        self.название: str = ""
+        self.уровень: int = 0
+        self.наименование: str = ""
+    
+    @classmethod
+    def from_row(cls, row: Dict[str, Any]) -> "IncomeCode":
+        code = cls()
+        code.код = str(row.get("код", "")).strip()
+        code.название = str(row.get("название", "")).strip()
+        code.уровень = int(row.get("уровень", 0) or 0)
+        code.наименование = str(row.get("наименование", "")).strip()
+        return code
+
+
+class ExpenseCode:
+    """Модель кода расхода из справочника"""
+    
+    def __init__(self):
+        self.код: str = ""
+        self.название: str = ""
+        self.уровень: int = 0
+        self.код_Р: str = ""
+        self.код_ПР: str = ""
+        self.код_ЦС: str = ""
+        self.код_ВР: str = ""
+        self.наименование: str = ""
+    
+    @classmethod
+    def from_row(cls, row: Dict[str, Any]) -> "ExpenseCode":
+        code = cls()
+        code.код = str(row.get("код", "")).strip()
+        code.название = str(row.get("название", "")).strip()
+        code.уровень = int(row.get("уровень", 0) or 0)
+        code.код_Р = str(row.get("код_Р", "")).strip()
+        code.код_ПР = str(row.get("код_ПР", "")).strip()
+        code.код_ЦС = str(row.get("код_ЦС", "")).strip()
+        code.код_ВР = str(row.get("код_ВР", "")).strip()
+        code.наименование = str(row.get("наименование", "")).strip()
+        return code
+
+
+class MunicipalityTypeRef:
+    """Справочник видов муниципальных образований"""
+    
+    def __init__(self):
+        self.код_вида_МО: str = ""
+        self.наименование: str = ""
+    
+    @classmethod
+    def from_row(cls, row: Dict[str, Any]) -> "MunicipalityTypeRef":
+        m = cls()
+        m.код_вида_МО = str(row.get("код_вида_МО", "")).strip()
+        m.наименование = str(row.get("наименование", "")).strip()
+        return m
+
+
+class ExtendedMunicipalityRef(MunicipalityRef):
+    """Расширенная модель муниципального образования с полными данными"""
+    
+    def __init__(self):
+        super().__init__()
+        self.код_вида_МО: Optional[str] = None
+        self.адрес_совет: str = ""
+        self.адрес_администрация: str = ""
+        self.совет_почта: str = ""
+        self.администрация_почта: str = ""
+        self.должность_совет: str = ""
+        self.фамилия_совет: str = ""
+        self.имя_совет: str = ""
+        self.отчество_совет: str = ""
+        self.должность_администрация: str = ""
+        self.фамилия_администрация: str = ""
+        self.имя_администрация: str = ""
+        self.отчество_администрация: str = ""
+        self.родительный_падеж: str = ""
+        self.дата_соглашения: Optional[datetime] = None
+        self.дата_решения: Optional[datetime] = None
+        self.номер_решения: str = ""
+        self.начальная_доходы: float = 0.0
+        self.начальная_расходы: float = 0.0
+        self.начальная_дефицит: float = 0.0
+    
+    @classmethod
+    def from_row(cls, row: Dict[str, Any]) -> "ExtendedMunicipalityRef":
+        m = cls()
+        m.id = row.get("id")
+        m.code = str(row.get("code", "")).strip()
+        m.name = str(row.get("name", "")).strip()
+        m.код_вида_МО = row.get("код_вида_МО")
+        m.адрес_совет = str(row.get("адрес_совет", "")).strip()
+        m.адрес_администрация = str(row.get("адрес_администрация", "")).strip()
+        m.совет_почта = str(row.get("совет_почта", "")).strip()
+        m.администрация_почта = str(row.get("администрация_почта", "")).strip()
+        m.должность_совет = str(row.get("должность_совет", "")).strip()
+        m.фамилия_совет = str(row.get("фамилия_совет", "")).strip()
+        m.имя_совет = str(row.get("имя_совет", "")).strip()
+        m.отчество_совет = str(row.get("отчество_совет", "")).strip()
+        m.должность_администрация = str(row.get("должность_администрация", "")).strip()
+        m.фамилия_администрация = str(row.get("фамилия_администрация", "")).strip()
+        m.имя_администрация = str(row.get("имя_администрация", "")).strip()
+        m.отчество_администрация = str(row.get("отчество_администрация", "")).strip()
+        m.родительный_падеж = str(row.get("родительный_падеж", "")).strip()
+        
+        # Даты
+        дата_соглашения = row.get("дата_соглашения")
+        if дата_соглашения:
+            if isinstance(дата_соглашения, str):
+                try:
+                    m.дата_соглашения = datetime.fromisoformat(дата_соглашения)
+                except:
+                    m.дата_соглашения = None
+            elif isinstance(дата_соглашения, datetime):
+                m.дата_соглашения = дата_соглашения
+        
+        дата_решения = row.get("дата_решения")
+        if дата_решения:
+            if isinstance(дата_решения, str):
+                try:
+                    m.дата_решения = datetime.fromisoformat(дата_решения)
+                except:
+                    m.дата_решения = None
+            elif isinstance(дата_решения, datetime):
+                m.дата_решения = дата_решения
+        
+        m.номер_решения = str(row.get("номер_решения", "")).strip()
+        m.начальная_доходы = float(row.get("начальная_доходы", 0) or 0)
+        m.начальная_расходы = float(row.get("начальная_расходы", 0) or 0)
+        m.начальная_дефицит = float(row.get("начальная_дефицит", 0) or 0)
+        m.is_active = bool(row.get("is_active", 1))
+        return m
+
+
+class GRBSRef:
+    """Справочник ГРБС (Главных распорядителей бюджетных средств)"""
+    
+    def __init__(self):
+        self.код_ГРБС: str = ""
+        self.наименование: str = ""
+    
+    @classmethod
+    def from_row(cls, row: Dict[str, Any]) -> "GRBSRef":
+        g = cls()
+        g.код_ГРБС = str(row.get("код_ГРБС", "")).strip()
+        g.наименование = str(row.get("наименование", "")).strip()
+        return g
+
+
+class ExpenseSectionRef:
+    """Справочник разделов/подразделов классификации расходов"""
+    
+    def __init__(self):
+        self.код_РП: str = ""
+        self.наименование: str = ""
+        self.утверждающий_документ: Optional[str] = None
+    
+    @classmethod
+    def from_row(cls, row: Dict[str, Any]) -> "ExpenseSectionRef":
+        e = cls()
+        e.код_РП = str(row.get("код_РП", "")).strip()
+        e.наименование = str(row.get("наименование", "")).strip()
+        e.утверждающий_документ = row.get("утверждающий_документ")
+        return e
+
+
+class TargetExpenseRef:
+    """Справочник целевых статей расходов"""
+    
+    def __init__(self):
+        self.код_ЦСР: str = ""
+        self.наименование: str = ""
+    
+    @classmethod
+    def from_row(cls, row: Dict[str, Any]) -> "TargetExpenseRef":
+        t = cls()
+        t.код_ЦСР = str(row.get("код_ЦСР", "")).strip()
+        t.наименование = str(row.get("наименование", "")).strip()
+        return t
+
+
+class ExpenseTypeRef:
+    """Справочник видов статей расходов"""
+    
+    def __init__(self):
+        self.код_вида_СР: str = ""
+        self.наименование: str = ""
+    
+    @classmethod
+    def from_row(cls, row: Dict[str, Any]) -> "ExpenseTypeRef":
+        e = cls()
+        e.код_вида_СР = str(row.get("код_вида_СР", "")).strip()
+        e.наименование = str(row.get("наименование", "")).strip()
+        return e
+
+
+class ProgramNonProgramRef:
+    """Справочник программных/непрограммных статей"""
+    
+    def __init__(self):
+        self.код_ПНС: str = ""
+        self.наименование: str = ""
+    
+    @classmethod
+    def from_row(cls, row: Dict[str, Any]) -> "ProgramNonProgramRef":
+        p = cls()
+        p.код_ПНС = str(row.get("код_ПНС", "")).strip()
+        p.наименование = str(row.get("наименование", "")).strip()
+        return p
+
+
+class ExpenseKindRef:
+    """Справочник видов расходов"""
+    
+    def __init__(self):
+        self.код_ВР: str = ""
+        self.наименование: str = ""
+        self.утверждающий_документ: Optional[str] = None
+    
+    @classmethod
+    def from_row(cls, row: Dict[str, Any]) -> "ExpenseKindRef":
+        e = cls()
+        e.код_ВР = str(row.get("код_ВР", "")).strip()
+        e.наименование = str(row.get("наименование", "")).strip()
+        e.утверждающий_документ = row.get("утверждающий_документ")
+        return e
+
+
+class NationalProjectRef:
+    """Справочник национальных проектов целевой статьи расходов"""
+    
+    def __init__(self):
+        self.код_НПЦСР: str = ""
+        self.наименование: str = ""
+        self.утверждающий_документ: Optional[str] = None
+    
+    @classmethod
+    def from_row(cls, row: Dict[str, Any]) -> "NationalProjectRef":
+        n = cls()
+        n.код_НПЦСР = str(row.get("код_НПЦСР", "")).strip()
+        n.наименование = str(row.get("наименование", "")).strip()
+        n.утверждающий_документ = row.get("утверждающий_документ")
+        return n
+
+
+class GADBRef:
+    """Справочник ГАДБ (Главных администраторов доходов бюджета)"""
+    
+    def __init__(self):
+        self.код_ГАДБ: str = ""
+        self.наименование: str = ""
+    
+    @classmethod
+    def from_row(cls, row: Dict[str, Any]) -> "GADBRef":
+        g = cls()
+        g.код_ГАДБ = str(row.get("код_ГАДБ", "")).strip()
+        g.наименование = str(row.get("наименование", "")).strip()
+        return g
+
+
+class IncomeGroupRef:
+    """Справочник групп доходов бюджетов"""
+    
+    def __init__(self):
+        self.код_группы_ДБ: str = ""
+        self.наименование: str = ""
+    
+    @classmethod
+    def from_row(cls, row: Dict[str, Any]) -> "IncomeGroupRef":
+        i = cls()
+        i.код_группы_ДБ = str(row.get("код_группы_ДБ", "")).strip()
+        i.наименование = str(row.get("наименование", "")).strip()
+        return i
+
+
+class IncomeSubgroupRef:
+    """Справочник подгрупп доходов бюджетов"""
+    
+    def __init__(self):
+        self.код_подгруппы_ДБ: str = ""
+        self.наименование: str = ""
+    
+    @classmethod
+    def from_row(cls, row: Dict[str, Any]) -> "IncomeSubgroupRef":
+        i = cls()
+        i.код_подгруппы_ДБ = str(row.get("код_подгруппы_ДБ", "")).strip()
+        i.наименование = str(row.get("наименование", "")).strip()
+        return i
+
+
+class IncomeArticleRef:
+    """Справочник статей/подстатей доходов бюджетов"""
+    
+    def __init__(self):
+        self.код_статьи_подстатьи_ДБ: str = ""
+        self.наименование: str = ""
+    
+    @classmethod
+    def from_row(cls, row: Dict[str, Any]) -> "IncomeArticleRef":
+        i = cls()
+        i.код_статьи_подстатьи_ДБ = str(row.get("код_статьи_подстатьи_ДБ", "")).strip()
+        i.наименование = str(row.get("наименование", "")).strip()
+        return i
+
+
+class IncomeElementRef:
+    """Справочник элементов доходов бюджетов"""
+    
+    def __init__(self):
+        self.код_элемента_ДБ: str = ""
+        self.наименование: str = ""
+    
+    @classmethod
+    def from_row(cls, row: Dict[str, Any]) -> "IncomeElementRef":
+        i = cls()
+        i.код_элемента_ДБ = str(row.get("код_элемента_ДБ", "")).strip()
+        i.наименование = str(row.get("наименование", "")).strip()
+        return i
+
+
+class IncomeSubtypeGroupRef:
+    """Справочник групп подвидов доходов бюджетов"""
+    
+    def __init__(self):
+        self.код_группы_ПДБ: str = ""
+        self.наименование: str = ""
+    
+    @classmethod
+    def from_row(cls, row: Dict[str, Any]) -> "IncomeSubtypeGroupRef":
+        i = cls()
+        i.код_группы_ПДБ = str(row.get("код_группы_ПДБ", "")).strip()
+        i.наименование = str(row.get("наименование", "")).strip()
+        return i
+
+
+class IncomeAnalyticGroupRef:
+    """Справочник аналитических групп подвидов доходов бюджетов"""
+    
+    def __init__(self):
+        self.код_группы_АПДБ: str = ""
+        self.наименование: str = ""
+    
+    @classmethod
+    def from_row(cls, row: Dict[str, Any]) -> "IncomeAnalyticGroupRef":
+        i = cls()
+        i.код_группы_АПДБ = str(row.get("код_группы_АПДБ", "")).strip()
+        i.наименование = str(row.get("наименование", "")).strip()
+        return i
+
+
+class IncomeLevelRef:
+    """Справочник уровней доходов"""
+    
+    def __init__(self):
+        self.код_уровня: str = ""
+        self.наименование: str = ""
+        self.цвет: Optional[str] = None
+    
+    @classmethod
+    def from_row(cls, row: Dict[str, Any]) -> "IncomeLevelRef":
+        i = cls()
+        i.код_уровня = str(row.get("код_уровня", "")).strip()
+        i.наименование = str(row.get("наименование", "")).strip()
+        i.цвет = row.get("цвет")
+        return i

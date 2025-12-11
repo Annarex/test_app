@@ -20,6 +20,8 @@ from models.base_models import (
 )
 from models.form_0503317 import Form0503317
 from controllers.project_controller import ProjectController
+from controllers.document_controller import DocumentController
+from controllers.solution_controller import SolutionController
 
 class MainController(QObject):
     """Главный контроллер приложения"""
@@ -36,6 +38,8 @@ class MainController(QObject):
         super().__init__()
         self.db_manager = DatabaseManager()
         self.project_controller = ProjectController(self.db_manager)
+        self.document_controller = DocumentController(self.db_manager)
+        self.solution_controller = SolutionController(self.db_manager)
         
         # Текущий проект
         self.current_project = None
@@ -55,6 +59,12 @@ class MainController(QObject):
         self.project_controller.calculation_completed.connect(self.calculation_completed)
         self.project_controller.export_completed.connect(self.export_completed)
         self.project_controller.error_occurred.connect(self.error_occurred)
+        
+        # Сигналы контроллеров документов
+        self.document_controller.document_generated.connect(self._on_document_generated)
+        self.document_controller.error_occurred.connect(self.error_occurred)
+        self.solution_controller.solution_parsed.connect(self._on_solution_parsed)
+        self.solution_controller.error_occurred.connect(self.error_occurred)
 
     # ------------------------------------------------------------------
     # Выбор формы/периода/ревизии пользователем (до загрузки файла)
@@ -1200,4 +1210,108 @@ class MainController(QObject):
         if self.current_project and self.current_project.id == project_id:
             self.current_project = None
             self.current_form = None
+    
+    # ------------------------------------------------------------------
+    # Работа с документами (заключения, письма, решения)
+    # ------------------------------------------------------------------
+    
+    def generate_conclusion(
+        self,
+        protocol_date,
+        protocol_number: str,
+        letter_date=None,
+        letter_number: str = None,
+        admin_date=None,
+        admin_number: str = None,
+        output_path: str = None
+    ) -> Optional[str]:
+        """
+        Формирование заключения на основе данных формы
+        
+        Args:
+            protocol_date: Дата протокола
+            protocol_number: Номер протокола
+            letter_date: Дата письма (опционально)
+            letter_number: Номер письма (опционально)
+            admin_date: Дата постановления администрации (опционально)
+            admin_number: Номер постановления администрации (опционально)
+            output_path: Путь для сохранения файла (опционально)
+        
+        Returns:
+            Путь к сгенерированному файлу или None при ошибке
+        """
+        if not self.current_project or not self.current_revision_id:
+            self.error_occurred.emit("Не выбран проект или ревизия")
+            return None
+        
+        return self.document_controller.generate_conclusion(
+            project_id=self.current_project.id,
+            revision_id=self.current_revision_id,
+            protocol_date=protocol_date,
+            protocol_number=protocol_number,
+            letter_date=letter_date,
+            letter_number=letter_number,
+            admin_date=admin_date,
+            admin_number=admin_number,
+            output_path=output_path
+        )
+    
+    def generate_letters(
+        self,
+        protocol_date,
+        protocol_number: str,
+        output_dir: str = None
+    ) -> Dict[str, Optional[str]]:
+        """
+        Формирование писем администрации и совета
+        
+        Args:
+            protocol_date: Дата протокола
+            protocol_number: Номер протокола
+            output_dir: Директория для сохранения файлов (опционально)
+        
+        Returns:
+            Словарь с путями к файлам: {'admin': путь, 'council': путь}
+        """
+        if not self.current_project or not self.current_revision_id:
+            self.error_occurred.emit("Не выбран проект или ревизия")
+            return {'admin': None, 'council': None}
+        
+        return self.document_controller.generate_letters(
+            project_id=self.current_project.id,
+            revision_id=self.current_revision_id,
+            protocol_date=protocol_date,
+            protocol_number=protocol_number,
+            output_dir=output_dir
+        )
+    
+    def parse_solution_document(self, file_path: str) -> Optional[Dict[str, Any]]:
+        """
+        Парсинг Word документа с решением о бюджете
+        
+        Args:
+            file_path: Путь к Word документу
+        
+        Returns:
+            Словарь с распарсенными данными или None при ошибке
+        """
+        if not self.current_project:
+            self.error_occurred.emit("Не выбран проект")
+            return None
+        
+        return self.solution_controller.parse_solution_document(
+            file_path=file_path,
+            project_id=self.current_project.id
+        )
+    
+    def _on_document_generated(self, file_path: str):
+        """Обработчик сигнала о сгенерированном документе"""
+        logger.info(f"Документ сгенерирован: {file_path}")
+        # Можно добавить уведомление пользователя
+    
+    def _on_solution_parsed(self, result: Dict[str, Any]):
+        """Обработчик сигнала о распарсенном решении"""
+        logger.info(f"Решение распарсено: {len(result.get('приложение1', []))} доходов, "
+                   f"{len(result.get('приложение2', []))} расходов")
+        # Можно добавить сохранение данных в БД или отображение в UI
     
