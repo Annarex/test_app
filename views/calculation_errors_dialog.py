@@ -65,15 +65,21 @@ class CalculationErrorsDialog(QDialog):
         
         # Настройка таблицы
         header = self.errors_table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)  # Раздел
-        header.setSectionResizeMode(1, QHeaderView.Stretch)  # Наименование
-        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)  # Код строки
-        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)  # Уровень
-        header.setSectionResizeMode(4, QHeaderView.ResizeToContents)  # Тип
-        header.setSectionResizeMode(5, QHeaderView.ResizeToContents)  # Колонка
-        header.setSectionResizeMode(6, QHeaderView.ResizeToContents)  # Оригинальное
-        header.setSectionResizeMode(7, QHeaderView.ResizeToContents)  # Расчетное
-        header.setSectionResizeMode(8, QHeaderView.ResizeToContents)  # Разница
+        # Отключаем растягивание последнего столбца
+        header.setStretchLastSection(False)
+        # Используем Interactive режим для каждого столбца отдельно, чтобы можно было вручную изменять ширину
+        for i in range(9):
+            header.setSectionResizeMode(i, QHeaderView.Interactive)
+        # Устанавливаем начальные размеры столбцов
+        header.resizeSection(0, 120)  # Раздел
+        header.resizeSection(1, 300)  # Наименование
+        header.resizeSection(2, 100)  # Код строки
+        header.resizeSection(3, 60)   # Уровень
+        header.resizeSection(4, 120)  # Тип
+        header.resizeSection(5, 100)  # Колонка
+        header.resizeSection(6, 120)  # Оригинальное
+        header.resizeSection(7, 120)  # Расчетное
+        header.resizeSection(8, 120)  # Разница
         
         self.errors_table.setAlternatingRowColors(True)
         self.errors_table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -313,6 +319,12 @@ class CalculationErrorsDialog(QDialog):
             self.stats_label.setText(f"Всего ошибок: {total_count}")
         else:
             self.stats_label.setText(f"Ошибок в разделе '{section_filter}': {filtered_count} (всего: {total_count})")
+        
+        # Убеждаемся, что режим изменения размера столбцов установлен (на случай, если он был сброшен)
+        header = self.errors_table.horizontalHeader()
+        header.setStretchLastSection(False)
+        for i in range(9):
+            header.setSectionResizeMode(i, QHeaderView.Interactive)
     
     def _format_value(self, value) -> str:
         """Форматирование значения для отображения"""

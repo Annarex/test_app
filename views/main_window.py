@@ -5,9 +5,12 @@ from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QToolBar, QStatusBar, QAction, QTextEdit,
                              QComboBox, QTreeWidget, QTreeWidgetItem, QMenu, 
                              QInputDialog, QDialog, QDialogButtonBox, QFormLayout,
-                             QLineEdit, QCheckBox, QApplication, QStyle, QToolButton)
-from PyQt5.QtCore import Qt, QTimer, QSize
-from PyQt5.QtGui import QFont, QColor, QBrush
+                             QLineEdit, QCheckBox, QApplication, QStyle, QToolButton,
+                             QStyledItemDelegate, QSpinBox, QWidgetAction)
+from PyQt5.QtCore import Qt, QTimer, QSize, QRect
+from PyQt5.QtGui import (QFont, QColor, QBrush, QTextDocument, QTextOption, 
+                        QTextCharFormat, QTextCursor, QPainter)
+from PyQt5.QtWidgets import QStyleOptionHeader
 import os
 import subprocess
 import platform
@@ -24,6 +27,429 @@ from views.reference_viewer import ReferenceViewer
 from views.dictionaries_dialog import DictionariesDialog
 from views.form_load_dialog import FormLoadDialog
 from views.document_dialog import DocumentDialog
+
+
+class WrapHeaderView(QHeaderView):
+    """Кастомный заголовок с поддержкой переноса текста"""
+    
+    def __init__(self, orientation=Qt.Horizontal, parent=None):
+        super().__init__(orientation, parent)
+        self.setTextElideMode(Qt.ElideNone)
+        self._header_texts = {}  # Кэш текстов заголовков
+    
+    def setHeaderTexts(self, texts):
+        """Устанавливает тексты заголовков для кэширования"""
+        self._header_texts = texts
+    
+    def paintSection(self, painter, rect, logicalIndex):
+        """Переопределяем отрисовку секции заголовка с поддержкой переноса текста"""
+        # Получаем текст заголовка из кэша или модели
+        text = None
+        if logicalIndex in self._header_texts:
+            text = self._header_texts[logicalIndex]
+        elif self.model():
+            text = self.model().headerData(logicalIndex, self.orientation(), Qt.DisplayRole)
+        
+        if not text:
+            # Используем стандартную отрисовку, если текста нет
+            super().paintSection(painter, rect, logicalIndex)
+            return
+        
+        text = str(text)
+        
+        # Рисуем фон заголовка вручную, используя стиль
+        # Получаем опции стиля для отрисовки фона
+        option = QStyleOptionHeader()
+        option.initFrom(self)
+        option.rect = rect
+        option.section = logicalIndex
+        
+        # Определяем позицию секции (первая, средняя, последняя)
+        if logicalIndex == 0:
+            if self.count() > 1:
+                option.position = QStyleOptionHeader.Beginning
+            else:
+                option.position = QStyleOptionHeader.OnlyOneSection
+        elif logicalIndex == self.count() - 1:
+            option.position = QStyleOptionHeader.End
+        else:
+            option.position = QStyleOptionHeader.Middle
+        
+        # Рисуем фон заголовка вручную через палитру
+        # Получаем цвет фона из палитры
+        palette = self.palette()
+        bg_color = palette.color(palette.Button)
+        painter.fillRect(rect, bg_color)
+        
+        # Рисуем границы заголовка
+        border_color = palette.color(palette.Mid)
+        painter.setPen(border_color)
+        painter.drawRect(rect.adjusted(0, 0, -1, -1))
+        
+        # Создаем документ для переноса текста
+        doc = QTextDocument()
+        doc.setDefaultFont(self.font())
+        doc.setPlainText(text)
+        
+        # Настраиваем перенос текста
+        text_option = QTextOption()
+        text_option.setWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
+        text_option.setAlignment(Qt.AlignCenter)
+        doc.setDefaultTextOption(text_option)
+        
+        # Устанавливаем ширину документа равной ширине секции (с небольшими отступами)
+        padding = 4
+        doc.setTextWidth(rect.width() - 2 * padding)
+        
+        # Рисуем текст с переносом
+        painter.save()
+        painter.translate(rect.left() + padding, rect.top() + (rect.height() - doc.size().height()) / 2)
+        painter.setClipRect(QRect(0, 0, rect.width() - 2 * padding, rect.height()))
+        doc.drawContents(painter)
+        painter.restore()
+    
+    def sizeHint(self):
+        """Возвращаем размер заголовка с учетом переноса текста"""
+        size = super().sizeHint()
+        
+        # Вычисляем максимальную высоту с учетом переноса текста
+        max_height = 0
+        font_metrics = self.fontMetrics()
+        
+        for idx in range(self.count()):
+            if self.isSectionHidden(idx):
+                continue
+            
+            # Получаем текст из кэша или модели
+            text = None
+            if idx in self._header_texts:
+                text = self._header_texts[idx]
+            elif self.model():
+                text = self.model().headerData(idx, self.orientation(), Qt.DisplayRole)
+            
+            if not text:
+                continue
+            
+            text = str(text)
+            width = self.sectionSize(idx)
+            
+            # Создаем документ для расчета высоты
+            doc = QTextDocument()
+            doc.setDefaultFont(self.font())
+            doc.setPlainText(text)
+            
+            text_option = QTextOption()
+            text_option.setWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
+            doc.setDefaultTextOption(text_option)
+            
+            padding = 4
+            doc.setTextWidth(width - 2 * padding)
+            
+            doc_height = doc.size().height()
+            max_height = max(max_height, doc_height)
+        
+        if max_height > 0:
+            size.setHeight(int(max_height) + 8)  # Добавляем отступы
+        else:
+            size.setHeight(font_metrics.lineSpacing() + 6)
+        
+        return size
+
+
+class WordWrapItemDelegate(QStyledItemDelegate):
+    """Делегат для переноса текста в ячейках дерева"""
+    
+    def paint(self, painter, option, index):
+        if not index.isValid():
+            return
+        
+        # Настраиваем опции отрисовки (нужно сделать до проверки текста)
+        option = option.__class__(option)
+        self.initStyleOption(option, index)
+        
+        # Получаем текст из модели
+        text = index.data(Qt.DisplayRole) or ""
+        
+        # Рисуем фон даже если текст пустой (для окраски по уровням)
+        # Получаем цвет фона
+        background_brush = index.data(Qt.BackgroundRole)
+        if background_brush:
+            painter.fillRect(option.rect, background_brush)
+        elif option.state & QStyle.State_Selected:
+            # Для выделенных строк используем более светлый фон
+            highlight_color = option.palette.highlight().color()
+            # Делаем фон более прозрачным/светлым
+            light_highlight = QColor(highlight_color)
+            light_highlight.setAlpha(50)  # Полупрозрачный фон
+            painter.fillRect(option.rect, light_highlight)
+        else:
+            painter.fillRect(option.rect, option.palette.base())
+        
+        # Если текст пустой, только рисуем фон и выходим
+        if not text:
+            return
+        
+        # Получаем номер столбца
+        column = index.column()
+        
+        # Создаем документ для переноса текста
+        doc = QTextDocument()
+        doc.setDefaultFont(option.font)
+        doc.setPlainText(str(text))
+        
+        # Настраиваем перенос текста
+        # Для столбца "Код классификации" (индекс 2) отключаем перенос текста
+        text_option = QTextOption()
+        if column == 2:  # Код классификации - без переноса
+            text_option.setWrapMode(QTextOption.NoWrap)
+        else:
+            text_option.setWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
+        doc.setDefaultTextOption(text_option)
+        
+        # Для столбца "Код классификации" рисуем текст без переноса и без обрезания
+        if column == 2:
+            # Фон уже нарисован выше, только устанавливаем цвет текста
+            text_color = index.data(Qt.ForegroundRole)
+            # Сохраняем исходный шрифт
+            original_font = painter.font()
+            if text_color:
+                painter.setPen(text_color)
+            else:
+                # Для выделенных строк используем обычный цвет текста, но жирный шрифт
+                if option.state & QStyle.State_Selected:
+                    painter.setPen(option.palette.text().color())
+                    # Устанавливаем жирный шрифт
+                    font = painter.font()
+                    font.setBold(True)
+                    painter.setFont(font)
+                else:
+                    painter.setPen(option.palette.text().color())
+                    # Убеждаемся, что шрифт не жирный для невыделенных строк
+                    font = painter.font()
+                    font.setBold(False)
+                    painter.setFont(font)
+            
+            # Рисуем текст без переноса
+            text_rect = option.rect.adjusted(2, 0, -2, 0)  # Небольшой отступ слева и справа
+            painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter, str(text))
+            # Восстанавливаем исходный шрифт
+            painter.setFont(original_font)
+            return
+        
+        # Для остальных столбцов используем документ с переносом
+        # Устанавливаем ширину документа равной ширине ячейки
+        # Для столбца "Наименование" используем ширину с учетом отступов дерева
+        width = option.rect.width()
+        right_padding = 0  # Отступ справа для столбца "Наименование"
+        
+        if column == 0:
+            # Получаем отступы дерева из виджета
+            widget = option.widget
+            if widget and hasattr(widget, 'indentation'):
+                indentation = widget.indentation()
+                indent_reserve = indentation * 6 + 50  # Запас на отступы
+                width = 400 + indent_reserve
+                
+                # Вычисляем уровень элемента (глубину вложенности относительно нулевого уровня)
+                item_level = 0
+                try:
+                    model = index.model()
+                    if model:
+                        # Пытаемся получить уровень из данных элемента (столбец 3 - "Уровень")
+                        level_index = model.index(index.row(), 3, index.parent())
+                        if level_index.isValid():
+                            level_text = model.data(level_index, Qt.DisplayRole)
+                            if level_text:
+                                try:
+                                    item_level = int(str(level_text))
+                                except (ValueError, TypeError):
+                                    item_level = 0
+                        
+                        # Если не удалось получить из данных, вычисляем по глубине вложенности
+                        if item_level == 0:
+                            parent = index.parent()
+                            while parent.isValid():
+                                item_level += 1
+                                parent = parent.parent()
+                except Exception:
+                    item_level = 0
+                
+                # Вычисляем внутренний отступ справа с учетом всех уровней от 0 до текущего
+                # Сумма отступов всех уровней: indentation * (0 + 1 + 2 + ... + item_level)
+                # Формула суммы арифметической прогрессии: n * (n + 1) / 2
+                # Для уровней от 0 до item_level: indentation * item_level * (item_level + 1) / 2
+                if item_level > 0:
+                    right_padding = indentation * item_level * (item_level + 1) // 2
+                else:
+                    right_padding = 0
+            else:
+                width = 400  # Значение по умолчанию, если не удалось получить отступы
+        
+        doc.setTextWidth(width - right_padding)
+        
+        # Фон уже нарисован выше, устанавливаем цвет текста (для ошибок) через QTextCharFormat
+        text_color = index.data(Qt.ForegroundRole)
+        if text_color:
+            # text_color может быть QBrush или QColor
+            if isinstance(text_color, QBrush):
+                color = text_color.color()
+            else:
+                color = text_color
+            # Устанавливаем цвет текста через формат
+            char_format = QTextCharFormat()
+            char_format.setForeground(color)
+            # Применяем формат ко всему документу через курсор
+            cursor = QTextCursor(doc)
+            cursor.select(QTextCursor.Document)
+            cursor.setCharFormat(char_format)
+        elif option.state & QStyle.State_Selected:
+            # Для выделенных строк используем обычный цвет текста, но жирный шрифт
+            color = option.palette.text().color()
+            char_format = QTextCharFormat()
+            char_format.setForeground(color)
+            char_format.setFontWeight(QFont.Bold)  # Делаем текст жирным
+            cursor = QTextCursor(doc)
+            cursor.select(QTextCursor.Document)
+            cursor.setCharFormat(char_format)
+        else:
+            color = option.palette.text().color()
+            char_format = QTextCharFormat()
+            char_format.setForeground(color)
+            cursor = QTextCursor(doc)
+            cursor.select(QTextCursor.Document)
+            cursor.setCharFormat(char_format)
+        
+        # Рисуем текст с учетом внутреннего отступа справа
+        text_rect = option.rect.adjusted(0, 0, -right_padding, 0)
+        painter.save()
+        painter.translate(text_rect.topLeft())
+        doc.drawContents(painter)
+        painter.restore()
+    
+    def sizeHint(self, option, index):
+        if not index.isValid():
+            return QSize()
+        
+        text = index.data(Qt.DisplayRole) or ""
+        if not text:
+            return QSize(0, option.fontMetrics.height())
+        
+        # Получаем ширину столбца из виджета
+        widget = option.widget
+        column_width = 200  # Значение по умолчанию
+        column = index.column()
+        
+        right_padding = 0  # Отступ справа для столбца "Наименование"
+        
+        if widget and hasattr(widget, 'header'):
+            header = widget.header()
+            if column >= 0:
+                column_width = max(header.sectionSize(column), 50)
+                # Для столбца "Наименование" (индекс 0) используем ширину с учетом отступов
+                if column == 0:
+                    if hasattr(widget, 'indentation'):
+                        indentation = widget.indentation()
+                        indent_reserve = indentation * 6 + 50
+                        column_width = 400 + indent_reserve
+                        
+                        # Вычисляем уровень элемента для внутреннего отступа справа
+                        item_level = 0
+                        try:
+                            model = index.model()
+                            if model:
+                                # Пытаемся получить уровень из данных элемента (столбец 3 - "Уровень")
+                                level_index = model.index(index.row(), 3, index.parent())
+                                if level_index.isValid():
+                                    level_text = model.data(level_index, Qt.DisplayRole)
+                                    if level_text:
+                                        try:
+                                            item_level = int(str(level_text))
+                                        except (ValueError, TypeError):
+                                            item_level = 0
+                                
+                                # Если не удалось получить из данных, вычисляем по глубине вложенности
+                                if item_level == 0:
+                                    parent = index.parent()
+                                    while parent.isValid():
+                                        item_level += 1
+                                        parent = parent.parent()
+                        except Exception:
+                            item_level = 0
+                        
+                        # Вычисляем внутренний отступ справа с учетом всех уровней от 0 до текущего
+                        # Сумма отступов всех уровней: indentation * (0 + 1 + 2 + ... + item_level)
+                        # Формула суммы арифметической прогрессии: n * (n + 1) / 2
+                        if item_level > 0:
+                            right_padding = indentation * item_level * (item_level + 1) // 2
+                        else:
+                            right_padding = 0
+                    else:
+                        column_width = 400
+        
+        # Если ширина из option доступна, используем её
+        if option.rect.width() > 0:
+            column_width = option.rect.width()
+            # Для столбца "Наименование" учитываем отступы
+            if column == 0:
+                if widget and hasattr(widget, 'indentation'):
+                    indentation = widget.indentation()
+                    indent_reserve = indentation * 6 + 50
+                    column_width = 400 + indent_reserve
+                    
+                    # Вычисляем уровень элемента для внутреннего отступа справа
+                    item_level = 0
+                    try:
+                        model = index.model()
+                        if model:
+                            level_index = model.index(index.row(), 3, index.parent())
+                            if level_index.isValid():
+                                level_text = model.data(level_index, Qt.DisplayRole)
+                                if level_text:
+                                    try:
+                                        item_level = int(str(level_text))
+                                    except (ValueError, TypeError):
+                                        item_level = 0
+                            
+                            if item_level == 0:
+                                parent = index.parent()
+                                while parent.isValid():
+                                    item_level += 1
+                                    parent = parent.parent()
+                    except Exception:
+                        item_level = 0
+                    
+                    # Вычисляем внутренний отступ справа с учетом всех уровней от 0 до текущего
+                    # Сумма отступов всех уровней: indentation * (0 + 1 + 2 + ... + item_level)
+                    if item_level > 0:
+                        right_padding = indentation * item_level * (item_level + 1) // 2
+                    else:
+                        right_padding = 0
+                else:
+                    column_width = 400
+        
+        # Для столбца "Код классификации" (индекс 2) используем ширину текста без переноса
+        if column == 2:
+            # Возвращаем размер текста без переноса
+            text_width = option.fontMetrics.horizontalAdvance(str(text))
+            return QSize(text_width, option.fontMetrics.height())
+        
+        # Для остальных столбцов создаем документ для расчета размера с переносом
+        doc = QTextDocument()
+        doc.setDefaultFont(option.font)
+        doc.setPlainText(str(text))
+        
+        # Настраиваем перенос текста
+        text_option = QTextOption()
+        text_option.setWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
+        doc.setDefaultTextOption(text_option)
+        
+        # Устанавливаем ширину документа равной ширине столбца с учетом внутреннего отступа справа
+        # Для столбца "Наименование" вычитаем отступ справа
+        available_width = column_width - right_padding if column == 0 else column_width
+        doc.setTextWidth(available_width)
+        
+        # Возвращаем размер с учетом переноса
+        return QSize(int(doc.idealWidth()), int(doc.size().height()))
 
 
 class DetachedTabWindow(QMainWindow):
@@ -110,6 +536,9 @@ class MainWindow(QMainWindow):
         # Окна для открепленных вкладок
         self.detached_windows = {}  # {tab_name: QMainWindow}
         self.tabs_panel = None  # Будет установлен в create_tabs_panel
+        # Настройки шрифтов
+        self.font_size = 10  # Размер шрифта для данных
+        self.header_font_size = 10  # Размер шрифта для заголовков
         self.init_ui()
         self.connect_signals()
         self.controller.load_initial_data()
@@ -300,6 +729,42 @@ class MainWindow(QMainWindow):
         toggle_projects_panel_action.setStatusTip("Показать/скрыть панель проектов")
         toggle_projects_panel_action.triggered.connect(self.toggle_projects_panel)
         view_menu.addAction(toggle_projects_panel_action)
+        
+        view_menu.addSeparator()
+        
+        # Управление размером шрифта данных
+        font_size_widget = QWidget()
+        font_size_layout = QHBoxLayout(font_size_widget)
+        font_size_layout.setContentsMargins(10, 5, 10, 5)
+        font_size_label = QLabel("Размер шрифта данных:")
+        font_size_layout.addWidget(font_size_label)
+        self.font_size_spinbox = QSpinBox()
+        self.font_size_spinbox.setMinimum(6)
+        self.font_size_spinbox.setMaximum(20)
+        self.font_size_spinbox.setValue(self.font_size)
+        self.font_size_spinbox.setSuffix(" пт")
+        self.font_size_spinbox.valueChanged.connect(self.on_font_size_changed)
+        font_size_layout.addWidget(self.font_size_spinbox)
+        font_size_action = QWidgetAction(self)
+        font_size_action.setDefaultWidget(font_size_widget)
+        view_menu.addAction(font_size_action)
+        
+        # Управление размером шрифта заголовков
+        header_font_size_widget = QWidget()
+        header_font_size_layout = QHBoxLayout(header_font_size_widget)
+        header_font_size_layout.setContentsMargins(10, 5, 10, 5)
+        header_font_size_label = QLabel("Размер шрифта заголовков:")
+        header_font_size_layout.addWidget(header_font_size_label)
+        self.header_font_size_spinbox = QSpinBox()
+        self.header_font_size_spinbox.setMinimum(6)
+        self.header_font_size_spinbox.setMaximum(20)
+        self.header_font_size_spinbox.setValue(self.header_font_size)
+        self.header_font_size_spinbox.setSuffix(" пт")
+        self.header_font_size_spinbox.valueChanged.connect(self.on_header_font_size_changed)
+        header_font_size_layout.addWidget(self.header_font_size_spinbox)
+        header_font_size_action = QWidgetAction(self)
+        header_font_size_action.setDefaultWidget(header_font_size_widget)
+        view_menu.addAction(header_font_size_action)
         
         view_menu.addSeparator()
         
@@ -578,6 +1043,10 @@ class MainWindow(QMainWindow):
         self.data_tree = QTreeWidget()
         # Настраиваем заголовки дерева
         self.data_tree.setIndentation(10)
+        # Отключаем единую высоту строк, чтобы высота подстраивалась под содержимое
+        self.data_tree.setUniformRowHeights(False)
+        # Устанавливаем делегат для переноса текста в ячейках
+        self.data_tree.setItemDelegate(WordWrapItemDelegate())
         self.configure_tree_headers(self.current_section)
         self.data_tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.data_tree.customContextMenuRequested.connect(self.show_tree_context_menu)
@@ -643,15 +1112,21 @@ class MainWindow(QMainWindow):
         
         # Настройка таблицы
         header = self.errors_table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)  # Раздел
-        header.setSectionResizeMode(1, QHeaderView.Stretch)  # Наименование
-        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)  # Код строки
-        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)  # Уровень
-        header.setSectionResizeMode(4, QHeaderView.ResizeToContents)  # Тип
-        header.setSectionResizeMode(5, QHeaderView.ResizeToContents)  # Колонка
-        header.setSectionResizeMode(6, QHeaderView.ResizeToContents)  # Оригинальное
-        header.setSectionResizeMode(7, QHeaderView.ResizeToContents)  # Расчетное
-        header.setSectionResizeMode(8, QHeaderView.ResizeToContents)  # Разница
+        # Отключаем растягивание последнего столбца
+        header.setStretchLastSection(False)
+        # Используем Interactive режим для каждого столбца отдельно, чтобы можно было вручную изменять ширину
+        for i in range(9):
+            header.setSectionResizeMode(i, QHeaderView.Interactive)
+        # Устанавливаем начальные размеры столбцов
+        header.resizeSection(0, 120)  # Раздел
+        header.resizeSection(1, 300)  # Наименование
+        header.resizeSection(2, 100)  # Код строки
+        header.resizeSection(3, 60)   # Уровень
+        header.resizeSection(4, 120)  # Тип
+        header.resizeSection(5, 100)  # Колонка
+        header.resizeSection(6, 120)  # Оригинальное
+        header.resizeSection(7, 120)  # Расчетное
+        header.resizeSection(8, 120)  # Разница
         
         self.errors_table.setAlternatingRowColors(True)
         self.errors_table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -1197,12 +1672,15 @@ class MainWindow(QMainWindow):
                     
                     # Строим дерево для всех виджетов (в главном окне и открепленных)
                     for tree_widget in tree_widgets:
-                        self.build_tree_from_data(data, tree_widget)
-                        # Настраиваем заголовки для каждого дерева
+                        # Сначала настраиваем заголовки, чтобы кастомный заголовок был установлен
                         self._configure_tree_headers_for_widget(tree_widget, self.current_section)
+                        # Затем загружаем данные
+                        self.build_tree_from_data(data, tree_widget)
                     
                     # Обновляем высоту заголовка после загрузки данных
-                    QTimer.singleShot(100, self._update_tree_header_height)
+                    # Обновляем синхронно и через таймер для надежности
+                    self._update_tree_header_height_for_all()
+                    QTimer.singleShot(100, lambda: self._update_tree_header_height_for_all())
                     # Обновляем вкладку ошибок
                     self.load_errors_to_tab(project.data)
                     self.status_bar.showMessage(f"Загружено {len(data)} записей в разделе '{self.current_section}'")
@@ -1418,6 +1896,12 @@ class MainWindow(QMainWindow):
             diff_item.setForeground(QBrush(error_color))
             errors_table.setItem(row_idx, 8, diff_item)
         
+        # Убеждаемся, что режим изменения размера столбцов установлен (на случай, если он был сброшен)
+        header = errors_table.horizontalHeader()
+        header.setStretchLastSection(False)
+        for i in range(9):
+            header.setSectionResizeMode(i, QHeaderView.Interactive)
+        
         # Обновление статистики
         if stats_label:
             total_count = len(self.errors_data)
@@ -1501,10 +1985,10 @@ class MainWindow(QMainWindow):
             })
 
             for col in budget_cols:
-                display_headers.append(f"Утв:\n{col}")
+                display_headers.append(f"У. {col}")
                 tooltip_headers.append(f"Утвержденный — {col}")
             for col in budget_cols:
-                display_headers.append(f"Исп:\n{col}")
+                display_headers.append(f"И. {col}")
                 tooltip_headers.append(f"Исполненный — {col}")
 
         elif section_name == "Консолидируемые расчеты":
@@ -1527,8 +2011,10 @@ class MainWindow(QMainWindow):
             self._configure_tree_headers_for_widget(tree_widget, section_name, display_headers, mapping)
 
         # Вычисляем высоту заголовка с учетом автоматического переноса текста
-        # Используем QTimer для обновления после того, как заголовки будут установлены
-        QTimer.singleShot(50, self._update_tree_header_height)
+        # Обновляем высоту синхронно для всех деревьев
+        self._update_tree_header_height_for_all()
+        # Также обновляем через таймер на случай, если размеры столбцов еще не установлены
+        QTimer.singleShot(100, lambda: self._update_tree_header_height_for_all())
     
     def _configure_tree_headers_for_widget(self, tree_widget, section_name, display_headers=None, mapping=None):
         """Настройка заголовков для конкретного виджета дерева"""
@@ -1537,38 +2023,168 @@ class MainWindow(QMainWindow):
         if mapping is None:
             mapping = self.tree_column_mapping
         
+        # Устанавливаем делегат для переноса текста в ячейках
+        tree_widget.setItemDelegate(WordWrapItemDelegate())
+        # Отключаем единую высоту строк, чтобы высота подстраивалась под содержимое
+        tree_widget.setUniformRowHeights(False)
+        
+        # Применяем текущий размер шрифта
+        font = tree_widget.font()
+        font.setPointSize(self.font_size)
+        tree_widget.setFont(font)
+        
         tree_widget.setColumnCount(len(display_headers))
-        tree_widget.setHeaderLabels(display_headers)
+        
+        # Проверяем, есть ли уже кастомный заголовок, если нет - создаем новый
         header = tree_widget.header()
+        if not isinstance(header, WrapHeaderView):
+            # Создаем и устанавливаем кастомный заголовок с поддержкой переноса текста
+            custom_header = WrapHeaderView(Qt.Horizontal, tree_widget)
+            custom_header.setHeaderTexts({idx: text for idx, text in enumerate(display_headers)})
+            tree_widget.setHeader(custom_header)
+            header = tree_widget.header()
+        
+        # Устанавливаем заголовки ПОСЛЕ установки кастомного заголовка
+        tree_widget.setHeaderLabels(display_headers)
+        
+        # Убеждаемся, что заголовок видим
+        tree_widget.setHeaderHidden(False)
+        
+        # После setHeaderLabels нужно снова получить заголовок, так как он может быть пересоздан
+        header = tree_widget.header()
+        
+        # Если заголовок не кастомный, создаем и устанавливаем его снова
+        if not isinstance(header, WrapHeaderView):
+            custom_header = WrapHeaderView(Qt.Horizontal, tree_widget)
+            custom_header.setHeaderTexts({idx: text for idx, text in enumerate(display_headers)})
+            tree_widget.setHeader(custom_header)
+            header = tree_widget.header()
+        
+        # Обновляем тексты заголовков в кастомном заголовке
+        if isinstance(header, WrapHeaderView):
+            header.setHeaderTexts({idx: text for idx, text in enumerate(display_headers)})
+        
         header.setDefaultAlignment(Qt.AlignCenter)
-
-        # Ограничиваем ширину колонок
-        max_width = max(80, self.width() // 8 if self.width() > 0 else 200)
+        
+        # Применяем размер шрифта к заголовкам
+        header_font = header.font()
+        header_font.setPointSize(self.header_font_size)
+        header.setFont(header_font)
+        
+        # Включаем перенос текста в заголовках
+        header.setTextElideMode(Qt.ElideNone)
+        
+        # Убеждаемся, что заголовок видим
+        tree_widget.setHeaderHidden(False)
+        
+        # Устанавливаем минимальную ширину столбцов
         for idx in range(len(display_headers)):
-            header.setSectionResizeMode(idx, QHeaderView.Interactive)
-            header.resizeSection(idx, min(header.sectionSize(idx), max_width))
+            header.setMinimumSectionSize(50)
+        
+        # Устанавливаем режимы изменения размера и ширину столбцов
+        # Столбец 0 ("Наименование") - Interactive с фиксированной шириной с учетом отступов
+        # Столбец 1 ("Код строки") - Fixed с шириной 80px
+        # Столбец 2 ("Код классификации") - Interactive с фиксированной шириной 200px
+        # Столбец 3 ("Уровень") - Fixed с шириной 50px
+        # Остальные столбцы - Fixed с шириной 150px (текст будет переноситься)
+        for idx in range(len(display_headers)):
+            if idx == 0:
+                # Столбец "Наименование" - Interactive режим с фиксированной шириной
+                header.setSectionResizeMode(idx, QHeaderView.Interactive)
+                # Получаем отступы дерева и добавляем запас
+                indentation = tree_widget.indentation()
+                # Добавляем запас на отступы (примерно 6 уровней * отступ + небольшой запас)
+                indent_reserve = indentation * 6 + 50  # Запас на отступы и дополнительные элементы
+                # Устанавливаем ширину 400 пикселей + запас на отступы
+                header.resizeSection(idx, 400 + indent_reserve)
+            elif idx == 1:
+                # Столбец "Код строки" - Fixed режим с шириной 80px
+                header.setSectionResizeMode(idx, QHeaderView.Fixed)
+                header.resizeSection(idx, 80)
+            elif idx == 2:
+                # Столбец "Код классификации" - Interactive режим с фиксированной шириной
+                header.setSectionResizeMode(idx, QHeaderView.Interactive)
+                header.resizeSection(idx, 200)
+            elif idx == 3:
+                # Столбец "Уровень" - Fixed режим с шириной 50px
+                header.setSectionResizeMode(idx, QHeaderView.Fixed)
+                header.resizeSection(idx, 50)
+            else:
+                # Остальные столбцы - Fixed режим с шириной 150px
+                header.setSectionResizeMode(idx, QHeaderView.Fixed)
+                header.resizeSection(idx, 150)
+        
+        # Подключаем обработчик изменения размера столбцов для обновления высоты заголовка
+        # и ограничения ширины столбца "Наименование"
+        def on_section_resized(logical_index, old_size, new_size):
+            # Ограничиваем ширину столбца "Наименование" (индекс 0) с учетом отступов
+            if logical_index == 0:
+                indentation = tree_widget.indentation()
+                indent_reserve = indentation * 6 + 50  # Запас на отступы
+                max_width = 400 + indent_reserve
+                if new_size > max_width:
+                    header.resizeSection(0, max_width)
+            # Для столбцов с Fixed режимом восстанавливаем их фиксированные размеры
+            elif logical_index == 1:  # Столбец "Код строки" - 80px
+                if header.sectionResizeMode(logical_index) == QHeaderView.Fixed:
+                    if new_size != 80:
+                        header.resizeSection(logical_index, 80)
+            elif logical_index == 3:  # Столбец "Уровень" - 50px
+                if header.sectionResizeMode(logical_index) == QHeaderView.Fixed:
+                    if new_size != 50:
+                        header.resizeSection(logical_index, 50)
+            elif logical_index != 2:  # Остальные столбцы (кроме 0 и 2) - 150px
+                # Проверяем, что это столбец с Fixed режимом
+                if header.sectionResizeMode(logical_index) == QHeaderView.Fixed:
+                    if new_size != 150:
+                        header.resizeSection(logical_index, 150)
+            QTimer.singleShot(50, lambda tw=tree_widget: self._update_tree_header_height(tw))
+        
+        header.sectionResized.connect(on_section_resized)
+        
+        # Обновляем тексты заголовков в кастомном заголовке при изменении размера
+        if isinstance(header, WrapHeaderView):
+            header.setHeaderTexts({idx: text for idx, text in enumerate(display_headers)})
+            header.update()  # Принудительно обновляем отрисовку
 
         # Для консолидируемых расчетов колонку "Код классификации" не показываем
+        # Для остальных разделов - показываем
         if section_name == "Консолидируемые расчеты" and len(display_headers) > 2:
             tree_widget.setColumnHidden(2, True)
+        else:
+            # Убеждаемся, что столбец "Код классификации" видим для других разделов
+            if len(display_headers) > 2:
+                tree_widget.setColumnHidden(2, False)
+        
+        # Обновляем высоту заголовка сразу после настройки
+        # Это предотвращает наезд заголовка на данные при смене раздела
+        QApplication.processEvents()  # Обрабатываем события, чтобы заголовки были установлены
+        self._update_tree_header_height(tree_widget)
 
-    def _update_tree_header_height(self):
+    def _update_tree_header_height_for_all(self):
+        """Обновляет высоту заголовка для всех деревьев"""
+        for tree_widget in self._get_tree_widgets():
+            self._update_tree_header_height(tree_widget)
+    
+    def _update_tree_header_height(self, tree_widget=None):
         """Обновляет высоту заголовка дерева с учетом автоматического переноса текста"""
+        if tree_widget is None:
+            tree_widget = self.data_tree
         try:
-            header = self.data_tree.header()
+            header = tree_widget.header()
             font_metrics = header.fontMetrics()
-            max_lines = 1
+            max_height = 0
             
             # Получаем заголовки из headerItem
-            header_item = self.data_tree.headerItem()
+            header_item = tree_widget.headerItem()
             if header_item:
-                # Проходим по всем заголовкам и вычисляем максимальное количество строк
-                for idx in range(self.data_tree.columnCount()):
-                    if self.data_tree.isColumnHidden(idx):
+                # Проходим по всем заголовкам и вычисляем максимальную высоту с учетом переноса
+                for idx in range(tree_widget.columnCount()):
+                    if tree_widget.isColumnHidden(idx):
                         continue
                     
                     # Получаем текст из headerItem
-                    text = header_item.text(idx) if idx < self.data_tree.columnCount() else ""
+                    text = header_item.text(idx) if idx < tree_widget.columnCount() else ""
                     if not text and idx < len(self.tree_headers):
                         text = self.tree_headers[idx]
                     
@@ -1576,19 +2192,51 @@ class MainWindow(QMainWindow):
                         # Получаем ширину столбца
                         width = max(header.sectionSize(idx), 50)
                         
-                        # Стандартный расчет по количеству явных переносов строк
-                        lines = str(text).count("\n") + 1
-                        max_lines = max(max_lines, lines)
+                        # Создаем документ для расчета высоты с учетом переноса
+                        from PyQt5.QtGui import QTextDocument, QTextOption
+                        doc = QTextDocument()
+                        doc.setDefaultFont(header.font())
+                        doc.setPlainText(str(text))
+                        
+                        # Настраиваем перенос текста
+                        text_option = QTextOption()
+                        text_option.setWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
+                        doc.setDefaultTextOption(text_option)
+                        
+                        # Устанавливаем ширину документа (с учетом отступов)
+                        padding = 4
+                        doc.setTextWidth(width - 2 * padding)
+                        
+                        # Получаем высоту документа
+                        doc_height = doc.size().height()
+                        max_height = max(max_height, doc_height)
             else:
                 # Если нет headerItem, используем tree_headers
-                for text in self.tree_headers:
-                    if text:
-                        lines = str(text).count("\n") + 1
-                        max_lines = max(max_lines, lines)
+                for idx, text in enumerate(self.tree_headers):
+                    if text and not tree_widget.isColumnHidden(idx):
+                        width = max(header.sectionSize(idx), 50)
+                        
+                        # Создаем документ для расчета высоты
+                        from PyQt5.QtGui import QTextDocument, QTextOption
+                        doc = QTextDocument()
+                        doc.setDefaultFont(header.font())
+                        doc.setPlainText(str(text))
+                        
+                        text_option = QTextOption()
+                        text_option.setWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
+                        doc.setDefaultTextOption(text_option)
+                        doc.setTextWidth(width)
+                        
+                        doc_height = doc.size().height()
+                        max_height = max(max_height, doc_height)
             
-            line_height = font_metrics.lineSpacing()
-            new_height = line_height * max_lines + 6
-            header.setFixedHeight(new_height)
+            # Устанавливаем высоту заголовка с небольшим отступом
+            if max_height > 0:
+                header.setFixedHeight(int(max_height) + 8)
+            else:
+                # Если не удалось рассчитать, используем стандартную высоту
+                line_height = font_metrics.lineSpacing()
+                header.setFixedHeight(line_height + 6)
         except Exception as e:
             logger.warning(f"Ошибка обновления высоты заголовка дерева: {e}", exc_info=True)
             # В случае ошибки используем минимальную высоту
@@ -1790,6 +2438,33 @@ class MainWindow(QMainWindow):
                 except:
                     pass
             
+            # Обновляем размеры столбцов после загрузки данных
+            if items_created > 0:
+                header = tree_widget.header()
+                # Обновляем размеры столбцов
+                for idx in range(tree_widget.columnCount()):
+                    if not tree_widget.isColumnHidden(idx):
+                        if idx == 0:  # Столбец "Наименование" - устанавливаем ширину с учетом отступов дерева
+                            # Получаем отступы дерева и добавляем запас
+                            indentation = tree_widget.indentation()
+                            # Добавляем запас на отступы (примерно 6 уровней * отступ + небольшой запас)
+                            indent_reserve = indentation * 6 + 50  # Запас на отступы и дополнительные элементы
+                            header.resizeSection(idx, 400 + indent_reserve)
+                        elif idx == 1:  # Столбец "Код строки" - устанавливаем фиксированную ширину 80px
+                            header.setSectionResizeMode(idx, QHeaderView.Fixed)
+                            header.resizeSection(idx, 80)
+                        elif idx == 2:  # Столбец "Код классификации" - устанавливаем фиксированную ширину 200px
+                            header.resizeSection(idx, 200)
+                        elif idx == 3:  # Столбец "Уровень" - устанавливаем фиксированную ширину 50px
+                            header.setSectionResizeMode(idx, QHeaderView.Fixed)
+                            header.resizeSection(idx, 50)
+                        else:
+                            # Остальные столбцы - фиксированная ширина 150px
+                            header.setSectionResizeMode(idx, QHeaderView.Fixed)
+                            header.resizeSection(idx, 150)
+                # Обновляем высоту заголовка
+                QTimer.singleShot(100, lambda tw=tree_widget: self._update_tree_header_height(tw))
+            
             if items_created > 0 and tree_widget == self.data_tree:
                 msg = f"Построено дерево: {items_created} элементов"
                 if items_failed > 0:
@@ -1937,13 +2612,16 @@ class MainWindow(QMainWindow):
                         logger.warning(f"Ошибка обработки несоответствий для консолидируемых расчетов, колонка {col}: {e}", exc_info=True)
                         pass
             
-            # Устанавливаем цвет фона
+            # Устанавливаем цвет фона для всех столбцов
             try:
                 if level in level_colors:
                     color = QColor(level_colors[level])
-                    for i in range(min(tree_item.columnCount(), column_count)):
-                        tree_item.setBackground(i, QBrush(color))
-            except:
+                    brush = QBrush(color)
+                    # Применяем цвет ко всем столбцам
+                    for i in range(column_count):
+                        tree_item.setBackground(i, brush)
+            except Exception as e:
+                logger.warning(f"Ошибка установки цвета фона для уровня {level}: {e}", exc_info=True)
                 pass
             
             # Устанавливаем подсказки (колонка -> заголовок)
@@ -2087,8 +2765,14 @@ class MainWindow(QMainWindow):
         header = self.data_tree.header()
         for i in range(self.data_tree.columnCount()):
             self.data_tree.setColumnHidden(i, False)
+        # Для консолидируемых расчетов скрываем столбец "Код классификации"
+        # Для остальных разделов - показываем
         if self.current_section == "Консолидируемые расчеты" and self.data_tree.columnCount() > 2:
             self.data_tree.setColumnHidden(2, True)
+        else:
+            # Убеждаемся, что столбец "Код классификации" видим для других разделов
+            if self.data_tree.columnCount() > 2:
+                self.data_tree.setColumnHidden(2, False)
 
     def hide_zero_columns_global(self):
         """Сворачивает все столбцы с нулевыми значениями в итоговой строке"""
@@ -2469,6 +3153,47 @@ class MainWindow(QMainWindow):
         if reply == QMessageBox.Yes:
             self.controller.delete_project(self.controller.current_project.id)
             QMessageBox.information(self, "Успех", "Проект удален")
+    
+    def on_font_size_changed(self, size: int):
+        """Обработка изменения размера шрифта данных"""
+        self.font_size = size
+        self.apply_font_sizes()
+    
+    def on_header_font_size_changed(self, size: int):
+        """Обработка изменения размера шрифта заголовков"""
+        self.header_font_size = size
+        self.apply_font_sizes()
+    
+    def apply_font_sizes(self):
+        """Применение размеров шрифтов ко всем деревьям"""
+        # Получаем все виджеты дерева
+        tree_widgets = self._get_tree_widgets()
+        
+        for tree_widget in tree_widgets:
+            if tree_widget:
+                # Применяем размер шрифта к дереву данных
+                font = tree_widget.font()
+                font.setPointSize(self.font_size)
+                tree_widget.setFont(font)
+                
+                # Применяем размер шрифта к заголовкам
+                header = tree_widget.header()
+                if header:
+                    header_font = header.font()
+                    header_font.setPointSize(self.header_font_size)
+                    header.setFont(header_font)
+                    
+                    # Обновляем высоту заголовка с учетом нового размера шрифта
+                    self._update_tree_header_height(tree_widget)
+                
+                # Обновляем делегат, если он использует шрифт
+                delegate = tree_widget.itemDelegate()
+                if delegate:
+                    # Делегат будет использовать шрифт из option, который берется из виджета
+                    tree_widget.update()
+        
+        # Обновляем отображение
+        QApplication.processEvents()
     
     def toggle_fullscreen(self, checked: bool):
         """Переключить полноэкранный режим"""
