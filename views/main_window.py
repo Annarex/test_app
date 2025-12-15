@@ -8,12 +8,14 @@ from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QLineEdit, QCheckBox, QApplication, QStyle, QToolButton,
                              QStyledItemDelegate, QSpinBox, QWidgetAction)
 from PyQt5.QtCore import Qt, QTimer, QSize, QRect
+from PyQt5.QtCore import Qt, QTimer, QSize, QRect
 from PyQt5.QtGui import (QFont, QColor, QBrush, QTextDocument, QTextOption, 
                         QTextCharFormat, QTextCursor, QPainter)
 from PyQt5.QtWidgets import QStyleOptionHeader
 import os
 import subprocess
 import platform
+import re
 from pathlib import Path
 import pandas as pd
 
@@ -539,6 +541,8 @@ class MainWindow(QMainWindow):
         # Настройки шрифтов
         self.font_size = 10  # Размер шрифта для данных
         self.header_font_size = 10  # Размер шрифта для заголовков
+        # Отслеживание выделения
+        self.selection_start_column = None  # Столбец, с которого началось выделение
         self.init_ui()
         self.connect_signals()
         self.controller.load_initial_data()
@@ -679,10 +683,12 @@ class MainWindow(QMainWindow):
         data_menu = menubar.addMenu("&Данные")
         
         # Действия для работы с данными (не специфичные для ревизии)
+        # Действие "Скрыть нулевые столбцы" перенесено в интерфейс формы (чекбокс)
+        # Оставляем только для совместимости с горячей клавишей
         hide_zeros_action = QAction("&Скрыть нулевые столбцы", self)
         hide_zeros_action.setIcon(self.style().standardIcon(QStyle.SP_TrashIcon))
         hide_zeros_action.setShortcut("Ctrl+H")
-        hide_zeros_action.setStatusTip("Скрыть столбцы с нулевыми значениями")
+        hide_zeros_action.setStatusTip("Скрыть столбцы с нулевыми значениями (используйте чекбокс в интерфейсе формы)")
         hide_zeros_action.triggered.connect(self.hide_zero_columns_global)
         data_menu.addAction(hide_zeros_action)
         
@@ -822,10 +828,8 @@ class MainWindow(QMainWindow):
         toolbar.addAction(load_sources_ref_action)
 
         # Кнопка для сворачивания нулевых столбцов (таблица + дерево)
-        hide_zeros_action = QAction("Нулевые столбцы", self)
-        hide_zeros_action.setIcon(self.style().standardIcon(QStyle.SP_TrashIcon))
-        hide_zeros_action.triggered.connect(self.hide_zero_columns_global)
-        toolbar.addAction(hide_zeros_action)
+        # Действие "Скрыть нулевые столбцы" перенесено в интерфейс формы (чекбокс)
+        # Удалено из тулбара, т.к. теперь доступно в интерфейсе формы
         
         show_references_action = QAction("Просмотр справочников", self)
         show_references_action.setIcon(self.style().standardIcon(QStyle.SP_FileDialogInfoView))
@@ -961,6 +965,12 @@ class MainWindow(QMainWindow):
         self.data_type_combo.currentTextChanged.connect(self.on_data_type_changed)
         tree_control_layout.addWidget(self.data_type_combo)
         
+        # Чекбокс для скрытия нулевых столбцов
+        self.hide_zero_columns_checkbox = QCheckBox("Скрыть нулевые столбцы")
+        self.hide_zero_columns_checkbox.setToolTip("Скрыть столбцы, где в итоговой строке оба значения (утвержденный и исполненный) равны 0")
+        self.hide_zero_columns_checkbox.stateChanged.connect(self.on_hide_zero_columns_changed)
+        tree_control_layout.addWidget(self.hide_zero_columns_checkbox)
+        
         # Панель инструментов для ревизии (активна только при выбранной ревизии)
         self.revision_toolbar = QHBoxLayout()
         self.revision_toolbar.setSpacing(5)
@@ -1045,6 +1055,8 @@ class MainWindow(QMainWindow):
         self.data_tree.setIndentation(10)
         # Отключаем единую высоту строк, чтобы высота подстраивалась под содержимое
         self.data_tree.setUniformRowHeights(False)
+        # Включаем множественный выбор (Shift и Ctrl)
+        self.data_tree.setSelectionMode(QTreeWidget.ExtendedSelection)
         # Устанавливаем делегат для переноса текста в ячейках
         self.data_tree.setItemDelegate(WordWrapItemDelegate())
         self.configure_tree_headers(self.current_section)
@@ -1052,6 +1064,9 @@ class MainWindow(QMainWindow):
         self.data_tree.customContextMenuRequested.connect(self.show_tree_context_menu)
         self.data_tree.itemExpanded.connect(self.on_tree_item_expanded)
         self.data_tree.itemCollapsed.connect(self.on_tree_item_collapsed)
+        # Обработчики выделения
+        self.data_tree.itemSelectionChanged.connect(self.on_tree_selection_changed)
+        self.data_tree.itemClicked.connect(self.on_tree_item_clicked)
 
         # Контекстное меню по заголовкам дерева (управление столбцами)
         header = self.data_tree.header()
@@ -1657,17 +1672,25 @@ class MainWindow(QMainWindow):
             if section_key and section_key in project.data:
                 data = project.data[section_key]
                 if data and len(data) > 0:
-                    # Для раздела "Расходы" обновляем строку с кодом 450 расчетными значениями
-                    # из результат_исполнения_data для подсветки ошибок в расчетах
-                    if self.current_section == "Расходы" and project.data.get('результат_исполнения_data'):
-                        результат_data = project.data['результат_исполнения_data']
+                    # Для раздела "Расходы" подсвечиваем строку 450, сравнивая
+                    # план/исполнение с пересчитанным результатом исполнения бюджета
+                    # (дефицит/профицит), который теперь берём из calculated_deficit_proficit.
+                    if (
+                        self.current_section == "Расходы"
+                        and project.data.get('calculated_deficit_proficit')
+                    ):
+                        результат_data = project.data['calculated_deficit_proficit']
                         # Ищем строку с кодом 450
                         for row in data:
                             if str(row.get('код_строки', '')).strip() == '450':
                                 # Добавляем расчетные значения для проверки несоответствий
                                 for col in Form0503317Constants.BUDGET_COLUMNS:
-                                    row[f'расчетный_утвержденный_{col}'] = результат_data.get('утвержденный', {}).get(col, 0)
-                                    row[f'расчетный_исполненный_{col}'] = результат_data.get('исполненный', {}).get(col, 0)
+                                    row[f'расчетный_утвержденный_{col}'] = результат_data.get(
+                                        'утвержденный', {}
+                                    ).get(col, 0)
+                                    row[f'расчетный_исполненный_{col}'] = результат_data.get(
+                                        'исполненный', {}
+                                    ).get(col, 0)
                                 break
                     
                     # Строим дерево для всех виджетов (в главном окне и открепленных)
@@ -1683,6 +1706,9 @@ class MainWindow(QMainWindow):
                     QTimer.singleShot(100, lambda: self._update_tree_header_height_for_all())
                     # Обновляем вкладку ошибок
                     self.load_errors_to_tab(project.data)
+                    # Применяем скрытие нулевых столбцов, если чекбокс включен
+                    if hasattr(self, 'hide_zero_columns_checkbox') and self.hide_zero_columns_checkbox.isChecked():
+                        QTimer.singleShot(150, lambda: self.apply_hide_zero_columns())
                     self.status_bar.showMessage(f"Загружено {len(data)} записей в разделе '{self.current_section}'")
                 else:
                     self.status_bar.showMessage(f"В разделе '{self.current_section}' нет данных для отображения")
@@ -2272,9 +2298,10 @@ class MainWindow(QMainWindow):
             # Ищем итоговую строку
             total_item = None
             for item in data:
-                name = str(item.get("наименование_показателя", "")).lower()
-                code = str(item.get("код_строки", "")).lower()
-                if "итого" in name or code == "899":
+                name = str(item.get("наименование_показателя", "")).strip().lower()
+                code = str(item.get("код_строки", "")).strip().lower()
+                # Для консолидированных: строка начинается с "всего" ИЛИ код 899
+                if name.startswith("всего") or code == "899":
                     total_item = item
                     break
             if not total_item:
@@ -2283,15 +2310,27 @@ class MainWindow(QMainWindow):
             value_start = mapping.get("value_start", 4)
             totals = total_item.get("поступления", {}) or {}
 
+            header = self.data_tree.header()
+            zero_cols = []
             for i, col_name in enumerate(cons_cols):
                 val = totals.get(col_name, 0)
                 if isinstance(val, (int, float)) and abs(val) < 1e-9:
                     col_index = value_start + i
                     if 0 <= col_index < self.data_tree.columnCount():
-                        self.data_tree.setColumnHidden(col_index, True)
+                        zero_cols.append(col_index)
+
+            # Сужаем «нулевые» колонки до минимальной ширины и очищаем заголовки
+            header_item = self.data_tree.headerItem()
+            for col_index in zero_cols:
+                header.resizeSection(col_index, 2)  # минимальная ширина
+                if header_item:
+                    header_item.setText(col_index, "")
+                    header_item.setToolTip(col_index, "")
             return
 
         # Доходы, расходы, источники
+        # Паттерн: итоговые строки для первых трёх разделов
+        # оканчиваются на "всего" (регистр не важен).
         budget_cols = Form0503317Constants.BUDGET_COLUMNS
         mapping = self.tree_column_mapping or {}
         if mapping.get("type") != "budget":
@@ -2299,11 +2338,16 @@ class MainWindow(QMainWindow):
 
         total_item = None
         for item in data:
-            name = str(item.get("наименование_показателя", "")).lower()
+            name = str(item.get("наименование_показателя", "")).strip().lower()
+            # Ищем первую строку, где встречается слово "всего"
+            # (без жёсткого условия «только в конце», чтобы не зависеть
+            #  от возможных двоеточий, уточнений и т.п.)
             if "всего" in name:
                 total_item = item
                 break
+        
         if not total_item:
+            logger.debug(f"Итоговая строка не найдена для раздела {section_key}")
             return
 
         approved = total_item.get("утвержденный", {}) or {}
@@ -2312,6 +2356,12 @@ class MainWindow(QMainWindow):
         approved_start = mapping.get("approved_start", 4)
         executed_start = mapping.get("executed_start", approved_start + len(budget_cols))
 
+        # Учитываем видимость столбцов по типу данных
+        show_approved = self.current_data_type in ("Утвержденный", "Оба")
+        show_executed = self.current_data_type in ("Исполненный", "Оба")
+
+        header = self.data_tree.header()
+        zero_cols = set()
         for i, col_name in enumerate(budget_cols):
             a_val = approved.get(col_name, 0) or 0
             e_val = executed.get(col_name, 0) or 0
@@ -2319,23 +2369,18 @@ class MainWindow(QMainWindow):
                 if abs(a_val) < 1e-9 and abs(e_val) < 1e-9:
                     appr_idx = approved_start + i
                     exec_idx = executed_start + i
-                    if 0 <= appr_idx < self.data_tree.columnCount():
-                        self.data_tree.setColumnHidden(appr_idx, True)
-                    if 0 <= exec_idx < self.data_tree.columnCount():
-                        self.data_tree.setColumnHidden(exec_idx, True)
-        header_item = self.data_tree.headerItem()
-        if header_item:
-            for idx, tip in enumerate(self.tree_header_tooltips):
-                if idx < self.data_tree.columnCount():
-                    header_item.setToolTip(idx, tip)
-                    # Убеждаемся, что текст заголовка установлен
-                    if idx < len(self.tree_headers):
-                        current_text = header_item.text(idx)
-                        if not current_text or current_text != self.tree_headers[idx]:
-                            header_item.setText(idx, self.tree_headers[idx])
+                    if show_approved and 0 <= appr_idx < self.data_tree.columnCount():
+                        zero_cols.add(appr_idx)
+                    if show_executed and 0 <= exec_idx < self.data_tree.columnCount():
+                        zero_cols.add(exec_idx)
 
-        # Применяем отображение колонок в зависимости от выбранного типа данных
-        self.apply_tree_data_type_visibility()
+        # Сужаем «нулевые» колонки до минимальной ширины и очищаем заголовки
+        header_item = self.data_tree.headerItem()
+        for col_index in zero_cols:
+            header.resizeSection(col_index, 2)  # минимальная ширина
+            if header_item:
+                header_item.setText(col_index, "")
+                header_item.setToolTip(col_index, "")
 
     def apply_tree_data_type_visibility(self):
         """Скрывает столбцы дерева в зависимости от выбранного типа данных"""
@@ -2697,15 +2742,63 @@ class MainWindow(QMainWindow):
     def on_section_changed(self, section_name):
         """Обработка смены раздела"""
         self.current_section = section_name
+        # Сбрасываем столбец выделения при смене раздела
+        self.selection_start_column = None
         if self.controller.current_project:
             self.load_project_data_to_tree(self.controller.current_project)
+            # Применяем скрытие нулевых столбцов, если чекбокс включен
+            if hasattr(self, 'hide_zero_columns_checkbox') and self.hide_zero_columns_checkbox.isChecked():
+                QTimer.singleShot(200, lambda: self.apply_hide_zero_columns())
     
     def on_data_type_changed(self, data_type):
         """Обработка смены типа данных"""
         self.current_data_type = data_type
         self.apply_tree_data_type_visibility()
+        # Применяем скрытие нулевых столбцов, если чекбокс включен
+        if hasattr(self, 'hide_zero_columns_checkbox') and self.hide_zero_columns_checkbox.isChecked():
+            self.apply_hide_zero_columns()
         if self.controller.current_project:
             self.load_project_data_to_tree(self.controller.current_project)
+    
+    def on_hide_zero_columns_changed(self, state):
+        """Обработка изменения состояния чекбокса 'Скрыть нулевые столбцы'"""
+        if state == Qt.Checked:
+            self.apply_hide_zero_columns()
+        else:
+            self.show_all_columns()
+    
+    def apply_hide_zero_columns(self):
+        """Применить скрытие нулевых столбцов"""
+        if not (self.controller.current_project and self.controller.current_project.data):
+            logger.debug("apply_hide_zero_columns: нет проекта или данных")
+            return
+
+        section_map = {
+            "Доходы": "доходы_data",
+            "Расходы": "расходы_data",
+            "Источники финансирования": "источники_финансирования_data",
+            "Консолидируемые расчеты": "консолидируемые_расчеты_data"
+        }
+        section_key = section_map.get(self.current_section)
+        if not section_key or section_key not in self.controller.current_project.data:
+            logger.debug(f"apply_hide_zero_columns: раздел {self.current_section} не найден")
+            return
+
+        data = self.controller.current_project.data[section_key]
+        if not data:
+            logger.debug(f"apply_hide_zero_columns: нет данных для раздела {section_key}")
+            return
+
+        logger.debug(f"apply_hide_zero_columns: применяю скрытие для раздела {section_key}, записей: {len(data)}")
+
+        # Сначала показываем все столбцы
+        self.show_all_columns()
+        
+        # Применяем отображение колонок в зависимости от выбранного типа данных
+        self.apply_tree_data_type_visibility()
+
+        # Затем применяем скрытие нулевых столбцов (после применения видимости по типу данных)
+        self.hide_zero_columns_in_tree(section_key, data)
     
     def expand_all_tree(self):
         """Развернуть все узлы дерева"""
@@ -2760,42 +2853,28 @@ class MainWindow(QMainWindow):
                 self.data_tree.setColumnHidden(i, False)
     
     def show_all_columns(self):
-        """Показать все столбцы в дереве"""
-        # Показать все столбцы в дереве (кроме скрытого кода для консолидированных)
-        header = self.data_tree.header()
-        for i in range(self.data_tree.columnCount()):
-            self.data_tree.setColumnHidden(i, False)
-        # Для консолидируемых расчетов скрываем столбец "Код классификации"
-        # Для остальных разделов - показываем
-        if self.current_section == "Консолидируемые расчеты" and self.data_tree.columnCount() > 2:
-            self.data_tree.setColumnHidden(2, True)
-        else:
-            # Убеждаемся, что столбец "Код классификации" видим для других разделов
-            if self.data_tree.columnCount() > 2:
-                self.data_tree.setColumnHidden(2, False)
+        """Показать все столбцы в дереве и вернуть им нормальные ширины/заголовки"""
+        # Проще всего — переинициализировать заголовки и ширины так же,
+        # как это делается при загрузке данных
+        tree_widgets = self._get_tree_widgets()
+        for tree_widget in tree_widgets:
+            if tree_widget:
+                self._configure_tree_headers_for_widget(tree_widget, self.current_section)
+
+        # Снова применяем фильтр по типу данных (утверждённый/исполненный/оба)
+        self.apply_tree_data_type_visibility()
 
     def hide_zero_columns_global(self):
-        """Сворачивает все столбцы с нулевыми значениями в итоговой строке"""
-        if not (self.controller.current_project and self.controller.current_project.data):
-            return
-
-        section_map = {
-            "Доходы": "доходы_data",
-            "Расходы": "расходы_data", 
-            "Источники финансирования": "источники_финансирования_data",
-            "Консолидируемые расчеты": "консолидируемые_расчеты_data"
-        }
-        section_key = section_map.get(self.current_section)
-        if not section_key or section_key not in self.controller.current_project.data:
-            return
-
-        data = self.controller.current_project.data[section_key]
-
-        # Сначала показываем все столбцы
-        self.show_all_columns()
-
-        # Применяем скрытие нулевых столбцов
-        self.hide_zero_columns_in_tree(section_key, data)
+        """Сворачивает все столбцы с нулевыми значениями в итоговой строке
+        
+        Этот метод оставлен для совместимости с меню/тулбаром.
+        Теперь он устанавливает чекбокс и вызывает apply_hide_zero_columns.
+        """
+        if hasattr(self, 'hide_zero_columns_checkbox'):
+            self.hide_zero_columns_checkbox.setChecked(True)
+        else:
+            # Если чекбокс еще не создан, используем старую логику
+            self.apply_hide_zero_columns()
     
     def copy_tree_item_value(self, item):
         """Копировать значение из дерева"""
@@ -3228,6 +3307,119 @@ class MainWindow(QMainWindow):
                 self.toggle_fullscreen(not self.isFullScreen())
         else:
             super().keyPressEvent(event)
+    
+    def on_tree_item_clicked(self, item, column):
+        """Обработчик клика по элементу дерева - запоминаем столбец начала выделения"""
+        self.selection_start_column = column
+        # Также обновляем сумму сразу после клика
+        QTimer.singleShot(10, self.on_tree_selection_changed)
+    
+    def on_tree_selection_changed(self):
+        """Обработчик изменения выделения - подсчитываем сумму"""
+        selected_items = self.data_tree.selectedItems()
+        
+        if not selected_items:
+            # Если ничего не выбрано, очищаем статус
+            self.status_bar.showMessage("Готов к работе")
+            return
+        
+        # Определяем столбец: сначала используем сохраненный, если нет - текущий столбец
+        column_index = self.selection_start_column
+        if column_index is None:
+            # Пытаемся определить столбец из текущего элемента
+            current_item = self.data_tree.currentItem()
+            if current_item:
+                # Используем столбец текущего элемента
+                column_index = self.data_tree.currentColumn()
+                if column_index < 0:
+                    column_index = 0
+            else:
+                # Если не можем определить, используем первый столбец данных (после базовых)
+                mapping = self.tree_column_mapping or {}
+                column_type = mapping.get("type", "base")
+                if column_type == "budget":
+                    column_index = mapping.get("approved_start", 4)
+                elif column_type == "consolidated":
+                    column_index = mapping.get("value_start", 4)
+                else:
+                    column_index = 4  # По умолчанию
+        
+        # Определяем тип столбца и получаем данные
+        mapping = self.tree_column_mapping or {}
+        column_type = mapping.get("type", "base")
+        
+        total = 0.0
+        count = 0
+        column_name = ""
+        
+        # Определяем название столбца для отображения
+        if column_index < len(self.tree_headers):
+            column_name = self.tree_headers[column_index]
+        
+        # Обрабатываем выбранные элементы
+        for tree_item in selected_items:
+            # Получаем исходные данные из UserRole
+            item_data = tree_item.data(0, Qt.UserRole)
+            if not item_data or not isinstance(item_data, dict):
+                continue
+            
+            value = None
+            
+            if column_type == "budget":
+                # Бюджетные столбцы (утвержденный/исполненный)
+                budget_cols = mapping.get("budget_columns", [])
+                approved_start = mapping.get("approved_start", 4)
+                executed_start = mapping.get("executed_start", approved_start + len(budget_cols))
+                
+                if approved_start <= column_index < executed_start:
+                    # Столбец утвержденного
+                    col_idx = column_index - approved_start
+                    if col_idx < len(budget_cols):
+                        col_name = budget_cols[col_idx]
+                        approved_data = item_data.get('утвержденный', {}) or {}
+                        value = approved_data.get(col_name, 0) or 0
+                elif executed_start <= column_index < executed_start + len(budget_cols):
+                    # Столбец исполненного
+                    col_idx = column_index - executed_start
+                    if col_idx < len(budget_cols):
+                        col_name = budget_cols[col_idx]
+                        executed_data = item_data.get('исполненный', {}) or {}
+                        value = executed_data.get(col_name, 0) or 0
+            
+            elif column_type == "consolidated":
+                # Консолидируемые расчеты
+                value_start = mapping.get("value_start", 4)
+                cons_cols = mapping.get("columns", [])
+                
+                if value_start <= column_index < value_start + len(cons_cols):
+                    col_idx = column_index - value_start
+                    if col_idx < len(cons_cols):
+                        col_name = cons_cols[col_idx]
+                        cons_data = item_data.get('поступления', {}) or {}
+                        if isinstance(cons_data, dict) and col_name in cons_data:
+                            value = cons_data.get(col_name, 0) or 0
+                        else:
+                            # Проверяем плоские поля
+                            value = item_data.get(f'поступления_{col_name}', 0) or 0
+            
+            # Преобразуем значение в число и добавляем к сумме
+            if value is not None:
+                try:
+                    if value == 'x' or value == '':
+                        continue
+                    num_value = float(value)
+                    total += num_value
+                    count += 1
+                except (ValueError, TypeError):
+                    continue
+        
+        # Форматируем и выводим результат
+        if count > 0:
+            formatted_total = f"{total:,.2f}".replace(",", " ")
+            message = f"Выбрано строк: {count} | Сумма по столбцу '{column_name}': {formatted_total}"
+            self.status_bar.showMessage(message)
+        else:
+            self.status_bar.showMessage("Готов к работе")
     
     def show_about(self):
         """Показать информацию о программе"""

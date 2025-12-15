@@ -238,10 +238,22 @@ class DatabaseManager:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     revision_id INTEGER NOT NULL UNIQUE,
                     meta_info TEXT,
-                    результат_исполнения_data TEXT,
+                    calculated_deficit_proficit TEXT,  -- ранее результат_исполнения_data
                     FOREIGN KEY (revision_id) REFERENCES form_revisions(id) ON DELETE CASCADE
                 )
             ''')
+
+            # Миграция: переименовываем старый столбец результат_исполнения_data,
+            # если он ещё существует, в calculated_deficit_proficit
+            try:
+                cursor.execute(
+                    'ALTER TABLE revision_metadata '
+                    'RENAME COLUMN результат_исполнения_data TO calculated_deficit_proficit'
+                )
+            except sqlite3.OperationalError:
+                # Либо столбец уже переименован, либо старая версия SQLite без RENAME COLUMN.
+                # В этом случае продолжаем работать с тем, что есть.
+                pass
 
             # Справочники для классификаций расходов бюджетов
             cursor.execute('''
@@ -2292,6 +2304,16 @@ class DatabaseManager:
                 
                 result[section_name] = result_rows
         
+        # Рассчитываем дефицит/профицит из исходных данных (до пересчета)
+        # Берем исходные данные из нормализованных таблиц
+        original_income_data = self._convert_budget_df_to_calculation_format(income_df, 'доходы_data', form) if not income_df.empty else []
+        original_expense_data = self._convert_budget_df_to_calculation_format(expense_df, 'расходы_data', form) if not expense_df.empty else []
+        
+        if original_income_data and original_expense_data:
+            calculated_deficit_proficit = form._calculate_deficit_proficit_from_original(original_income_data, original_expense_data)
+            if calculated_deficit_proficit:
+                result['calculated_deficit_proficit'] = calculated_deficit_proficit
+        
         return result
     
     def _convert_budget_df_to_calculation_format(
@@ -2462,7 +2484,8 @@ class DatabaseManager:
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute(
-                'SELECT meta_info, результат_исполнения_data FROM revision_metadata WHERE revision_id=?',
+                'SELECT meta_info, calculated_deficit_proficit '
+                'FROM revision_metadata WHERE revision_id=?',
                 (revision_id,)
             )
             meta_row = cursor.fetchone()
@@ -2473,32 +2496,57 @@ class DatabaseManager:
                     except (json.JSONDecodeError, TypeError) as e:
                         logger.warning(f"Ошибка загрузки meta_info для ревизии {revision_id}: {e}", exc_info=True)
                 
-                if meta_row[1]:  # результат_исполнения_data
+                # calculated_deficit_proficit сейчас не используется как источник истины,
+                # но оставляем возможность его чтения, если когда-либо будет заполнен.
+                if meta_row[1]:
                     try:
-                        result['результат_исполнения_data'] = json.loads(meta_row[1])
+                        result['calculated_deficit_proficit'] = json.loads(meta_row[1])
                     except (json.JSONDecodeError, TypeError) as e:
-                        logger.warning(f"Ошибка загрузки результат_исполнения_data для ревизии {revision_id}: {e}", exc_info=True)
+                        logger.warning(
+                            f"Ошибка загрузки calculated_deficit_proficit для ревизии {revision_id}: {e}",
+                            exc_info=True
+                        )
         return result
     
     def save_revision_data(self, project_id: int, revision_id: int, data: Dict[str, Any]):
         """Сохранение данных ревизии (разделы + метаданные)"""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            # Сохраняем данные разделов
-            self._save_project_data(cursor, project_id, data, revision_id)
-            # Сохраняем метаданные отдельно
+            # Определяем, есть ли в data разделы формы (доходы/расходы/источники/консолидируемые)
+            # Если передаётся только meta_info, значения *_values трогать не нужно.
+            has_sections = any(
+                key in data
+                for key in (
+                    'доходы_data',
+                    'расходы_data',
+                    'источники_финансирования_data',
+                    'консолидируемые_расчеты_data',
+                )
+            )
+            if has_sections:
+                # Сохраняем данные разделов и перезаписываем *_values
+                self._save_project_data(cursor, project_id, data, revision_id)
+            # Сохраняем только метаданные формы (шапку), без результата исполнения бюджета.
+            # Результат исполнения теперь источником истины является в *_values
+            # (expense_values с indicator_name = "Результат исполнения бюджета (дефицит/профицит)").
             meta_info = data.get('meta_info')
-            результат_исполнения_data = data.get('результат_исполнения_data')
-            if meta_info or результат_исполнения_data:
+            if meta_info:
                 # Удаляем старые метаданные
                 cursor.execute('DELETE FROM revision_metadata WHERE revision_id=?', (revision_id,))
                 # Сохраняем новые метаданные
-                meta_info_json = json.dumps(meta_info, ensure_ascii=False, default=str) if meta_info else None
-                результат_исполнения_json = json.dumps(результат_исполнения_data, ensure_ascii=False, default=str) if результат_исполнения_data else None
-                if meta_info_json or результат_исполнения_json:
+                meta_info_json = json.dumps(meta_info, ensure_ascii=False, default=str)
+                try:
                     cursor.execute(
-                        'INSERT INTO revision_metadata (revision_id, meta_info, результат_исполнения_data) VALUES (?, ?, ?)',
-                        (revision_id, meta_info_json, результат_исполнения_json)
+                        'INSERT INTO revision_metadata (revision_id, meta_info, calculated_deficit_proficit) '
+                        'VALUES (?, ?, NULL)',
+                        (revision_id, meta_info_json)
+                    )
+                except sqlite3.OperationalError:
+                    # Fallback для старых схем, где ещё используется результат_исполнения_data
+                    cursor.execute(
+                        'INSERT INTO revision_metadata (revision_id, meta_info, результат_исполнения_data) '
+                        'VALUES (?, ?, NULL)',
+                        (revision_id, meta_info_json)
                     )
             conn.commit()
     

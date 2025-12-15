@@ -344,6 +344,21 @@ class MainController(QObject):
                 return
             
             self.current_form.load_saved_data(revision_data)
+            # Пересчитываем дефицит/профицит при загрузке ревизии, чтобы
+            # calculated_deficit_proficit всегда был доступен в project.data
+            try:
+                if hasattr(self.current_form, "_calculate_deficit_proficit"):
+                    self.current_form._calculate_deficit_proficit()
+                    if getattr(self.current_form, "calculated_deficit_proficit", None):
+                        revision_data["calculated_deficit_proficit"] = (
+                            self.current_form.calculated_deficit_proficit
+                        )
+                        self.current_project.data = revision_data
+            except Exception as e:
+                logger.error(
+                    f"Ошибка пересчета дефицита/профицита при загрузке ревизии: {e}",
+                    exc_info=True,
+                )
             
             # Пересчитываем уровни и значения на основе справочников, если файл есть
             # Файл нужен только для покраски по уровням и отображения пересчитанных значений
@@ -593,14 +608,14 @@ class MainController(QObject):
                 logger.error(f"Ошибка регистрации ревизии формы: {e}", exc_info=True)
             
             # Сохраняем данные ревизии отдельно, если ревизия создана
-            # Включаем meta_info и результат_исполнения_data, которые относятся к этой ревизии
+            # Включаем meta_info и разделы формы; результат исполнения бюджета
+            # больше не дублируется в отдельном поле, а берется из итоговых строк/values.
             if revision_record and revision_record.id:
                 self.current_revision_id = revision_record.id
                 try:
                     # Формируем полные данные ревизии, включая метаданные
                     revision_data = {
                         'meta_info': form_data.get('meta_info', {}),
-                        'результат_исполнения_data': form_data.get('результат_исполнения_data'),
                         'доходы_data': form_data.get('доходы_data', []),
                         'расходы_data': form_data.get('расходы_data', []),
                         'источники_финансирования_data': form_data.get('источники_финансирования_data', []),
@@ -668,7 +683,7 @@ class MainController(QObject):
                 # Fallback на старый метод, если ревизия не загружена
                 calculation_results = self.current_form.calculate_sums()
             
-            # Обновляем данные проекта (только разделы, meta_info и результат_исполнения_data остаются)
+            # Обновляем данные проекта (только разделы, meta_info и calculated_deficit_proficit остаются)
             self.current_project.data.update(calculation_results)
             
             # Обновляем статус ревизии напрямую (если ревизия существует)
@@ -687,7 +702,7 @@ class MainController(QObject):
                 except Exception as e:
                     logger.error(f"Ошибка обновления статуса ревизии после расчёта: {e}", exc_info=True)
             
-            # Сохраняем обновленные данные ревизии (включая meta_info и результат_исполнения_data)
+            # Сохраняем обновленные данные ревизии (через *_values и, при наличии, meta_info)
             if self.current_revision_id:
                 try:
                     # Оптимизация: обновляем только вычисленные значения напрямую в БД
@@ -698,21 +713,20 @@ class MainController(QObject):
                         calculation_results
                     )
                     
-                    # Также обновляем meta_info и результат_исполнения_data, если они изменились
+                    # Также при необходимости обновляем meta_info (шапку формы)
                     meta_info = self.current_project.data.get('meta_info')
-                    результат_исполнения_data = self.current_project.data.get('результат_исполнения_data')
-                    if meta_info or результат_исполнения_data:
-                        with sqlite3.connect(self.db_manager.db_path) as conn:
-                            cursor = conn.cursor()
-                            cursor.execute('DELETE FROM revision_metadata WHERE revision_id=?', (self.current_revision_id,))
-                            meta_info_json = json.dumps(meta_info, ensure_ascii=False, default=str) if meta_info else None
-                            результат_исполнения_json = json.dumps(результат_исполнения_data, ensure_ascii=False, default=str) if результат_исполнения_data else None
-                            if meta_info_json or результат_исполнения_json:
-                                cursor.execute(
-                                    'INSERT INTO revision_metadata (revision_id, meta_info, результат_исполнения_data) VALUES (?, ?, ?)',
-                                    (self.current_revision_id, meta_info_json, результат_исполнения_json)
-                                )
-                            conn.commit()
+                    if meta_info:
+                        try:
+                            self.db_manager.save_revision_data(
+                                project_id=self.current_project.id,
+                                revision_id=self.current_revision_id,
+                                data={'meta_info': meta_info},
+                            )
+                        except Exception as e:
+                            logger.error(
+                                f"Ошибка обновления revision_metadata после расчёта: {e}",
+                                exc_info=True,
+                            )
 
                     # После сохранения вычисленных значений перезагружаем ревизию из БД,
                     # чтобы в current_project.data были полные данные (оригинал + расчётные)
@@ -725,6 +739,19 @@ class MainController(QObject):
                         # Обновляем форму с перезагруженными данными (включая расчетные значения)
                         if self.current_form:
                             self.current_form.load_saved_data(revision_data)
+                            # Пересчитываем дефицит/профицит по актуальным данным формы
+                            try:
+                                if hasattr(self.current_form, "_calculate_deficit_proficit"):
+                                    self.current_form._calculate_deficit_proficit()
+                                    if getattr(self.current_form, "calculated_deficit_proficit", None):
+                                        self.current_project.data[
+                                            "calculated_deficit_proficit"
+                                        ] = self.current_form.calculated_deficit_proficit
+                            except Exception as e:
+                                logger.error(
+                                    f"Ошибка пересчета дефицита/профицита после загрузки ревизии: {e}",
+                                    exc_info=True,
+                                )
                         
                         # Отладочный вывод: проверяем наличие расчетных значений для консолидированных расчетов
                         cons_data = revision_data.get('консолидируемые_расчеты_data', [])
@@ -816,13 +843,12 @@ class MainController(QObject):
                 except Exception as e:
                     logger.error(f"Ошибка обновления статуса ревизии после экспорта: {e}", exc_info=True)
             
-            # Сохраняем обновленные данные ревизии (включая meta_info и результат_исполнения_data)
+            # Сохраняем обновленные данные ревизии (включая meta_info)
             if self.current_revision_id:
                 try:
-                    # Формируем полные данные ревизии, сохраняя meta_info и результат_исполнения_data
+                    # Формируем полные данные ревизии, сохраняя meta_info
                     revision_data = {
                         'meta_info': self.current_project.data.get('meta_info', {}),
-                        'результат_исполнения_data': self.current_project.data.get('результат_исполнения_data'),
                         'доходы_data': self.current_project.data.get('доходы_data', []),
                         'расходы_data': self.current_project.data.get('расходы_data', []),
                         'источники_финансирования_data': self.current_project.data.get('источники_финансирования_data', []),

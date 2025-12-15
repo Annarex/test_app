@@ -121,7 +121,7 @@ class Form0503317(BaseFormModel):
         self.show_error_values = True
         self.доходы_всего = None
         self.расходы_всего = None
-        self.результат_исполнения_data = None
+        self.calculated_deficit_proficit = None  # Переименовано из результат_исполнения_data для ясности
     
     def get_form_constants(self):
         return self.constants
@@ -138,7 +138,7 @@ class Form0503317(BaseFormModel):
         self.zero_columns = {}
         self.доходы_всего = None
         self.расходы_всего = None
-        self.результат_исполнения_data = None
+        self.calculated_deficit_proficit = None  # Переименовано из результат_исполнения_data для ясности
 
         self.reference_data_доходы = reference_data_доходы
         self.reference_data_источники = reference_data_источники
@@ -171,7 +171,7 @@ class Form0503317(BaseFormModel):
             'расходы_data': self.расходы_data,
             'источники_финансирования_data': self.источники_финансирования_data,
             'консолидируемые_расчеты_data': self.консолидируемые_расчеты_data,
-            'результат_исполнения_data': self.результат_исполнения_data
+            'calculated_deficit_proficit': self.calculated_deficit_proficit
         }
     
     def calculate_sums(self) -> Dict[str, Any]:
@@ -224,10 +224,6 @@ class Form0503317(BaseFormModel):
         self.reference_data_доходы = reference_data_доходы
         self.reference_data_источники = reference_data_источники
 
-        # Сохраняем meta_info и результат_исполнения_data, чтобы не потерять их при пересчете
-        meta_info = form_data.get('meta_info', {})
-        результат_исполнения_data = form_data.get('результат_исполнения_data')
-
         # Доходы
         доходы_data = form_data.get('доходы_data', [])
         for item in доходы_data:
@@ -251,13 +247,6 @@ class Form0503317(BaseFormModel):
         form_data['доходы_data'] = доходы_data
         form_data['расходы_data'] = расходы_data
         form_data['источники_финансирования_data'] = источники_data
-        
-        # Восстанавливаем meta_info и результат_исполнения_data
-        if meta_info:
-            form_data['meta_info'] = meta_info
-        if результат_исполнения_data:
-            form_data['результат_исполнения_data'] = результат_исполнения_data
-
         return form_data
 
     def load_saved_data(self, form_data: Dict[str, Any]):
@@ -270,7 +259,6 @@ class Form0503317(BaseFormModel):
         self.расходы_data = form_data.get('расходы_data', []) or []
         self.источники_финансирования_data = form_data.get('источники_финансирования_data', []) or []
         self.консолидируемые_расчеты_data = form_data.get('консолидируемые_расчеты_data', []) or []
-        self.результат_исполнения_data = form_data.get('результат_исполнения_data')
 
         # Восстанавливаем вспомогательные структуры
         self.zero_columns = {}
@@ -293,7 +281,7 @@ class Form0503317(BaseFormModel):
         self._recalculate_sources_levels()
 
         # Сохраняем итоговые значения для дефицита/профицита, если их нет
-        if not self.результат_исполнения_data:
+        if not self.calculated_deficit_proficit:
             self._save_total_values_for_deficit()
             self._calculate_deficit_proficit()
     
@@ -333,7 +321,12 @@ class Form0503317(BaseFormModel):
                     self._process_consolidated_section_in_original_form(wb, data)
                 else:
                     self._process_section_in_original_form(wb, data, section_type)
-        
+
+        # Пересчитываем дефицит/профицит по текущим данным формы перед проверкой.
+        # calculated_deficit_proficit больше не загружается из метаданных, поэтому
+        # всегда считаем его из итоговых строк доходов и расходов.
+        self._calculate_deficit_proficit()
+
         self._validate_deficit_proficit(wb)
         wb.save(output_file_path)
         return output_file_path
@@ -636,16 +629,27 @@ class Form0503317(BaseFormModel):
         return re.search(pattern, name, re.IGNORECASE) is not None
     
     def _get_zero_columns(self, total_row_data: dict, budget_columns: list) -> list:
-        """Получение нулевых столбцов"""
+        """Получение нулевых столбцов
+        
+        Столбец считается нулевым, если в итоговой строке оба значения 
+        (утвержденный и исполненный) равны 0.
+        """
         zero_columns = []
         
-        for i, budget_col in enumerate(budget_columns):
-            if total_row_data['утвержденный'][budget_col] == 0:
-                zero_columns.append(i)
+        approved = total_row_data.get('утвержденный', {}) or {}
+        executed = total_row_data.get('исполненный', {}) or {}
         
         for i, budget_col in enumerate(budget_columns):
-            if total_row_data['исполненный'][budget_col] == 0:
-                zero_columns.append(i + len(budget_columns))
+            a_val = approved.get(budget_col, 0) or 0
+            e_val = executed.get(budget_col, 0) or 0
+            
+            # Проверяем, что оба значения равны 0 (или близки к 0)
+            if isinstance(a_val, (int, float)) and isinstance(e_val, (int, float)):
+                if abs(a_val) < 1e-9 and abs(e_val) < 1e-9:
+                    # Добавляем индекс для утвержденного столбца
+                    zero_columns.append(i)
+                    # Добавляем индекс для исполненного столбца
+                    zero_columns.append(i + len(budget_columns))
         
         return zero_columns
     
@@ -667,37 +671,83 @@ class Form0503317(BaseFormModel):
                 item['уровень'] = 1
                 item['is_external_total'] = True
     
-    def _save_total_values_for_deficit(self):
-        """Сохранение итоговых значений для расчета дефицита"""
-        for item in self.доходы_data:
-            if 'доходы бюджета - всего' in item['наименование_показателя'].lower():
-                self.доходы_всего = item
-                break
-        
-        for item in self.расходы_data:
-            if 'расходы бюджета - всего' in item['наименование_показателя'].lower():
-                self.расходы_всего = item
-                break
+    def _find_total_row(self, data: list, pattern: str) -> dict:
+        """Поиск итоговой строки по паттерну"""
+        import re
+        for item in data:
+            name = str(item.get('наименование_показателя', '')).lower()
+            if re.search(pattern, name, re.IGNORECASE):
+                return item
+        return None
     
-    def _calculate_deficit_proficit(self):
-        """Расчет дефицита/профицита"""
-        if not self.доходы_всего or not self.расходы_всего:
+    def _calculate_deficit_proficit_from_original(self, original_доходы_data: list = None, original_расходы_data: list = None):
+        """Расчет дефицита/профицита из исходных данных (до пересчета)"""
+        # Используем переданные исходные данные или текущие данные формы
+        доходы_data = original_доходы_data if original_доходы_data is not None else self.доходы_data
+        расходы_data = original_расходы_data if original_расходы_data is not None else self.расходы_data
+        
+        # Ищем итоговые строки в исходных данных
+        доходы_всего = None
+        расходы_всего = None
+        
+        pattern_доходы = self.constants.TOTAL_PATTERNS.get('доходы', r'доходы бюджета.*всего')
+        pattern_расходы = self.constants.TOTAL_PATTERNS.get('расходы', r'расходы бюджета.*всего')
+        
+        доходы_всего = self._find_total_row(доходы_data, pattern_доходы)
+        расходы_всего = self._find_total_row(расходы_data, pattern_расходы)
+        
+        if not доходы_всего or not расходы_всего:
             return None
         
         budget_columns = self.constants.BUDGET_COLUMNS
         утвержденный = {}
         исполненный = {}
         
+        # Берем значения из данных с учетом пересчета:
+        # если есть расчетные итоговые значения (расчетный_утвержденный/исполненный),
+        # используем их, иначе — оригинальные.
         for budget_col in budget_columns:
-            утвержденный[budget_col] = (self.расходы_всего['утвержденный'][budget_col] - 
-                                      self.доходы_всего['утвержденный'][budget_col])
-            исполненный[budget_col] = (self.расходы_всего['исполненный'][budget_col] - 
-                                     self.доходы_всего['исполненный'][budget_col])
+            доходы_утвержденный = (
+                доходы_всего.get(f'расчетный_утвержденный_{budget_col}')
+                if доходы_всего.get(f'расчетный_утвержденный_{budget_col}') is not None
+                else доходы_всего.get('утвержденный', {}).get(budget_col, 0)
+            ) or 0
+            доходы_исполненный = (
+                доходы_всего.get(f'расчетный_исполненный_{budget_col}')
+                if доходы_всего.get(f'расчетный_исполненный_{budget_col}') is not None
+                else доходы_всего.get('исполненный', {}).get(budget_col, 0)
+            ) or 0
+            расходы_утвержденный = (
+                расходы_всего.get(f'расчетный_утвержденный_{budget_col}')
+                if расходы_всего.get(f'расчетный_утвержденный_{budget_col}') is not None
+                else расходы_всего.get('утвержденный', {}).get(budget_col, 0)
+            ) or 0
+            расходы_исполненный = (
+                расходы_всего.get(f'расчетный_исполненный_{budget_col}')
+                if расходы_всего.get(f'расчетный_исполненный_{budget_col}') is not None
+                else расходы_всего.get('исполненный', {}).get(budget_col, 0)
+            ) or 0
+            
+            утвержденный[budget_col] = расходы_утвержденный - доходы_утвержденный
+            исполненный[budget_col] = расходы_исполненный - доходы_исполненный
         
-        self.результат_исполнения_data = {
+        self.calculated_deficit_proficit = {
             'утвержденный': утвержденный,
             'исполненный': исполненный
         }
+        
+        return self.calculated_deficit_proficit
+    
+    def _save_total_values_for_deficit(self):
+        """Сохранение итоговых значений для расчета дефицита (устаревший метод, используйте _calculate_deficit_proficit_from_original)"""
+        # Этот метод оставлен для обратной совместимости
+        # Теперь используем _calculate_deficit_proficit_from_original с исходными данными
+        pass
+    
+    def _calculate_deficit_proficit(self):
+        """Расчет дефицита/профицита (использует текущие данные формы)"""
+        # Вызываем новый метод без исходных данных (использует текущие данные)
+        return self._calculate_deficit_proficit_from_original()
     
     def _prepare_dataframe_for_calculation(self, data: list, budget_columns: list) -> pd.DataFrame:
         """Подготовка DataFrame для вычислений"""
@@ -1034,12 +1084,15 @@ class Form0503317(BaseFormModel):
         if self._is_value_different(original_receipt, calculated_receipt) and level < 2:
             receipt_cell.fill = StyleConstants.ERROR_FILL
             if self.show_error_values:
-                error_value = calculated_receipt
-                current_value = receipt_cell.value
-                if current_value is None or current_value == "":
-                    receipt_cell.value = f"({error_value:.2f})"
-                else:
-                    receipt_cell.value = f"{current_value} ({error_value:.2f})"
+                try:
+                    orig_val = float(original_receipt or 0)
+                except (TypeError, ValueError):
+                    orig_val = 0.0
+                try:
+                    calc_val = float(calculated_receipt or 0)
+                except (TypeError, ValueError):
+                    calc_val = 0.0
+                receipt_cell.value = f"{orig_val:.2f} ({calc_val:.2f})"
     
     def _validate_sum_column(self, ws, row_data: dict, consolidated_columns: list, mapping: dict, original_row: int, level: int):
         """Проверка столбца 'ИТОГО'"""
@@ -1074,16 +1127,19 @@ class Form0503317(BaseFormModel):
         if self._is_value_different(original_sum, calculated_sum) and level < 2:
             sum_cell.fill = StyleConstants.ERROR_FILL
             if self.show_error_values:
-                error_value = calculated_sum
-                current_value = sum_cell.value
-                if current_value is None or current_value == "":
-                    sum_cell.value = f"({error_value:.2f})"
-                else:
-                    sum_cell.value = f"{current_value} ({error_value:.2f})"
+                try:
+                    orig_val = float(original_sum or 0)
+                except (TypeError, ValueError):
+                    orig_val = 0.0
+                try:
+                    calc_val = float(calculated_sum or 0)
+                except (TypeError, ValueError):
+                    calc_val = 0.0
+                sum_cell.value = f"{orig_val:.2f} ({calc_val:.2f})"
     
     def _validate_deficit_proficit(self, wb: openpyxl.Workbook):
         """Проверка дефицита/профицита"""
-        if not self.результат_исполнения_data:
+        if not self.calculated_deficit_proficit:
             return
         
         sheet_name = self.constants.SECTION_SHEETS['расходы']
@@ -1112,34 +1168,40 @@ class Form0503317(BaseFormModel):
             approved_cell = ws.cell(row=target_row, column=approved_col_idx)
             
             original_approved = approved_cell.value or 0
-            calculated_approved = self.результат_исполнения_data['утвержденный'][budget_col]
+            calculated_approved = self.calculated_deficit_proficit['утвержденный'][budget_col]
             
             if self._is_value_different(original_approved, calculated_approved):
                 approved_cell.fill = StyleConstants.ERROR_FILL
                 if self.show_error_values:
-                    error_value = calculated_approved
-                    current_value = approved_cell.value
-                    if current_value is None or current_value == "":
-                        approved_cell.value = f"({error_value:.2f})"
-                    else:
-                        approved_cell.value = f"{current_value} ({error_value:.2f})"
+                    try:
+                        orig_val = float(original_approved or 0)
+                    except (TypeError, ValueError):
+                        orig_val = 0.0
+                    try:
+                        calc_val = float(calculated_approved or 0)
+                    except (TypeError, ValueError):
+                        calc_val = 0.0
+                    approved_cell.value = f"{orig_val:.2f} ({calc_val:.2f})"
             
             executed_col = mapping['исполненный'][i]
             executed_col_idx = self._column_to_index(executed_col) + 1
             executed_cell = ws.cell(row=target_row, column=executed_col_idx)
             
             original_executed = executed_cell.value or 0
-            calculated_executed = self.результат_исполнения_data['исполненный'][budget_col]
+            calculated_executed = self.calculated_deficit_proficit['исполненный'][budget_col]
             
             if self._is_value_different(original_executed, calculated_executed):
                 executed_cell.fill = StyleConstants.ERROR_FILL
                 if self.show_error_values:
-                    error_value = calculated_executed
-                    current_value = executed_cell.value
-                    if current_value is None or current_value == "":
-                        executed_cell.value = f"({error_value:.2f})"
-                    else:
-                        executed_cell.value = f"{current_value} ({error_value:.2f})"
+                    try:
+                        orig_val = float(original_executed or 0)
+                    except (TypeError, ValueError):
+                        orig_val = 0.0
+                    try:
+                        calc_val = float(calculated_executed or 0)
+                    except (TypeError, ValueError):
+                        calc_val = 0.0
+                    executed_cell.value = f"{orig_val:.2f} ({calc_val:.2f})"
     
     def _apply_validation_to_original_cells(self, ws, df: pd.DataFrame, budget_columns: list, section_name: str):
         """Применение проверки к исходным ячейкам"""
@@ -1189,12 +1251,15 @@ class Form0503317(BaseFormModel):
         if self._is_value_different(original_approved, calculated_approved) and level < 6:
             approved_cell.fill = StyleConstants.ERROR_FILL
             if self.show_error_values:
-                error_value = calculated_approved
-                current_value = approved_cell.value
-                if current_value is None or current_value == "":
-                    approved_cell.value = f"({error_value:.2f})"
-                else:
-                    approved_cell.value = f"{current_value} ({error_value:.2f})"
+                try:
+                    orig_val = float(original_approved or 0)
+                except (TypeError, ValueError):
+                    orig_val = 0.0
+                try:
+                    calc_val = float(calculated_approved or 0)
+                except (TypeError, ValueError):
+                    calc_val = 0.0
+                approved_cell.value = f"{orig_val:.2f} ({calc_val:.2f})"
         
         executed_col = mapping['исполненный'][col_index]
         executed_col_idx = self._column_to_index(executed_col) + 1
@@ -1206,12 +1271,15 @@ class Form0503317(BaseFormModel):
         if self._is_value_different(original_executed, calculated_executed) and level < 6:
             executed_cell.fill = StyleConstants.ERROR_FILL
             if self.show_error_values:
-                error_value = calculated_executed
-                current_value = executed_cell.value
-                if current_value is None or current_value == "":
-                    executed_cell.value = f"({error_value:.2f})"
-                else:
-                    executed_cell.value = f"{current_value} ({error_value:.2f})"
+                try:
+                    orig_val = float(original_executed or 0)
+                except (TypeError, ValueError):
+                    orig_val = 0.0
+                try:
+                    calc_val = float(calculated_executed or 0)
+                except (TypeError, ValueError):
+                    calc_val = 0.0
+                executed_cell.value = f"{orig_val:.2f} ({calc_val:.2f})"
     
     def _hide_zero_columns(self, ws, section_name: str, zero_columns: list):
         """Скрытие нулевых столбцов"""
