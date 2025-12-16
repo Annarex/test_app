@@ -290,43 +290,6 @@ class MainController(QObject):
             need_sections = ['доходы_data', 'расходы_data', 'источники_финансирования_data', 'консолидируемые_расчеты_data']
             has_sections = revision_data and any(revision_data.get(k) for k in need_sections)
 
-            # Если данных в *_values нет (например, ревизия только с legacy-данными), пробуем распарсить исходный файл и сохранить
-            if not has_sections:
-                source_file_path = revision_record.file_path
-                if not source_file_path or not os.path.exists(source_file_path):
-                    self.error_occurred.emit("Данные ревизии не найдены и отсутствует исходный файл для загрузки")
-                    return
-                try:
-                    # Загружаем справочники при необходимости
-                    reference_data_доходы = self.references.get('доходы')
-                    if reference_data_доходы is None or reference_data_доходы.empty:
-                        reference_data_доходы = self.db_manager.load_income_reference_df()
-                        self.references['доходы'] = reference_data_доходы
-                    reference_data_источники = self.references.get('источники')
-                    if reference_data_источники is None or reference_data_источники.empty:
-                        reference_data_источники = self.db_manager.load_sources_reference_df()
-                        self.references['источники'] = reference_data_источники
-
-                    if not self.current_form:
-                        self.error_occurred.emit("Форма не инициализирована для парсинга исходного файла")
-                        return
-
-                    parsed_data = self.current_form.parse_excel(
-                        source_file_path,
-                        reference_data_доходы,
-                        reference_data_источники,
-                    )
-                    if not parsed_data:
-                        self.error_occurred.emit("Не удалось распарсить исходный файл ревизии")
-                        return
-                    # Сохраняем распарсенные данные в *_values и метаданные
-                    self.db_manager.save_revision_data(project_id, revision_id, parsed_data)
-                    revision_data = self.db_manager.load_revision_data(project_id, revision_id)
-                    has_sections = revision_data and any(revision_data.get(k) for k in need_sections)
-                except Exception as e:
-                    self.error_occurred.emit(f"Не удалось восстановить данные ревизии: {e}")
-                    return
-
             if not has_sections:
                 self.error_occurred.emit("Данные ревизии не найдены")
                 return

@@ -120,7 +120,7 @@ class DatabaseManager:
                     code VARCHAR(3) UNIQUE,
                     name TEXT NOT NULL,
                     код_вида_МО VARCHAR(1) REFERENCES ref_municipality_types(код_вида_МО),
-                    код_МО VARCHAR(3),  -- для обратной совместимости
+                    код_МО VARCHAR(3),
                     родительный_падеж TEXT,
                     адрес_совет TEXT,
                     адрес_администрация TEXT,
@@ -190,7 +190,7 @@ class DatabaseManager:
                     код_периода VARCHAR(2),
                     наименование VARCHAR(30),
                     отчет_на_дату DATE,
-                    id INTEGER PRIMARY KEY,  -- для обратной совместимости
+                    id INTEGER PRIMARY KEY,
                     code TEXT NOT NULL,       -- Y, Q1, Q2, Q3, Q4, H1, H2 и т.п.
                     sort_order INTEGER NOT NULL DEFAULT 0,
                     form_type_code TEXT,      -- опциональная привязка к форме
@@ -654,27 +654,27 @@ class DatabaseManager:
         if count_municipalities == 0:
             # Предзагруженные муниципальные образования
             municipalities = [
-                (None, "Амвросиевка", 1),
-                (None, "Волноваха", 1),
-                (None, "Володарка", 1),
-                (None, "Горловка", 1),
-                (None, "Дебальцево", 1),
-                (None, "Докучаевск", 1),
-                (None, "Донецк", 1),
-                (None, "Енакиево", 1),
-                (None, "Иловайск", 1),
-                (None, "Красный лиман", 1),
-                (None, "Макеевка", 1),
-                (None, "Мангуш", 1),
-                (None, "Мариуполь", 1),
-                (None, "Новозаовск", 1),
-                (None, "Снежное", 1),
-                (None, "Старобешево", 1),
-                (None, "Тельманово", 1),
-                (None, "Торез", 1),
-                (None, "Харцызск", 1),
-                (None, "Шахтерск", 1),
-                (None, "Ясиноватая", 1),
+                (1, "Амвросиевка", 1),
+                (2, "Волноваха", 1),
+                (3, "Володарка", 1),
+                (4, "Горловка", 1),
+                (5, "Дебальцево", 1),
+                (6, "Докучаевск", 1),
+                (7, "Донецк", 1),
+                (8, "Енакиево", 1),
+                (9, "Иловайск", 1),
+                (10, "Красный лиман", 1),
+                (11, "Макеевка", 1),
+                (12, "Мангуш", 1),
+                (13, "Мариуполь", 1),
+                (14, "Новозаовск", 1),
+                (15, "Снежное", 1),
+                (16, "Старобешево", 1),
+                (17, "Тельманово", 1),
+                (18, "Торез", 1),
+                (19, "Харцызск", 1),
+                (20, "Шахтерск", 1),
+                (21, "Ясиноватая", 1),
             ]
             cursor.executemany(
                 'INSERT INTO ref_municipalities (code, name, is_active) VALUES (?, ?, ?)',
@@ -1970,6 +1970,36 @@ class DatabaseManager:
                        level AS уровень_кода,
                        doc AS Утверждающий_документ
                 FROM source_reference_records
+            '''
+            df = pd.read_sql_query(query, conn)
+        return df
+
+    def load_expense_reference_df(self) -> pd.DataFrame:
+        """
+        Загрузка справочника расходов как DataFrame.
+        
+        Использует таблицу ref_expense_codes, если она существует.
+        Возвращает пустой DataFrame, если таблица не найдена.
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='ref_expense_codes'"
+            )
+            if not cursor.fetchone():
+                # Справочник расходов ещё не загружен/не создан
+                return pd.DataFrame()
+
+            query = '''
+                SELECT
+                    код       AS код,
+                    название  AS наименование,
+                    уровень   AS уровень,
+                    код_Р     AS код_Р,
+                    код_ПР    AS код_ПР,
+                    код_ЦС    AS код_ЦС,
+                    код_ВР    AS код_ВР
+                FROM ref_expense_codes
             '''
             df = pd.read_sql_query(query, conn)
         return df

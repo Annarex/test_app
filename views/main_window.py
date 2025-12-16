@@ -594,7 +594,7 @@ class MainWindow(QMainWindow):
         self.status_bar.addPermanentWidget(self.progress_bar)
         
         # Создаем док-виджеты
-        self.create_dock_widgets()
+        # self.create_dock_widgets()
     
     def create_menu_bar(self):
         """Создание меню-бара"""
@@ -681,16 +681,7 @@ class MainWindow(QMainWindow):
         
         # ========== Меню "Данные" ==========
         data_menu = menubar.addMenu("&Данные")
-        
-        # Действия для работы с данными (не специфичные для ревизии)
-        # Действие "Скрыть нулевые столбцы" перенесено в интерфейс формы (чекбокс)
-        # Оставляем только для совместимости с горячей клавишей
-        hide_zeros_action = QAction("&Скрыть нулевые столбцы", self)
-        hide_zeros_action.setIcon(self.style().standardIcon(QStyle.SP_TrashIcon))
-        hide_zeros_action.setShortcut("Ctrl+H")
-        hide_zeros_action.setStatusTip("Скрыть столбцы с нулевыми значениями (используйте чекбокс в интерфейсе формы)")
-        hide_zeros_action.triggered.connect(self.hide_zero_columns_global)
-        data_menu.addAction(hide_zeros_action)
+        # (действия для раздела данных сейчас управляются непосредственно формой)
         
         # ========== Меню "Справочники" ==========
         reference_menu = menubar.addMenu("&Справочники")
@@ -843,11 +834,6 @@ class MainWindow(QMainWindow):
         toolbar.addAction(config_dicts_action)
 
         # Кнопки управления панелью проектов размещены непосредственно на самой панели
-    
-    def create_dock_widgets(self):
-        """Инициализация структур для просмотра справочников (отдельное окно)"""
-        # Метод оставлен для совместимости, но структуры инициализируются в show_reference_viewer
-        pass
     
     def create_projects_panel(self) -> QWidget:
         """Создание панели проектов"""
@@ -2864,18 +2850,6 @@ class MainWindow(QMainWindow):
         # Снова применяем фильтр по типу данных (утверждённый/исполненный/оба)
         self.apply_tree_data_type_visibility()
 
-    def hide_zero_columns_global(self):
-        """Сворачивает все столбцы с нулевыми значениями в итоговой строке
-        
-        Этот метод оставлен для совместимости с меню/тулбаром.
-        Теперь он устанавливает чекбокс и вызывает apply_hide_zero_columns.
-        """
-        if hasattr(self, 'hide_zero_columns_checkbox'):
-            self.hide_zero_columns_checkbox.setChecked(True)
-        else:
-            # Если чекбокс еще не создан, используем старую логику
-            self.apply_hide_zero_columns()
-    
     def copy_tree_item_value(self, item):
         """Копировать значение из дерева"""
         if item:
@@ -3115,9 +3089,9 @@ class MainWindow(QMainWindow):
             self.load_project_data_to_tree(self.controller.current_project)
             # Обновляем вкладку ошибок
             self.load_errors_to_tab(self.controller.current_project.data)
-    
+
     def export_validation(self):
-        """Экспорт формы с проверкой (старый метод, оставлен для совместимости)"""
+        """Экспорт формы с проверкой (обертка для экспорта пересчитанной таблицы)"""
         self.export_calculated_table()
     
     def export_calculated_table(self):

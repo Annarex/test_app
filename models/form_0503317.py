@@ -162,7 +162,6 @@ class Form0503317(BaseFormModel):
                 else:
                     self._extract_section_data(sheets[sheet_name], section_type)
         
-        self._save_total_values_for_deficit()
         self._calculate_deficit_proficit()
         
         return {
@@ -280,9 +279,8 @@ class Form0503317(BaseFormModel):
         # Источники требуют корректировки уровней
         self._recalculate_sources_levels()
 
-        # Сохраняем итоговые значения для дефицита/профицита, если их нет
+        # Пересчитываем итоговые значения для дефицита/профицита, если их нет
         if not self.calculated_deficit_proficit:
-            self._save_total_values_for_deficit()
             self._calculate_deficit_proficit()
     
     def validate_data(self) -> List[Dict[str, Any]]:
@@ -737,12 +735,6 @@ class Form0503317(BaseFormModel):
         }
         
         return self.calculated_deficit_proficit
-    
-    def _save_total_values_for_deficit(self):
-        """Сохранение итоговых значений для расчета дефицита (устаревший метод, используйте _calculate_deficit_proficit_from_original)"""
-        # Этот метод оставлен для обратной совместимости
-        # Теперь используем _calculate_deficit_proficit_from_original с исходными данными
-        pass
     
     def _calculate_deficit_proficit(self):
         """Расчет дефицита/профицита (использует текущие данные формы)"""

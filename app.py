@@ -6,6 +6,7 @@ from PyQt5.QtWidgets import QApplication
 from PyQt5.QtCore import QTimer
 from PyQt5.QtGui import QFont
 
+from controllers import main_controller
 from views.main_window import MainWindow
 from logger import logger
 
@@ -41,3 +42,4 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+# TODO: оптимизировать структуру main_controller и main_window, разбивка по файлам и папкам

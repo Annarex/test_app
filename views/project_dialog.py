@@ -17,17 +17,14 @@ from models.database import DatabaseManager
 class ProjectDialog(QDialog):
     """
     Диалог создания/редактирования проекта.
-
-    Логика по требованиям:
-    - В проекте напрямую задаются только:
-      * название проекта;
-      * год (из справочника годов);
-      * муниципальное образование (из справочника МО).
-    - Тип формы, период и ревизии задаются позже при загрузке формы.
-
-    Для совместимости со старой логикой мы всё ещё возвращаем в
-    get_project_data поля form_type / revision / report_date / period,
-    но значения по умолчанию (формально, чтобы не ломать существующий код).
+    
+    В проекте напрямую задаются только:
+    - название проекта;
+    - год (из справочника годов);
+    - муниципальное образование (из справочника МО).
+    
+    Тип формы, период и ревизии задаются позже при загрузке формы
+    и хранятся в связанной архитектуре project_forms / form_revisions.
     """
 
     def __init__(self, parent=None):
@@ -175,20 +172,8 @@ class ProjectDialog(QDialog):
                     municip_ref = self.db_manager.get_or_create_municipality(municipality_name)
                     municipality_id = municip_ref.id
 
-        # Для обратной совместимости со старым кодом также возвращаем устаревшие поля
-        report_date = date(year_val_int, 1, 1)
-        default_form_type = FormType.FORM_0503317.value
-        default_revision = "1.0"
-        period_str = f"Год {year_val_int}"
-
         return {
             "name": name,
             "year_id": year_id,
             "municipality_id": municipality_id,
-            # Устаревшие поля для обратной совместимости
-            "form_type": default_form_type,
-            "revision": default_revision,
-            "municipality": municipality_name,
-            "report_date": report_date,
-            "period": period_str,
         }
