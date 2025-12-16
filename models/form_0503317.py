@@ -726,8 +726,8 @@ class Form0503317(BaseFormModel):
                 else расходы_всего.get('исполненный', {}).get(budget_col, 0)
             ) or 0
             
-            утвержденный[budget_col] = расходы_утвержденный - доходы_утвержденный
-            исполненный[budget_col] = расходы_исполненный - доходы_исполненный
+            утвержденный[budget_col] = round(расходы_утвержденный - доходы_утвержденный, 5)
+            исполненный[budget_col] = round(расходы_исполненный - доходы_исполненный, 5)
         
         self.calculated_deficit_proficit = {
             'утвержденный': утвержденный,
@@ -821,15 +821,15 @@ class Form0503317(BaseFormModel):
         internal_sum_approved = {}
         internal_sum_executed = {}
         for budget_col in budget_columns:
-            internal_sum_approved[budget_col] = result_df.loc[internal_mask, f'утвержденный_{budget_col}'].sum()
-            internal_sum_executed[budget_col] = result_df.loc[internal_mask, f'исполненный_{budget_col}'].sum()
+            internal_sum_approved[budget_col] = round(result_df.loc[internal_mask, f'утвержденный_{budget_col}'].sum(), 5)
+            internal_sum_executed[budget_col] = round(result_df.loc[internal_mask, f'исполненный_{budget_col}'].sum(), 5)
         
         # Векторизованное суммирование для внешних источников
         external_sum_approved = {}
         external_sum_executed = {}
         for budget_col in budget_columns:
-            external_sum_approved[budget_col] = result_df.loc[external_mask, f'утвержденный_{budget_col}'].sum()
-            external_sum_executed[budget_col] = result_df.loc[external_mask, f'исполненный_{budget_col}'].sum()
+            external_sum_approved[budget_col] = round(result_df.loc[external_mask, f'утвержденный_{budget_col}'].sum(), 5)
+            external_sum_executed[budget_col] = round(result_df.loc[external_mask, f'исполненный_{budget_col}'].sum(), 5)
         
         # Поиск индексов (требует iterrows, но это быстрый проход только для поиска)
         for idx, row in result_df.iterrows():
@@ -853,10 +853,10 @@ class Form0503317(BaseFormModel):
         
         if total_sources_index is not None:
             for budget_col in budget_columns:
-                total_approved = internal_sum_approved[budget_col] + external_sum_approved[budget_col]
-                total_executed = internal_sum_executed[budget_col] + external_sum_executed[budget_col]
-                result_df.at[total_sources_index, f'расчетный_утвержденный_{budget_col}'] = round(total_approved, 5)
-                result_df.at[total_sources_index, f'расчетный_исполненный_{budget_col}'] = round(total_executed, 5)
+                total_approved = round(internal_sum_approved[budget_col] + external_sum_approved[budget_col], 5)
+                total_executed = round(internal_sum_executed[budget_col] + external_sum_executed[budget_col], 5)
+                result_df.at[total_sources_index, f'расчетный_утвержденный_{budget_col}'] = total_approved
+                result_df.at[total_sources_index, f'расчетный_исполненный_{budget_col}'] = total_executed
         
         return result_df
     
@@ -887,7 +887,8 @@ class Form0503317(BaseFormModel):
                     if calculated_value is None:
                         calculated_value = result_df.at[idx, f'поступления_{col}']
                     if calculated_value != 'x' and calculated_value is not None:
-                        calculated_total += calculated_value
+                        # Округляем каждое значение перед суммированием
+                        calculated_total += round(float(calculated_value), 5)
                 result_df.at[idx, f'расчетный_поступления_{total_column}'] = round(calculated_total, 5)
         
         # Затем вычисляем уровень 0 по пересчитанным значениям уровня 1
@@ -921,7 +922,8 @@ class Form0503317(BaseFormModel):
                     calculated_value = row[f'поступления_{column}']
                 
                 if calculated_value != 'x' and calculated_value is not None:
-                    level1_sum += calculated_value
+                    # Округляем каждое значение перед суммированием
+                    level1_sum += round(float(calculated_value), 5)
                     has_level1 = True
         
         if has_level1:
@@ -939,7 +941,8 @@ class Form0503317(BaseFormModel):
                     calculated_value = df.loc[child_idx, f'поступления_{column}']
                 
                 if calculated_value != 'x' and calculated_value is not None:
-                    child_sum += calculated_value
+                    # Округляем каждое значение перед суммированием
+                    child_sum += round(float(calculated_value), 5)
                     has_children = True
         
         if has_children:
@@ -965,8 +968,11 @@ class Form0503317(BaseFormModel):
         
         for child_idx in range(start_idx, end_idx):
             if df.loc[child_idx, 'уровень'] == current_level + 1:
-                approved_child_sum += df.loc[child_idx, f'расчетный_утвержденный_{budget_col}']
-                executed_child_sum += df.loc[child_idx, f'расчетный_исполненный_{budget_col}']
+                # Округляем каждое значение перед суммированием
+                approved_val = df.loc[child_idx, f'расчетный_утвержденный_{budget_col}']
+                executed_val = df.loc[child_idx, f'расчетный_исполненный_{budget_col}']
+                approved_child_sum += round(float(approved_val) if approved_val is not None else 0.0, 5)
+                executed_child_sum += round(float(executed_val) if executed_val is not None else 0.0, 5)
                 has_children = True
         
         if has_children:
@@ -1145,11 +1151,13 @@ class Form0503317(BaseFormModel):
         target_row = None
         for row in range(1, ws.max_row + 1):
             cell_value = ws.cell(row=row, column=1).value
-            if cell_value and 'результат исполнения бюджета' in str(cell_value).lower():
+            code_cell = ws.cell(row=row, column=2).value
+            
+            # Ищем строку, где одновременно есть "результат исполнения бюджета" и код 450
+            if (cell_value and 'результат исполнения бюджета' in str(cell_value).lower() and
+                code_cell and '450' in str(code_cell)):
                 target_row = row
-                code_cell = ws.cell(row=row, column=2).value
-                if code_cell and '450' in str(code_cell):
-                    break
+                break
         
         if not target_row:
             return
@@ -1159,7 +1167,9 @@ class Form0503317(BaseFormModel):
             approved_col_idx = self._column_to_index(approved_col) + 1
             approved_cell = ws.cell(row=target_row, column=approved_col_idx)
             
-            original_approved = approved_cell.value or 0
+            # Используем метод для извлечения оригинального значения из ячейки
+            # (обрабатывает случаи, когда в ячейке уже есть формат "orig (calc)")
+            original_approved = self._extract_original_value_from_cell(approved_cell.value)
             calculated_approved = self.calculated_deficit_proficit['утвержденный'][budget_col]
             
             if self._is_value_different(original_approved, calculated_approved):
@@ -1179,7 +1189,9 @@ class Form0503317(BaseFormModel):
             executed_col_idx = self._column_to_index(executed_col) + 1
             executed_cell = ws.cell(row=target_row, column=executed_col_idx)
             
-            original_executed = executed_cell.value or 0
+            # Используем метод для извлечения оригинального значения из ячейки
+            # (обрабатывает случаи, когда в ячейке уже есть формат "orig (calc)")
+            original_executed = self._extract_original_value_from_cell(executed_cell.value)
             calculated_executed = self.calculated_deficit_proficit['исполненный'][budget_col]
             
             if self._is_value_different(original_executed, calculated_executed):
@@ -1200,9 +1212,12 @@ class Form0503317(BaseFormModel):
         zero_columns = self.zero_columns.get(section_name, [])
         
         for row_idx, (_, row_data) in enumerate(df.iterrows(), 0):
-            self._apply_row_validation(ws, row_data, budget_columns, zero_columns, section_name)
+            # При экспорте с пересчетом обрабатываем все столбцы, включая нулевые
+            # Передаем пустой список нулевых столбцов, чтобы не пропускать их
+            self._apply_row_validation(ws, row_data, budget_columns, [], section_name)
         
-        self._hide_zero_columns(ws, section_name, zero_columns)
+        # При экспорте с пересчетом НЕ скрываем нулевые столбцы - выводим все столбцы
+        # self._hide_zero_columns(ws, section_name, zero_columns)
     
     def _apply_row_validation(self, ws, row_data: dict, budget_columns: list, zero_columns: list, section_name: str):
         """Применение проверки к строке"""
@@ -1287,9 +1302,60 @@ class Form0503317(BaseFormModel):
             col_idx = self._column_to_index(col_letter) + 1
             ws.column_dimensions[openpyxl.utils.get_column_letter(col_idx)].hidden = True
     
+    def _extract_original_value_from_cell(self, cell_value) -> float:
+        """Извлечение оригинального значения из ячейки Excel
+        
+        Обрабатывает случаи, когда в ячейке уже есть формат "orig (calc)" 
+        из предыдущего экспорта. Извлекает первое число (оригинальное значение).
+        
+        Args:
+            cell_value: Значение ячейки Excel (может быть числом или строкой)
+        
+        Returns:
+            float: Оригинальное числовое значение
+        """
+        if cell_value is None:
+            return 0.0
+        
+        # Если значение уже число, возвращаем его
+        if isinstance(cell_value, (int, float)):
+            return float(cell_value)
+        
+        # Если значение строка, пытаемся извлечь число
+        if isinstance(cell_value, str):
+            # Проверяем формат "orig (calc)" - извлекаем первое число
+            match = re.match(r'^([-+]?\d+\.?\d*)\s*\(', cell_value)
+            if match:
+                try:
+                    return float(match.group(1))
+                except (ValueError, TypeError):
+                    pass
+            
+            # Если не формат "orig (calc)", пытаемся преобразовать всю строку в число
+            try:
+                return float(cell_value)
+            except (ValueError, TypeError):
+                pass
+        
+        return 0.0
+    
     def _is_value_different(self, original: float, calculated: float) -> bool:
-        """Проверка различия значений"""
-        return abs(original - calculated) > 0.00001
+        """Проверка различия значений с учетом округления до 5 знаков после запятой
+        
+        Безопасно обрабатывает строки, None и спец-значение 'x',
+        приводя сравниваемые значения к float там, где это возможно.
+        Оба значения округляются до 5 знаков после запятой перед сравнением.
+        """
+        try:
+            original_val = float(original) if original not in (None, "", "x") else 0.0
+            calculated_val = float(calculated) if calculated not in (None, "", "x") else 0.0
+            # Округляем до 5 знаков после запятой для точного сравнения
+            original_rounded = round(original_val, 5)
+            calculated_rounded = round(calculated_val, 5)
+            return abs(original_rounded - calculated_rounded) > 0.00001
+        except (TypeError, ValueError):
+            # Если значения некорректные и не приводятся к числу, считаем их равными
+            return False
     
     def _column_to_index(self, column_letter: str) -> int:
         """Конвертация буквы колонки в индекс"""

@@ -6,12 +6,10 @@ from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QComboBox, QTreeWidget, QTreeWidgetItem, QMenu, 
                              QInputDialog, QDialog, QDialogButtonBox, QFormLayout,
                              QLineEdit, QCheckBox, QApplication, QStyle, QToolButton,
-                             QStyledItemDelegate, QSpinBox, QWidgetAction)
-from PyQt5.QtCore import Qt, QTimer, QSize, QRect
+                             QSpinBox, QWidgetAction)
 from PyQt5.QtCore import Qt, QTimer, QSize, QRect
 from PyQt5.QtGui import (QFont, QColor, QBrush, QTextDocument, QTextOption, 
                         QTextCharFormat, QTextCursor, QPainter)
-from PyQt5.QtWidgets import QStyleOptionHeader
 import os
 import subprocess
 import platform
@@ -29,490 +27,12 @@ from views.reference_viewer import ReferenceViewer
 from views.dictionaries_dialog import DictionariesDialog
 from views.form_load_dialog import FormLoadDialog
 from views.document_dialog import DocumentDialog
-
-
-class WrapHeaderView(QHeaderView):
-    """Кастомный заголовок с поддержкой переноса текста"""
-    
-    def __init__(self, orientation=Qt.Horizontal, parent=None):
-        super().__init__(orientation, parent)
-        self.setTextElideMode(Qt.ElideNone)
-        self._header_texts = {}  # Кэш текстов заголовков
-    
-    def setHeaderTexts(self, texts):
-        """Устанавливает тексты заголовков для кэширования"""
-        self._header_texts = texts
-    
-    def paintSection(self, painter, rect, logicalIndex):
-        """Переопределяем отрисовку секции заголовка с поддержкой переноса текста"""
-        # Получаем текст заголовка из кэша или модели
-        text = None
-        if logicalIndex in self._header_texts:
-            text = self._header_texts[logicalIndex]
-        elif self.model():
-            text = self.model().headerData(logicalIndex, self.orientation(), Qt.DisplayRole)
-        
-        if not text:
-            # Используем стандартную отрисовку, если текста нет
-            super().paintSection(painter, rect, logicalIndex)
-            return
-        
-        text = str(text)
-        
-        # Рисуем фон заголовка вручную, используя стиль
-        # Получаем опции стиля для отрисовки фона
-        option = QStyleOptionHeader()
-        option.initFrom(self)
-        option.rect = rect
-        option.section = logicalIndex
-        
-        # Определяем позицию секции (первая, средняя, последняя)
-        if logicalIndex == 0:
-            if self.count() > 1:
-                option.position = QStyleOptionHeader.Beginning
-            else:
-                option.position = QStyleOptionHeader.OnlyOneSection
-        elif logicalIndex == self.count() - 1:
-            option.position = QStyleOptionHeader.End
-        else:
-            option.position = QStyleOptionHeader.Middle
-        
-        # Рисуем фон заголовка вручную через палитру
-        # Получаем цвет фона из палитры
-        palette = self.palette()
-        bg_color = palette.color(palette.Button)
-        painter.fillRect(rect, bg_color)
-        
-        # Рисуем границы заголовка
-        border_color = palette.color(palette.Mid)
-        painter.setPen(border_color)
-        painter.drawRect(rect.adjusted(0, 0, -1, -1))
-        
-        # Создаем документ для переноса текста
-        doc = QTextDocument()
-        doc.setDefaultFont(self.font())
-        doc.setPlainText(text)
-        
-        # Настраиваем перенос текста
-        text_option = QTextOption()
-        text_option.setWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
-        text_option.setAlignment(Qt.AlignCenter)
-        doc.setDefaultTextOption(text_option)
-        
-        # Устанавливаем ширину документа равной ширине секции (с небольшими отступами)
-        padding = 4
-        doc.setTextWidth(rect.width() - 2 * padding)
-        
-        # Рисуем текст с переносом
-        painter.save()
-        painter.translate(rect.left() + padding, rect.top() + (rect.height() - doc.size().height()) / 2)
-        painter.setClipRect(QRect(0, 0, rect.width() - 2 * padding, rect.height()))
-        doc.drawContents(painter)
-        painter.restore()
-    
-    def sizeHint(self):
-        """Возвращаем размер заголовка с учетом переноса текста"""
-        size = super().sizeHint()
-        
-        # Вычисляем максимальную высоту с учетом переноса текста
-        max_height = 0
-        font_metrics = self.fontMetrics()
-        
-        for idx in range(self.count()):
-            if self.isSectionHidden(idx):
-                continue
-            
-            # Получаем текст из кэша или модели
-            text = None
-            if idx in self._header_texts:
-                text = self._header_texts[idx]
-            elif self.model():
-                text = self.model().headerData(idx, self.orientation(), Qt.DisplayRole)
-            
-            if not text:
-                continue
-            
-            text = str(text)
-            width = self.sectionSize(idx)
-            
-            # Создаем документ для расчета высоты
-            doc = QTextDocument()
-            doc.setDefaultFont(self.font())
-            doc.setPlainText(text)
-            
-            text_option = QTextOption()
-            text_option.setWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
-            doc.setDefaultTextOption(text_option)
-            
-            padding = 4
-            doc.setTextWidth(width - 2 * padding)
-            
-            doc_height = doc.size().height()
-            max_height = max(max_height, doc_height)
-        
-        if max_height > 0:
-            size.setHeight(int(max_height) + 8)  # Добавляем отступы
-        else:
-            size.setHeight(font_metrics.lineSpacing() + 6)
-        
-        return size
-
-
-class WordWrapItemDelegate(QStyledItemDelegate):
-    """Делегат для переноса текста в ячейках дерева"""
-    
-    def paint(self, painter, option, index):
-        if not index.isValid():
-            return
-        
-        # Настраиваем опции отрисовки (нужно сделать до проверки текста)
-        option = option.__class__(option)
-        self.initStyleOption(option, index)
-        
-        # Получаем текст из модели
-        text = index.data(Qt.DisplayRole) or ""
-        
-        # Рисуем фон даже если текст пустой (для окраски по уровням)
-        # Получаем цвет фона
-        background_brush = index.data(Qt.BackgroundRole)
-        if background_brush:
-            painter.fillRect(option.rect, background_brush)
-        elif option.state & QStyle.State_Selected:
-            # Для выделенных строк используем более светлый фон
-            highlight_color = option.palette.highlight().color()
-            # Делаем фон более прозрачным/светлым
-            light_highlight = QColor(highlight_color)
-            light_highlight.setAlpha(50)  # Полупрозрачный фон
-            painter.fillRect(option.rect, light_highlight)
-        else:
-            painter.fillRect(option.rect, option.palette.base())
-        
-        # Если текст пустой, только рисуем фон и выходим
-        if not text:
-            return
-        
-        # Получаем номер столбца
-        column = index.column()
-        
-        # Создаем документ для переноса текста
-        doc = QTextDocument()
-        doc.setDefaultFont(option.font)
-        doc.setPlainText(str(text))
-        
-        # Настраиваем перенос текста
-        # Для столбца "Код классификации" (индекс 2) отключаем перенос текста
-        text_option = QTextOption()
-        if column == 2:  # Код классификации - без переноса
-            text_option.setWrapMode(QTextOption.NoWrap)
-        else:
-            text_option.setWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
-        doc.setDefaultTextOption(text_option)
-        
-        # Для столбца "Код классификации" рисуем текст без переноса и без обрезания
-        if column == 2:
-            # Фон уже нарисован выше, только устанавливаем цвет текста
-            text_color = index.data(Qt.ForegroundRole)
-            # Сохраняем исходный шрифт
-            original_font = painter.font()
-            if text_color:
-                painter.setPen(text_color)
-            else:
-                # Для выделенных строк используем обычный цвет текста, но жирный шрифт
-                if option.state & QStyle.State_Selected:
-                    painter.setPen(option.palette.text().color())
-                    # Устанавливаем жирный шрифт
-                    font = painter.font()
-                    font.setBold(True)
-                    painter.setFont(font)
-                else:
-                    painter.setPen(option.palette.text().color())
-                    # Убеждаемся, что шрифт не жирный для невыделенных строк
-                    font = painter.font()
-                    font.setBold(False)
-                    painter.setFont(font)
-            
-            # Рисуем текст без переноса
-            text_rect = option.rect.adjusted(2, 0, -2, 0)  # Небольшой отступ слева и справа
-            painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter, str(text))
-            # Восстанавливаем исходный шрифт
-            painter.setFont(original_font)
-            return
-        
-        # Для остальных столбцов используем документ с переносом
-        # Устанавливаем ширину документа равной ширине ячейки
-        # Для столбца "Наименование" используем ширину с учетом отступов дерева
-        width = option.rect.width()
-        right_padding = 0  # Отступ справа для столбца "Наименование"
-        
-        if column == 0:
-            # Получаем отступы дерева из виджета
-            widget = option.widget
-            if widget and hasattr(widget, 'indentation'):
-                indentation = widget.indentation()
-                indent_reserve = indentation * 6 + 50  # Запас на отступы
-                width = 400 + indent_reserve
-                
-                # Вычисляем уровень элемента (глубину вложенности относительно нулевого уровня)
-                item_level = 0
-                try:
-                    model = index.model()
-                    if model:
-                        # Пытаемся получить уровень из данных элемента (столбец 3 - "Уровень")
-                        level_index = model.index(index.row(), 3, index.parent())
-                        if level_index.isValid():
-                            level_text = model.data(level_index, Qt.DisplayRole)
-                            if level_text:
-                                try:
-                                    item_level = int(str(level_text))
-                                except (ValueError, TypeError):
-                                    item_level = 0
-                        
-                        # Если не удалось получить из данных, вычисляем по глубине вложенности
-                        if item_level == 0:
-                            parent = index.parent()
-                            while parent.isValid():
-                                item_level += 1
-                                parent = parent.parent()
-                except Exception:
-                    item_level = 0
-                
-                # Вычисляем внутренний отступ справа с учетом всех уровней от 0 до текущего
-                # Сумма отступов всех уровней: indentation * (0 + 1 + 2 + ... + item_level)
-                # Формула суммы арифметической прогрессии: n * (n + 1) / 2
-                # Для уровней от 0 до item_level: indentation * item_level * (item_level + 1) / 2
-                if item_level > 0:
-                    right_padding = indentation * item_level * (item_level + 1) // 2
-                else:
-                    right_padding = 0
-            else:
-                width = 400  # Значение по умолчанию, если не удалось получить отступы
-        
-        doc.setTextWidth(width - right_padding)
-        
-        # Фон уже нарисован выше, устанавливаем цвет текста (для ошибок) через QTextCharFormat
-        text_color = index.data(Qt.ForegroundRole)
-        if text_color:
-            # text_color может быть QBrush или QColor
-            if isinstance(text_color, QBrush):
-                color = text_color.color()
-            else:
-                color = text_color
-            # Устанавливаем цвет текста через формат
-            char_format = QTextCharFormat()
-            char_format.setForeground(color)
-            # Применяем формат ко всему документу через курсор
-            cursor = QTextCursor(doc)
-            cursor.select(QTextCursor.Document)
-            cursor.setCharFormat(char_format)
-        elif option.state & QStyle.State_Selected:
-            # Для выделенных строк используем обычный цвет текста, но жирный шрифт
-            color = option.palette.text().color()
-            char_format = QTextCharFormat()
-            char_format.setForeground(color)
-            char_format.setFontWeight(QFont.Bold)  # Делаем текст жирным
-            cursor = QTextCursor(doc)
-            cursor.select(QTextCursor.Document)
-            cursor.setCharFormat(char_format)
-        else:
-            color = option.palette.text().color()
-            char_format = QTextCharFormat()
-            char_format.setForeground(color)
-            cursor = QTextCursor(doc)
-            cursor.select(QTextCursor.Document)
-            cursor.setCharFormat(char_format)
-        
-        # Рисуем текст с учетом внутреннего отступа справа
-        text_rect = option.rect.adjusted(0, 0, -right_padding, 0)
-        painter.save()
-        painter.translate(text_rect.topLeft())
-        doc.drawContents(painter)
-        painter.restore()
-    
-    def sizeHint(self, option, index):
-        if not index.isValid():
-            return QSize()
-        
-        text = index.data(Qt.DisplayRole) or ""
-        if not text:
-            return QSize(0, option.fontMetrics.height())
-        
-        # Получаем ширину столбца из виджета
-        widget = option.widget
-        column_width = 200  # Значение по умолчанию
-        column = index.column()
-        
-        right_padding = 0  # Отступ справа для столбца "Наименование"
-        
-        if widget and hasattr(widget, 'header'):
-            header = widget.header()
-            if column >= 0:
-                column_width = max(header.sectionSize(column), 50)
-                # Для столбца "Наименование" (индекс 0) используем ширину с учетом отступов
-                if column == 0:
-                    if hasattr(widget, 'indentation'):
-                        indentation = widget.indentation()
-                        indent_reserve = indentation * 6 + 50
-                        column_width = 400 + indent_reserve
-                        
-                        # Вычисляем уровень элемента для внутреннего отступа справа
-                        item_level = 0
-                        try:
-                            model = index.model()
-                            if model:
-                                # Пытаемся получить уровень из данных элемента (столбец 3 - "Уровень")
-                                level_index = model.index(index.row(), 3, index.parent())
-                                if level_index.isValid():
-                                    level_text = model.data(level_index, Qt.DisplayRole)
-                                    if level_text:
-                                        try:
-                                            item_level = int(str(level_text))
-                                        except (ValueError, TypeError):
-                                            item_level = 0
-                                
-                                # Если не удалось получить из данных, вычисляем по глубине вложенности
-                                if item_level == 0:
-                                    parent = index.parent()
-                                    while parent.isValid():
-                                        item_level += 1
-                                        parent = parent.parent()
-                        except Exception:
-                            item_level = 0
-                        
-                        # Вычисляем внутренний отступ справа с учетом всех уровней от 0 до текущего
-                        # Сумма отступов всех уровней: indentation * (0 + 1 + 2 + ... + item_level)
-                        # Формула суммы арифметической прогрессии: n * (n + 1) / 2
-                        if item_level > 0:
-                            right_padding = indentation * item_level * (item_level + 1) // 2
-                        else:
-                            right_padding = 0
-                    else:
-                        column_width = 400
-        
-        # Если ширина из option доступна, используем её
-        if option.rect.width() > 0:
-            column_width = option.rect.width()
-            # Для столбца "Наименование" учитываем отступы
-            if column == 0:
-                if widget and hasattr(widget, 'indentation'):
-                    indentation = widget.indentation()
-                    indent_reserve = indentation * 6 + 50
-                    column_width = 400 + indent_reserve
-                    
-                    # Вычисляем уровень элемента для внутреннего отступа справа
-                    item_level = 0
-                    try:
-                        model = index.model()
-                        if model:
-                            level_index = model.index(index.row(), 3, index.parent())
-                            if level_index.isValid():
-                                level_text = model.data(level_index, Qt.DisplayRole)
-                                if level_text:
-                                    try:
-                                        item_level = int(str(level_text))
-                                    except (ValueError, TypeError):
-                                        item_level = 0
-                            
-                            if item_level == 0:
-                                parent = index.parent()
-                                while parent.isValid():
-                                    item_level += 1
-                                    parent = parent.parent()
-                    except Exception:
-                        item_level = 0
-                    
-                    # Вычисляем внутренний отступ справа с учетом всех уровней от 0 до текущего
-                    # Сумма отступов всех уровней: indentation * (0 + 1 + 2 + ... + item_level)
-                    if item_level > 0:
-                        right_padding = indentation * item_level * (item_level + 1) // 2
-                    else:
-                        right_padding = 0
-                else:
-                    column_width = 400
-        
-        # Для столбца "Код классификации" (индекс 2) используем ширину текста без переноса
-        if column == 2:
-            # Возвращаем размер текста без переноса
-            text_width = option.fontMetrics.horizontalAdvance(str(text))
-            return QSize(text_width, option.fontMetrics.height())
-        
-        # Для остальных столбцов создаем документ для расчета размера с переносом
-        doc = QTextDocument()
-        doc.setDefaultFont(option.font)
-        doc.setPlainText(str(text))
-        
-        # Настраиваем перенос текста
-        text_option = QTextOption()
-        text_option.setWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
-        doc.setDefaultTextOption(text_option)
-        
-        # Устанавливаем ширину документа равной ширине столбца с учетом внутреннего отступа справа
-        # Для столбца "Наименование" вычитаем отступ справа
-        available_width = column_width - right_padding if column == 0 else column_width
-        doc.setTextWidth(available_width)
-        
-        # Возвращаем размер с учетом переноса
-        return QSize(int(doc.idealWidth()), int(doc.size().height()))
-
-
-class DetachedTabWindow(QMainWindow):
-    """Отдельное окно для открепленной вкладки"""
-    
-    def __init__(self, tab_widget, tab_name, parent=None):
-        super().__init__(parent)
-        self.tab_widget = tab_widget
-        self.tab_name = tab_name
-        self.main_window = parent
-        
-        self.setWindowTitle(tab_name)
-        self.setGeometry(100, 100, 1200, 800)
-        
-        # Убеждаемся, что виджет видим и имеет правильный родитель
-        if tab_widget.parent():
-            # Удаляем виджет из старого layout, если он там был
-            old_parent = tab_widget.parent()
-            if isinstance(old_parent, QWidget):
-                old_layout = old_parent.layout()
-                if old_layout:
-                    old_layout.removeWidget(tab_widget)
-        
-        # Устанавливаем виджет как центральный виджет напрямую
-        # Это работает, если tab_widget уже содержит все необходимое
-        self.setCentralWidget(tab_widget)
-        
-        # Убеждаемся, что виджет видим
-        tab_widget.setVisible(True)
-        tab_widget.show()
-
-    def closeEvent(self, event):
-        """Обработка закрытия окна - переопределяем метод closeEvent"""
-        logger.debug(f"closeEvent вызван для окна '{self.tab_name}'")
-        
-        # Проверяем, не происходит ли уже возврат вкладки (чтобы избежать повторного вызова)
-        if self.property("attaching"):
-            logger.debug(f"Флаг 'attaching' установлен, пропускаем возврат вкладки")
-            event.accept()
-            return
-        
-        # При закрытии окна возвращаем вкладку в главное окно
-        if self.main_window:
-            try:
-                # Используем tab_widget из centralWidget, если он доступен
-                tab_widget = self.centralWidget() or self.tab_widget
-                if tab_widget:
-                    logger.debug(f"Вызов attach_tab из closeEvent для '{self.tab_name}'")
-                    self.main_window.attach_tab(self.tab_name, tab_widget)
-                else:
-                    logger.warning(f"Не удалось получить виджет для возврата вкладки '{self.tab_name}'")
-            except Exception as e:
-                logger.error(f"Ошибка при возврате вкладки: {e}", exc_info=True)
-        else:
-            logger.warning(f"main_window не установлен для окна '{self.tab_name}'")
-        
-        event.accept()
-    
-    def get_tab_widget(self):
-        """Получить виджет вкладки"""
-        return self.tab_widget
+from views.widgets import WrapHeaderView, WordWrapItemDelegate, DetachedTabWindow
+from views.menu import MenuBar, ToolBar
+from views.panels import ProjectsPanel, TabsPanel
+from views.tree import TreeBuilder, TreeConfig, TreeHandlers
+from views.errors import ErrorsManager
+from views.metadata import MetadataPanel
 
 
 class MainWindow(QMainWindow):
@@ -543,6 +63,16 @@ class MainWindow(QMainWindow):
         self.header_font_size = 10  # Размер шрифта для заголовков
         # Отслеживание выделения
         self.selection_start_column = None  # Столбец, с которого началось выделение
+        
+        # Инициализируем компоненты интерфейса
+        self.projects_panel_obj = ProjectsPanel(self)
+        self.tabs_panel_obj = TabsPanel(self)
+        self.tree_builder = TreeBuilder(self)
+        self.tree_config = TreeConfig(self)
+        self.tree_handlers = TreeHandlers(self)
+        self.errors_manager = ErrorsManager(self)
+        self.metadata_panel = MetadataPanel(self)
+        
         self.init_ui()
         self.connect_signals()
         self.controller.load_initial_data()
@@ -567,12 +97,12 @@ class MainWindow(QMainWindow):
         self.main_splitter = splitter
         
         # Левая панель - список проектов
-        self.projects_panel = self.create_projects_panel()
+        self.projects_panel = self.projects_panel_obj.create_projects_panel()
         splitter.addWidget(self.projects_panel)
         self.projects_panel_index = splitter.indexOf(self.projects_panel)
         
         # Центральная панель - вкладки с данными
-        self.tabs_panel = self.create_tabs_panel()
+        self.tabs_panel = self.tabs_panel_obj.create_tabs_panel()
         splitter.addWidget(self.tabs_panel)
         
         # Устанавливаем пропорции
@@ -598,6 +128,16 @@ class MainWindow(QMainWindow):
     
     def create_menu_bar(self):
         """Создание меню-бара"""
+        menu_bar = MenuBar(self)
+        menu_bar.create_menu_bar()
+    
+    def create_toolbar(self):
+        """Создание тулбара"""
+        toolbar = ToolBar(self)
+        toolbar.create_toolbar()
+    
+    def _create_menu_bar_old(self):
+        """Старый метод создания меню-бара (для справки)"""
         menubar = self.menuBar()
         
         # ========== Меню "Файл" ==========
@@ -835,415 +375,20 @@ class MainWindow(QMainWindow):
 
         # Кнопки управления панелью проектов размещены непосредственно на самой панели
     
-    def create_projects_panel(self) -> QWidget:
-        """Создание панели проектов"""
-        # Основная панель с содержимым
-        inner_panel = QWidget()
-        layout = QVBoxLayout(inner_panel)
-        layout.setContentsMargins(6, 6, 2, 6)
-        
-        # Заголовок
-        title_label = QLabel("Проекты")
-        title_label.setFont(QFont("Arial", 12, QFont.Bold))
-        layout.addWidget(title_label)
-        
-        # Кнопки управления проектами
-        buttons_layout = QHBoxLayout()
-        
-        new_project_btn = QPushButton("Новый")
-        new_project_btn.clicked.connect(self.show_new_project_dialog)
-        buttons_layout.addWidget(new_project_btn)
-        
-        refresh_btn = QPushButton("Обновить")
-        refresh_btn.clicked.connect(self.refresh_projects)
-        buttons_layout.addWidget(refresh_btn)
-        
-        layout.addLayout(buttons_layout)
-        
-        # Дерево проектов: Год -> Проект -> Форма -> Ревизия
-        from PyQt5.QtWidgets import QTreeWidget
-        self.projects_tree = QTreeWidget()
-        self.projects_tree.setIndentation(10)
-        self.projects_tree.setHeaderHidden(True)
-        self.projects_tree.itemDoubleClicked.connect(self.on_project_tree_double_clicked)
-        self.projects_tree.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.projects_tree.customContextMenuRequested.connect(self.show_project_context_menu)
-        layout.addWidget(self.projects_tree)
-        
-        # Информация о проекте
-        self.project_info_label = QLabel("Выберите проект")
-        self.project_info_label.setWordWrap(True)
-        layout.addWidget(self.project_info_label)
-        
-        # Контейнер, в котором слева основная панель, справа узкая кнопка-свертка
-        container = QWidget()
-        container_layout = QHBoxLayout(container)
-        container_layout.setContentsMargins(0, 0, 0, 0)
-        container_layout.setSpacing(0)
-
-        container_layout.addWidget(inner_panel)
-
-        # Узкая вертикальная кнопка на правом краю панели
-        toggle_button = QPushButton("◀")
-        toggle_button.setFixedWidth(14)
-        toggle_button.setFlat(True)
-        toggle_button.setFocusPolicy(Qt.NoFocus)
-        toggle_button.setToolTip("Свернуть/развернуть панель проектов")
-        toggle_button.clicked.connect(self.on_projects_side_button_clicked)
-        container_layout.addWidget(toggle_button)
-
-        self.projects_inner_panel = inner_panel
-        self.projects_toggle_button = toggle_button
-
-        return container
+    # Метод create_projects_panel перенесен в views.panels.projects_panel.ProjectsPanel
     
-    def create_tabs_panel(self) -> QWidget:
-        """Создание панели с вкладками"""
-        tabs = QTabWidget()
-        self.tabs_panel = tabs
-        tabs.setTabsClosable(False)  # Отключаем стандартное закрытие вкладок
-        
-        # Добавляем контекстное меню для вкладок
-        tabs.setContextMenuPolicy(Qt.CustomContextMenu)
-        tabs.customContextMenuRequested.connect(self.show_tab_context_menu)
-        
-        # Вкладка с древовидными данными
-        self.tree_tab = QWidget()
-        
-        tree_layout = QVBoxLayout(self.tree_tab)
-        
-        # Панель управления древом
-        tree_control_layout = QHBoxLayout()
-        # Кнопки управления деревом (максимально компактные)
-        self.expand_all_btn = QToolButton()
-        self.expand_all_btn.setIcon(self.style().standardIcon(QStyle.SP_ArrowDown))
-        self.expand_all_btn.setToolTip("Развернуть все узлы дерева")
-        self.expand_all_btn.setIconSize(QSize(14, 14))
-        self.expand_all_btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
-        self.expand_all_btn.setAutoRaise(True)
-        self.expand_all_btn.setFixedSize(22, 22)
-        self.expand_all_btn.clicked.connect(self.expand_all_tree)
-        tree_control_layout.addWidget(self.expand_all_btn)
-        
-        self.collapse_all_btn = QToolButton()
-        self.collapse_all_btn.setIcon(self.style().standardIcon(QStyle.SP_ArrowUp))
-        self.collapse_all_btn.setToolTip("Свернуть все узлы дерева")
-        self.collapse_all_btn.setIconSize(QSize(14, 14))
-        self.collapse_all_btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
-        self.collapse_all_btn.setAutoRaise(True)
-        self.collapse_all_btn.setFixedSize(22, 22)
-        self.collapse_all_btn.clicked.connect(self.collapse_all_tree)
-        tree_control_layout.addWidget(self.collapse_all_btn)
-        
-        tree_control_layout.addStretch()
-        
-        # Выбор раздела
-        tree_control_layout.addWidget(QLabel("Раздел:"))
-        self.section_combo = QComboBox()
-        self.section_combo.addItems(["Доходы", "Расходы", "Источники финансирования", "Консолидируемые расчеты"])
-        self.section_combo.currentTextChanged.connect(self.on_section_changed)
-        tree_control_layout.addWidget(self.section_combo)
-        
-        # Выбор типа данных
-        tree_control_layout.addWidget(QLabel("Тип данных:"))
-        self.data_type_combo = QComboBox()
-        self.data_type_combo.addItems(["Утвержденный", "Исполненный", "Оба"])
-        self.data_type_combo.currentTextChanged.connect(self.on_data_type_changed)
-        tree_control_layout.addWidget(self.data_type_combo)
-        
-        # Чекбокс для скрытия нулевых столбцов
-        self.hide_zero_columns_checkbox = QCheckBox("Скрыть нулевые столбцы")
-        self.hide_zero_columns_checkbox.setToolTip("Скрыть столбцы, где в итоговой строке оба значения (утвержденный и исполненный) равны 0")
-        self.hide_zero_columns_checkbox.stateChanged.connect(self.on_hide_zero_columns_changed)
-        tree_control_layout.addWidget(self.hide_zero_columns_checkbox)
-        
-        # Панель инструментов для ревизии (активна только при выбранной ревизии)
-        self.revision_toolbar = QHBoxLayout()
-        self.revision_toolbar.setSpacing(5)
-        
-        # Кнопка пересчета
-        self.recalculate_btn = QPushButton("Пересчитать")
-        self.recalculate_btn.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
-        self.recalculate_btn.setToolTip("Пересчитать агрегированные суммы (F9)")
-        self.recalculate_btn.setEnabled(False)
-        self.recalculate_btn.clicked.connect(self.calculate_sums)
-        self.revision_toolbar.addWidget(self.recalculate_btn)
-        
-        # Кнопка экспорта пересчитанной таблицы
-        self.export_calculated_btn = QPushButton("Экспорт пересчитанной")
-        self.export_calculated_btn.setIcon(self.style().standardIcon(QStyle.SP_DialogSaveButton))
-        self.export_calculated_btn.setToolTip("Экспортировать форму с пересчитанными значениями")
-        self.export_calculated_btn.setEnabled(False)
-        self.export_calculated_btn.clicked.connect(self.export_calculated_table)
-        self.revision_toolbar.addWidget(self.export_calculated_btn)
-        
-        # Кнопка показа ошибок расчетов
-        self.show_errors_btn = QPushButton("Ошибки расчетов")
-        self.show_errors_btn.setIcon(self.style().standardIcon(QStyle.SP_MessageBoxWarning))
-        self.show_errors_btn.setToolTip("Показать ошибки расчетов")
-        self.show_errors_btn.setEnabled(False)
-        self.show_errors_btn.clicked.connect(self.show_calculation_errors)
-        self.revision_toolbar.addWidget(self.show_errors_btn)
-        
-        # self.revision_toolbar.addSeparator()
-        
-        # Кнопка открытия файла
-        self.open_file_btn = QPushButton("Открыть файл")
-        self.open_file_btn.setIcon(self.style().standardIcon(QStyle.SP_DirOpenIcon))
-        self.open_file_btn.setToolTip("Открыть файл (doc, docx, xls, xlsx)")
-        self.open_file_btn.setEnabled(True)
-        self.open_file_btn.clicked.connect(self.open_file_dialog)
-        self.revision_toolbar.addWidget(self.open_file_btn)
-        
-        # Кнопка открытия последнего экспортированного файла
-        self.open_last_file_btn = QPushButton("Открыть последний")
-        self.open_last_file_btn.setIcon(self.style().standardIcon(QStyle.SP_FileDialogStart))
-        self.open_last_file_btn.setToolTip("Открыть последний экспортированный файл")
-        self.open_last_file_btn.setEnabled(False)
-        self.open_last_file_btn.clicked.connect(self.open_last_exported_file)
-        self.revision_toolbar.addWidget(self.open_last_file_btn)
-        
-        # self.revision_toolbar.addSeparator()
-        
-        # Меню документов
-        self.documents_menu_btn = QPushButton("Документы ▼")
-        self.documents_menu_btn.setIcon(self.style().standardIcon(QStyle.SP_FileDialogNewFolder))
-        self.documents_menu_btn.setToolTip("Формирование документов")
-        self.documents_menu_btn.setEnabled(False)
-        self.documents_menu_btn.setMenu(QMenu(self))
-        documents_menu = self.documents_menu_btn.menu()
-        
-        generate_conclusion_action = QAction("Сформировать заключение...", self)
-        generate_conclusion_action.setIcon(self.style().standardIcon(QStyle.SP_FileDialogNewFolder))
-        generate_conclusion_action.triggered.connect(self.show_document_dialog)
-        documents_menu.addAction(generate_conclusion_action)
-        
-        generate_letters_action = QAction("Сформировать письма...", self)
-        generate_letters_action.setIcon(self.style().standardIcon(QStyle.SP_FileDialogNewFolder))
-        generate_letters_action.triggered.connect(self.show_document_dialog)
-        documents_menu.addAction(generate_letters_action)
-        
-        documents_menu.addSeparator()
-        
-        parse_solution_action = QAction("Обработать решение о бюджете...", self)
-        parse_solution_action.setIcon(self.style().standardIcon(QStyle.SP_DialogOpenButton))
-        parse_solution_action.triggered.connect(self.parse_solution_document)
-        documents_menu.addAction(parse_solution_action)
-        
-        self.revision_toolbar.addWidget(self.documents_menu_btn)
-        
-        tree_control_layout.addLayout(self.revision_toolbar)
-        tree_layout.addLayout(tree_control_layout)
-        
-        # Древовидный виджет (используем стандартный заголовок QTreeWidget)
-        self.data_tree = QTreeWidget()
-        # Настраиваем заголовки дерева
-        self.data_tree.setIndentation(10)
-        # Отключаем единую высоту строк, чтобы высота подстраивалась под содержимое
-        self.data_tree.setUniformRowHeights(False)
-        # Включаем множественный выбор (Shift и Ctrl)
-        self.data_tree.setSelectionMode(QTreeWidget.ExtendedSelection)
-        # Устанавливаем делегат для переноса текста в ячейках
-        self.data_tree.setItemDelegate(WordWrapItemDelegate())
-        self.configure_tree_headers(self.current_section)
-        self.data_tree.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.data_tree.customContextMenuRequested.connect(self.show_tree_context_menu)
-        self.data_tree.itemExpanded.connect(self.on_tree_item_expanded)
-        self.data_tree.itemCollapsed.connect(self.on_tree_item_collapsed)
-        # Обработчики выделения
-        self.data_tree.itemSelectionChanged.connect(self.on_tree_selection_changed)
-        self.data_tree.itemClicked.connect(self.on_tree_item_clicked)
-
-        # Контекстное меню по заголовкам дерева (управление столбцами)
-        header = self.data_tree.header()
-        header.setContextMenuPolicy(Qt.CustomContextMenu)
-        header.customContextMenuRequested.connect(self.show_tree_header_context_menu)
-
-        tree_layout.addWidget(self.data_tree)
-        
-        tabs.addTab(self.tree_tab, "Древовидные данные")
-        
-        # Вкладка с метаданными
-        self.metadata_tab = QWidget()
-        metadata_layout = QVBoxLayout(self.metadata_tab)
-        
-        self.metadata_text = QTextEdit()
-        self.metadata_text.setReadOnly(True)
-        metadata_layout.addWidget(self.metadata_text)
-        
-        tabs.addTab(self.metadata_tab, "Метаданные")
-        
-        # Вкладка с ошибками
-        self.errors_tab = QWidget()
-        errors_layout = QVBoxLayout(self.errors_tab)
-        errors_layout.setContentsMargins(5, 5, 5, 5)
-        
-        # Заголовок и фильтры
-        header_layout = QHBoxLayout()
-        
-        info_label = QLabel("Ошибки расчетов (несоответствия между оригинальными и расчетными значениями):")
-        info_label.setFont(QFont("Arial", 10, QFont.Bold))
-        header_layout.addWidget(info_label)
-        
-        header_layout.addStretch()
-        
-        # Фильтр по разделу
-        header_layout.addWidget(QLabel("Раздел:"))
-        self.errors_section_filter = QComboBox()
-        self.errors_section_filter.addItems(["Все", "Доходы", "Расходы", "Источники финансирования", "Консолидируемые расчеты"])
-        self.errors_section_filter.currentTextChanged.connect(lambda: self._update_errors_table())
-        header_layout.addWidget(self.errors_section_filter)
-        
-        errors_layout.addLayout(header_layout)
-        
-        # Таблица ошибок
-        self.errors_table = QTableWidget()
-        self.errors_table.setColumnCount(9)
-        self.errors_table.setHorizontalHeaderLabels([
-            "Раздел",
-            "Наименование",
-            "Код строки",
-            "Уровень",
-            "Тип",
-            "Колонка",
-            "Оригинальное",
-            "Расчетное",
-            "Разница"
-        ])
-        
-        # Настройка таблицы
-        header = self.errors_table.horizontalHeader()
-        # Отключаем растягивание последнего столбца
-        header.setStretchLastSection(False)
-        # Используем Interactive режим для каждого столбца отдельно, чтобы можно было вручную изменять ширину
-        for i in range(9):
-            header.setSectionResizeMode(i, QHeaderView.Interactive)
-        # Устанавливаем начальные размеры столбцов
-        header.resizeSection(0, 120)  # Раздел
-        header.resizeSection(1, 300)  # Наименование
-        header.resizeSection(2, 100)  # Код строки
-        header.resizeSection(3, 60)   # Уровень
-        header.resizeSection(4, 120)  # Тип
-        header.resizeSection(5, 100)  # Колонка
-        header.resizeSection(6, 120)  # Оригинальное
-        header.resizeSection(7, 120)  # Расчетное
-        header.resizeSection(8, 120)  # Разница
-        
-        self.errors_table.setAlternatingRowColors(True)
-        self.errors_table.setSelectionBehavior(QTableWidget.SelectRows)
-        self.errors_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        
-        errors_layout.addWidget(self.errors_table)
-        
-        # Кнопки и статистика
-        buttons_layout = QHBoxLayout()
-        buttons_layout.addStretch()
-        
-        self.errors_export_btn = QPushButton("Экспорт...")
-        self.errors_export_btn.setIcon(self.style().standardIcon(QStyle.SP_DialogSaveButton))
-        self.errors_export_btn.clicked.connect(self._export_errors)
-        buttons_layout.addWidget(self.errors_export_btn)
-        
-        errors_layout.addLayout(buttons_layout)
-        
-        # Статистика
-        self.errors_stats_label = QLabel("Ошибок не найдено")
-        self.errors_stats_label.setFont(QFont("Arial", 9))
-        errors_layout.addWidget(self.errors_stats_label)
-        
-        # Хранилище данных ошибок
-        self.errors_data = []
-        
-        tabs.addTab(self.errors_tab, "Ошибки")
-        
-        # Вкладка с просмотром Excel
-        self.excel_viewer = ExcelViewer()
-        tabs.addTab(self.excel_viewer, "Просмотр формы")
-        
-        return tabs
+    # Метод create_tabs_panel перенесен в views.panels.tabs_panel.TabsPanel
     
     def connect_signals(self):
         """Подключение сигналов"""
-        self.controller.projects_updated.connect(self.update_projects_list)
+        self.controller.projects_updated.connect(self.projects_panel_obj.update_projects_list)
         self.controller.project_loaded.connect(self.on_project_loaded)
         self.controller.calculation_completed.connect(self.on_calculation_completed)
         self.controller.export_completed.connect(self.on_export_completed)
         self.controller.error_occurred.connect(self.on_error_occurred)
     
-    def update_projects_list(self, _projects):
-        """Обновление дерева проектов по новой архитектуре MainController.build_project_tree"""
-        from PyQt5.QtWidgets import QTreeWidgetItem
-
-        self.projects_tree.clear()
-
-        # Получаем структурированные данные от контроллера
-        tree_data = self.controller.build_project_tree()
-
-        for year_entry in tree_data:
-            year_label = f"Год {year_entry['year']}"
-            year_item = QTreeWidgetItem([year_label])
-            self.projects_tree.addTopLevelItem(year_item)
-
-            for proj in year_entry["projects"]:
-                proj_item = QTreeWidgetItem([proj["name"]])
-                # Сохраняем ID проекта на уровне узла проекта
-                proj_item.setData(0, Qt.UserRole, proj["id"])
-                year_item.addChild(proj_item)
-
-                # Формы/периоды/ревизии (показываем даже пустые, с заглушками)
-                if proj.get("forms"):
-                    for form in proj["forms"]:
-                        form_label = f"{form['form_name']} ({form['form_code']})"
-                        form_item = QTreeWidgetItem([form_label])
-                        proj_item.addChild(form_item)
-
-                        periods = form.get("periods") or []
-                        if not periods:
-                            form_item.addChild(QTreeWidgetItem(["Нет периодов"]))
-                            continue
-
-                        for period in periods:
-                            period_label = period.get("period_name") or period.get("period_code") or "—"
-                            period_item = QTreeWidgetItem([period_label])
-                            form_item.addChild(period_item)
-
-                            revisions = period.get("revisions") or []
-                            if revisions:
-                                for rev in revisions:
-                                    status_icon = "✅" if rev["status"] == "calculated" else "📝"
-                                    rev_text = f"{status_icon} рев. {rev['revision']}"
-                                    rev_item = QTreeWidgetItem([rev_text])
-                                    rev_item.setData(0, Qt.UserRole, rev.get("project_id"))
-                                    revision_id = rev.get("revision_id")
-                                    rev_item.setData(0, Qt.UserRole + 1, revision_id)
-                                    if revision_id:
-                                        logger.debug(
-                                            f"Сохранена ревизия в дереве: "
-                                            f"revision_id={revision_id}, project_id={rev.get('project_id')}, revision={rev.get('revision')}"
-                                        )
-                                    period_item.addChild(rev_item)
-                            else:
-                                period_item.addChild(QTreeWidgetItem(["Нет ревизий"]))
-                else:
-                    # Совсем нет форм — заглушка
-                    placeholder = QTreeWidgetItem(["Нет ревизий"])
-                    proj_item.addChild(placeholder)
-
-        # Разворачиваем верхние уровни (год, проект, форма, период)
-        # Ревизии остаются свернутыми по умолчанию
-        for i in range(self.projects_tree.topLevelItemCount()):
-            year_item = self.projects_tree.topLevelItem(i)
-            year_item.setExpanded(True)
-            for j in range(year_item.childCount()):
-                proj_item = year_item.child(j)
-                proj_item.setExpanded(True)
-                for k in range(proj_item.childCount()):
-                    form_item = proj_item.child(k)
-                    form_item.setExpanded(True)
-                    for m in range(form_item.childCount()):
-                        period_item = form_item.child(m)
-                        period_item.setExpanded(True)
-
+    # Метод update_projects_list перенесен в views.panels.projects_panel.ProjectsPanel
+    
     def on_project_tree_double_clicked(self, item, column):
         """Обработка двойного клика по дереву проектов"""
         # Поднимаемся по дереву, чтобы найти project_id/revision_id даже при клике на заглушки
@@ -1358,7 +503,7 @@ class MainWindow(QMainWindow):
             if reply == QMessageBox.Yes:
                 self.controller.delete_form_revision(revision_id)
                 # После удаления ревизии обновляем дерево
-                self.update_projects_list(None)
+                self.projects_panel_obj.update_projects_list(None)
         elif action == delete_project_action:
             reply = QMessageBox.question(
                 self,
@@ -1389,7 +534,7 @@ class MainWindow(QMainWindow):
                         f"Проект '{self.controller.current_project.name}' обновлён"
                     )
                     # Обновляем дерево проектов
-                    self.update_projects_list(None)
+                    self.projects_panel_obj.update_projects_list(None)
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Ошибка редактирования проекта: {e}")
     
@@ -1421,90 +566,18 @@ class MainWindow(QMainWindow):
             # Убеждаемся, что прогресс-бар скрыт
             self.progress_bar.setVisible(False)
 
-            # --------------------------------------------------
-            # Определяем текущую ревизию и связанную мета‑информацию
-            # --------------------------------------------------
+            # Получаем информацию о проекте/ревизии из контроллера
+            project_info = self.controller.get_project_info(project)
             rev_id = getattr(self.controller, "current_revision_id", None)
-            form_text = "—"
-            revision_text = "—"
-            status_text = "—"
-            period_text = "—"
-
-            excel_path = None
-
-            if rev_id:
-                try:
-                    db = self.controller.db_manager
-                    revision = db.get_form_revision_by_id(rev_id)
-                    if revision:
-                        # Ревизия и статус
-                        revision_text = revision.revision or "—"
-                        from models.base_models import ProjectStatus  # локальный импорт, чтобы избежать циклов
-                        if isinstance(revision.status, ProjectStatus):
-                            status_text = revision.status.value
-                        else:
-                            # На случай строкового статуса
-                            status_text = str(revision.status or "—")
-
-                        # Путь к файлу для Excel‑просмотра
-                        excel_path = revision.file_path or None
-
-                        # Находим связанную форму и её тип / период
-                        project_forms = db.load_project_forms(project.id)
-                        pf = next((p for p in project_forms if p.id == revision.project_form_id), None)
-                        if pf:
-                            # Тип формы
-                            form_types_meta = {ft.id: ft for ft in db.load_form_types_meta()}
-                            ft_meta = form_types_meta.get(pf.form_type_id)
-                            if ft_meta:
-                                # Показываем и код, и читаемое имя, если есть
-                                if ft_meta.name:
-                                    form_text = f"{ft_meta.name} ({ft_meta.code})"
-                                else:
-                                    form_text = ft_meta.code
-                            # Период
-                            if pf.period_id:
-                                periods = db.load_periods()
-                                period_ref = next((p for p in periods if p.id == pf.period_id), None)
-                                if period_ref:
-                                    period_text = period_ref.name or period_ref.code or period_text
-                    else:
-                        # Если ревизия по ID не найдена — fallback на старые поля проекта
-                        revision_text = project.revision or "—"
-                        status_text = getattr(project.status, "value", str(project.status)) if project.status else "—"
-                        form_text = getattr(project.form_type, "value", str(project.form_type)) if project.form_type else "—"
-                except Exception as e:
-                    logger.error(f"Ошибка получения информации о ревизии: {e}", exc_info=True)
-                    # Fallback на старые поля проекта
-                    revision_text = project.revision or "—"
-                    status_text = getattr(project.status, "value", str(project.status)) if project.status else "—"
-                    form_text = getattr(project.form_type, "value", str(project.form_type)) if project.form_type else "—"
-            else:
-                # Проект без выбранной ревизии (старые проекты или только что созданные)
-                form_text = getattr(project.form_type, "value", str(project.form_type)) if project.form_type else "—"
-                revision_text = project.revision or "—"
-                status_text = getattr(project.status, "value", str(project.status)) if project.status else "—"
-
-            # МО — берём из справочника по municipality_id проекта
-            municipality_text = "—"
-            try:
-                if hasattr(project, "municipality_id") and project.municipality_id:
-                    db = self.controller.db_manager
-                    municip_list = db.load_municipalities()
-                    municip_ref = next((m for m in municip_list if m.id == project.municipality_id), None)
-                    if municip_ref:
-                        municipality_text = municip_ref.name or municipality_text
-            except Exception as e:
-                logger.warning(f"Ошибка получения МО для проекта {project.id}: {e}", exc_info=True)
 
             # Обновляем информацию о проекте
             info_text = (
                 f"<b>Проект:</b> {project.name}<br>"
-                f"<b>Форма:</b> {form_text}<br>"
-                f"<b>Ревизия:</b> {revision_text}<br>"
-                f"<b>МО:</b> {municipality_text}<br>"
-                f"<b>Период:</b> {period_text}<br>"
-                f"<b>Статус:</b> {status_text}<br>"
+                f"<b>Форма:</b> {project_info['form_text']}<br>"
+                f"<b>Ревизия:</b> {project_info['revision_text']}<br>"
+                f"<b>МО:</b> {project_info['municipality_text']}<br>"
+                f"<b>Период:</b> {project_info['period_text']}<br>"
+                f"<b>Статус:</b> {project_info['status_text']}<br>"
                 f"<b>Создан:</b> {project.created_at.strftime('%d.%m.%Y %H:%M')}"
             )
             self.project_info_label.setText(info_text)
@@ -1513,17 +586,18 @@ class MainWindow(QMainWindow):
             self.update_revision_buttons_state(rev_id is not None)
 
             # Загружаем данные в древовидное представление
-            self.load_project_data_to_tree(project)
+            self.tree_builder.load_project_data_to_tree(project)
 
             # Загружаем метаданные
-            self.load_metadata(project)
+            self.metadata_panel.load_metadata(project)
             
             # Обновляем вкладку ошибок
-            self.load_errors_to_tab(project.data)
+            self.errors_manager.load_errors_to_tab(project.data)
 
             # Загружаем файл в просмотрщик Excel:
             # Используем исходный файл ревизии (form_revisions.file_path), а не экспортированный
             # Экспортированный файл сохраняется отдельно и не должен заменять исходный
+            excel_path = project_info.get('excel_path')
             if excel_path and os.path.exists(excel_path):
                 # excel_path уже содержит путь к исходному файлу ревизии из revision_record.file_path
                 self.excel_viewer.load_excel_file(excel_path)
@@ -1537,1193 +611,46 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage(error_msg)
             self.progress_bar.setVisible(False)
     
-    def _get_tree_widgets(self):
-        """Получить все виджеты дерева (в главном окне и открепленных)"""
-        widgets = []
-        # Виджет в главном окне
-        if hasattr(self, 'data_tree') and self.data_tree:
-            widgets.append(self.data_tree)
-        
-        # Виджеты в открепленных окнах
-        if "Древовидные данные" in self.detached_windows:
-            detached_window = self.detached_windows["Древовидные данные"]
-            tab_widget = detached_window.get_tab_widget()
-            if tab_widget:
-                for child in tab_widget.findChildren(QTreeWidget):
-                    if child not in widgets:
-                        widgets.append(child)
-        
-        return widgets if widgets else []
+    # Методы _get_tree_widgets, _get_errors_widgets, _get_metadata_widgets перенесены в соответствующие модули
+    # Метод load_project_data_to_tree перенесен в views.tree.tree_builder.TreeBuilder
     
-    def _get_errors_widgets(self):
-        """Получить все виджеты ошибок с их фильтрами и метками (в главном окне и открепленных)"""
-        widgets_info = []
-        # Виджет в главном окне
-        if hasattr(self, 'errors_tab') and self.errors_tab and hasattr(self, 'errors_table'):
-            widgets_info.append({
-                'table': self.errors_table,
-                'filter': self.errors_section_filter,
-                'stats': self.errors_stats_label
-            })
-        
-        # Виджеты в открепленных окнах
-        if "Ошибки" in self.detached_windows:
-            detached_window = self.detached_windows["Ошибки"]
-            tab_widget = detached_window.get_tab_widget()
-            if tab_widget:
-                # Ищем таблицу, фильтр и метку статистики в открепленном окне
-                errors_table = None
-                errors_filter = None
-                errors_stats = None
-                for child in tab_widget.findChildren(QTableWidget):
-                    errors_table = child
-                    break
-                for child in tab_widget.findChildren(QComboBox):
-                    errors_filter = child
-                    break
-                for child in tab_widget.findChildren(QLabel):
-                    if "ошибок" in child.text().lower():
-                        errors_stats = child
-                        break
-                if errors_table:
-                    widgets_info.append({
-                        'table': errors_table,
-                        'filter': errors_filter,
-                        'stats': errors_stats
-                    })
-        
-        return widgets_info
+    # Методы работы с ошибками перенесены в views.errors.errors_manager.ErrorsManager
     
-    def _get_metadata_widgets(self):
-        """Получить все виджеты метаданных (в главном окне и открепленных)"""
-        widgets = []
-        # Виджет в главном окне
-        if hasattr(self, 'metadata_text') and self.metadata_text:
-            widgets.append(self.metadata_text)
-        
-        # Виджеты в открепленных окнах
-        if "Метаданные" in self.detached_windows:
-            detached_window = self.detached_windows["Метаданные"]
-            tab_widget = detached_window.get_tab_widget()
-            if tab_widget:
-                for child in tab_widget.findChildren(QTextEdit):
-                    if child not in widgets:
-                        widgets.append(child)
-        
-        return widgets
-    
-    def load_project_data_to_tree(self, project):
-        """Загрузка данных проекта в древовидное представление"""
-        try:
-            if not project:
-                self.status_bar.showMessage("Проект не выбран")
-                return
-            
-            if not project.data:
-                self.status_bar.showMessage("В проекте нет данных для отображения")
-                # Очищаем все деревья
-                tree_widgets = self._get_tree_widgets()
-                if tree_widgets:
-                    for tree in tree_widgets:
-                        if tree:
-                            tree.clear()
-                return
-            
-            # Получаем все виджеты дерева
-            tree_widgets = self._get_tree_widgets()
-            
-            # Проверяем, что есть хотя бы одно дерево
-            if not tree_widgets:
-                logger.warning("Не найдены виджеты дерева для загрузки данных")
-                self.status_bar.showMessage("Ошибка: виджеты дерева не инициализированы")
-                return
-            
-            # Очищаем все деревья
-            for tree in tree_widgets:
-                if tree:
-                    tree.clear()
-            
-            # Загружаем данные текущего раздела
-            section_map = {
-                "Доходы": "доходы_data",
-                "Расходы": "расходы_data", 
-                "Источники финансирования": "источники_финансирования_data",
-                "Консолидируемые расчеты": "консолидируемые_расчеты_data"
-            }
-
-            # Настраиваем заголовки дерева под выбранный раздел
-            self.configure_tree_headers(self.current_section)
-            
-            section_key = section_map.get(self.current_section)
-            if section_key and section_key in project.data:
-                data = project.data[section_key]
-                if data and len(data) > 0:
-                    # Для раздела "Расходы" подсвечиваем строку 450, сравнивая
-                    # план/исполнение с пересчитанным результатом исполнения бюджета
-                    # (дефицит/профицит), который теперь берём из calculated_deficit_proficit.
-                    if (
-                        self.current_section == "Расходы"
-                        and project.data.get('calculated_deficit_proficit')
-                    ):
-                        результат_data = project.data['calculated_deficit_proficit']
-                        # Ищем строку с кодом 450
-                        for row in data:
-                            if str(row.get('код_строки', '')).strip() == '450':
-                                # Добавляем расчетные значения для проверки несоответствий
-                                for col in Form0503317Constants.BUDGET_COLUMNS:
-                                    row[f'расчетный_утвержденный_{col}'] = результат_data.get(
-                                        'утвержденный', {}
-                                    ).get(col, 0)
-                                    row[f'расчетный_исполненный_{col}'] = результат_data.get(
-                                        'исполненный', {}
-                                    ).get(col, 0)
-                                break
-                    
-                    # Строим дерево для всех виджетов (в главном окне и открепленных)
-                    for tree_widget in tree_widgets:
-                        # Сначала настраиваем заголовки, чтобы кастомный заголовок был установлен
-                        self._configure_tree_headers_for_widget(tree_widget, self.current_section)
-                        # Затем загружаем данные
-                        self.build_tree_from_data(data, tree_widget)
-                    
-                    # Обновляем высоту заголовка после загрузки данных
-                    # Обновляем синхронно и через таймер для надежности
-                    self._update_tree_header_height_for_all()
-                    QTimer.singleShot(100, lambda: self._update_tree_header_height_for_all())
-                    # Обновляем вкладку ошибок
-                    self.load_errors_to_tab(project.data)
-                    # Применяем скрытие нулевых столбцов, если чекбокс включен
-                    if hasattr(self, 'hide_zero_columns_checkbox') and self.hide_zero_columns_checkbox.isChecked():
-                        QTimer.singleShot(150, lambda: self.apply_hide_zero_columns())
-                    self.status_bar.showMessage(f"Загружено {len(data)} записей в разделе '{self.current_section}'")
-                else:
-                    self.status_bar.showMessage(f"В разделе '{self.current_section}' нет данных для отображения")
-            else:
-                self.status_bar.showMessage(f"Раздел '{self.current_section}' не найден в данных проекта")
-        except Exception as e:
-            error_msg = f"Ошибка загрузки данных в дерево: {e}"
-            logger.error(error_msg, exc_info=True)
-            self.status_bar.showMessage(error_msg)
-
-    def load_errors_to_tab(self, project_data):
-        """Загрузка ошибок расчетов во вкладку ошибок"""
-        self.errors_data = []
-        
-        if not project_data:
-            # Обновляем все таблицы ошибок
-            for widget_info in self._get_errors_widgets():
-                self._update_errors_table(
-                    widget_info.get('table'),
-                    widget_info.get('filter'),
-                    widget_info.get('stats')
-                )
-            return
-        
-        # Проверяем разделы
-        sections = {
-            "Доходы": "доходы_data",
-            "Расходы": "расходы_data",
-            "Источники финансирования": "источники_финансирования_data",
-            "Консолидируемые расчеты": "консолидируемые_расчеты_data"
-        }
-        
-        for section_name, section_key in sections.items():
-            section_data = project_data.get(section_key, [])
-            if not section_data:
-                continue
-            
-            if section_name == "Консолидируемые расчеты":
-                self._check_consolidated_errors(section_data, section_name)
-            else:
-                self._check_budget_errors(section_data, section_name)
-        
-        # Обновляем все таблицы ошибок
-        for widget_info in self._get_errors_widgets():
-            self._update_errors_table(
-                widget_info.get('table'),
-                widget_info.get('filter'),
-                widget_info.get('stats')
-            )
-    
-    def _check_budget_errors(self, data, section_name: str):
-        """Проверка ошибок для бюджетных разделов (доходы, расходы, источники)"""
-        budget_cols = Form0503317Constants.BUDGET_COLUMNS
-        
-        for item in data:
-            level = item.get('уровень', 0)
-            # Проверяем только уровни < 6
-            if level >= 6:
-                continue
-            
-            name = item.get('наименование_показателя', '')
-            code = item.get('код_строки', '')
-            
-            approved_data = item.get('утвержденный', {}) or {}
-            executed_data = item.get('исполненный', {}) or {}
-            
-            for col in budget_cols:
-                # Проверка утвержденных значений
-                original_approved = approved_data.get(col, 0) or 0
-                calculated_approved = item.get(f'расчетный_утвержденный_{col}', original_approved)
-                
-                if self._is_value_different(original_approved, calculated_approved):
-                    diff = self._calculate_error_difference(original_approved, calculated_approved)
-                    self.errors_data.append({
-                        'section': section_name,
-                        'name': name,
-                        'code': code,
-                        'level': level,
-                        'type': 'Утвержденный',
-                        'column': col,
-                        'original': original_approved,
-                        'calculated': calculated_approved,
-                        'difference': diff
-                    })
-                
-                # Проверка исполненных значений
-                original_executed = executed_data.get(col, 0) or 0
-                calculated_executed = item.get(f'расчетный_исполненный_{col}', original_executed)
-                
-                if self._is_value_different(original_executed, calculated_executed):
-                    diff = self._calculate_error_difference(original_executed, calculated_executed)
-                    self.errors_data.append({
-                        'section': section_name,
-                        'name': name,
-                        'code': code,
-                        'level': level,
-                        'type': 'Исполненный',
-                        'column': col,
-                        'original': original_executed,
-                        'calculated': calculated_executed,
-                        'difference': diff
-                    })
-    
-    def _check_consolidated_errors(self, data, section_name: str):
-        """Проверка ошибок для консолидированных расчетов"""
-        cons_cols = Form0503317Constants.CONSOLIDATED_COLUMNS
-        
-        for item in data:
-            level = item.get('уровень', 0)
-            # Для консолидированных расчетов проверяем все уровни для столбца ИТОГО,
-            # и уровни < 6 для остальных столбцов
-            name = item.get('наименование_показателя', '')
-            code = item.get('код_строки', '')
-            
-            cons_data = item.get('поступления', {}) or {}
-            
-            for col in cons_cols:
-                # Оригинальное значение
-                if isinstance(cons_data, dict) and col in cons_data:
-                    original_value = cons_data.get(col, 0) or 0
-                else:
-                    original_value = item.get(f'поступления_{col}', 0) or 0
-                
-                # Расчетное значение
-                calculated_value = item.get(f'расчетный_поступления_{col}')
-                if calculated_value is None:
-                    calculated_value = original_value
-                
-                # Проверяем несоответствие
-                is_total_column = (col == 'ИТОГО')
-                should_check = (level < 6) or is_total_column
-                
-                if should_check and self._is_value_different(original_value, calculated_value):
-                    diff = self._calculate_error_difference(original_value, calculated_value)
-                    self.errors_data.append({
-                        'section': section_name,
-                        'name': name,
-                        'code': code,
-                        'level': level,
-                        'type': 'Поступления',
-                        'column': col,
-                        'original': original_value,
-                        'calculated': calculated_value,
-                        'difference': diff
-                    })
-    
-    def _calculate_error_difference(self, original: float, calculated: float) -> float:
-        """Вычисление разницы между значениями"""
-        try:
-            original_val = float(original) if original not in (None, "", "x") else 0.0
-            calculated_val = float(calculated) if calculated not in (None, "", "x") else 0.0
-            return calculated_val - original_val
-        except (ValueError, TypeError):
-            return 0.0
-    
-    def _update_errors_table(self, errors_table=None, section_filter_widget=None, stats_label=None):
-        """Обновление таблицы с ошибками"""
-        if errors_table is None:
-            errors_table = self.errors_table
-        if section_filter_widget is None:
-            section_filter_widget = self.errors_section_filter
-        if stats_label is None:
-            stats_label = self.errors_stats_label
-        
-        # Фильтрация по разделу
-        section_filter = section_filter_widget.currentText() if section_filter_widget else "Все"
-        filtered_data = self.errors_data
-        if section_filter != "Все":
-            filtered_data = [e for e in self.errors_data if e['section'] == section_filter]
-        
-        # Заполнение таблицы
-        errors_table.setRowCount(len(filtered_data))
-        
-        error_color = QColor("#FF6B6B")
-        
-        for row_idx, error in enumerate(filtered_data):
-            # Раздел
-            errors_table.setItem(row_idx, 0, QTableWidgetItem(error['section']))
-            
-            # Наименование
-            name_item = QTableWidgetItem(error['name'])
-            name_item.setForeground(QBrush(error_color))
-            errors_table.setItem(row_idx, 1, name_item)
-            
-            # Код строки
-            errors_table.setItem(row_idx, 2, QTableWidgetItem(str(error['code'])))
-            
-            # Уровень
-            errors_table.setItem(row_idx, 3, QTableWidgetItem(str(error['level'])))
-            
-            # Тип
-            errors_table.setItem(row_idx, 4, QTableWidgetItem(error['type']))
-            
-            # Колонка
-            errors_table.setItem(row_idx, 5, QTableWidgetItem(error['column']))
-            
-            # Оригинальное значение
-            orig_text = self._format_error_value(error['original'])
-            orig_item = QTableWidgetItem(orig_text)
-            errors_table.setItem(row_idx, 6, orig_item)
-            
-            # Расчетное значение
-            calc_text = self._format_error_value(error['calculated'])
-            calc_item = QTableWidgetItem(calc_text)
-            calc_item.setForeground(QBrush(error_color))
-            errors_table.setItem(row_idx, 7, calc_item)
-            
-            # Разница
-            diff_text = self._format_error_value(error['difference'])
-            diff_item = QTableWidgetItem(diff_text)
-            diff_item.setForeground(QBrush(error_color))
-            errors_table.setItem(row_idx, 8, diff_item)
-        
-        # Убеждаемся, что режим изменения размера столбцов установлен (на случай, если он был сброшен)
-        header = errors_table.horizontalHeader()
-        header.setStretchLastSection(False)
-        for i in range(9):
-            header.setSectionResizeMode(i, QHeaderView.Interactive)
-        
-        # Обновление статистики
-        if stats_label:
-            total_count = len(self.errors_data)
-            filtered_count = len(filtered_data)
-            if section_filter == "Все":
-                stats_label.setText(f"Всего ошибок: {total_count}")
-            else:
-                stats_label.setText(f"Ошибок в разделе '{section_filter}': {filtered_count} (всего: {total_count})")
-    
-    def _format_error_value(self, value) -> str:
-        """Форматирование значения для отображения"""
-        if value in (None, "", "x"):
-            return ""
-        try:
-            return f"{float(value):,.2f}"
-        except (ValueError, TypeError):
-            return str(value)
-    
-    def _export_errors(self):
-        """Экспорт ошибок в файл"""
-        import csv
-        
-        if not self.errors_data:
-            QMessageBox.information(self, "Информация", "Нет ошибок для экспорта")
-            return
-        
-        file_path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Экспорт ошибок расчетов",
-            "ошибки_расчетов.csv",
-            "CSV files (*.csv);;All files (*.*)"
-        )
-        
-        if not file_path:
-            return
-        
-        try:
-            with open(file_path, 'w', newline='', encoding='utf-8-sig') as f:
-                writer = csv.writer(f, delimiter=';')
-                # Заголовки
-                writer.writerow([
-                    "Раздел", "Наименование", "Код строки", "Уровень",
-                    "Тип", "Колонка", "Оригинальное", "Расчетное", "Разница"
-                ])
-                # Данные
-                for error in self.errors_data:
-                    writer.writerow([
-                        error['section'],
-                        error['name'],
-                        error['code'],
-                        error['level'],
-                        error['type'],
-                        error['column'],
-                        self._format_error_value(error['original']),
-                        self._format_error_value(error['calculated']),
-                        self._format_error_value(error['difference'])
-                    ])
-            
-            QMessageBox.information(self, "Успех", f"Ошибки экспортированы в файл:\n{file_path}")
-        except Exception as e:
-            logger.error(f"Ошибка экспорта: {e}", exc_info=True)
-            QMessageBox.critical(self, "Ошибка", f"Не удалось экспортировать ошибки:\n{e}")
+    # Методы работы с ошибками (_check_budget_errors, _check_consolidated_errors, 
+    # _update_errors_table, _export_errors, _format_error_value, _calculate_error_difference)
+    # перенесены в views.errors.errors_manager.ErrorsManager
     
     def configure_tree_headers(self, section_name: str):
-        """Конфигурация заголовков дерева под выбранный раздел"""
-        base_headers = ["Наименование", "Код строки", "Код классификации", "Уровень"]
-        display_headers = base_headers[:]
-        tooltip_headers = base_headers[:]
-        mapping = {
-            "type": "base",
-            "base_count": len(base_headers)
-        }
-
-        if section_name in ["Доходы", "Расходы", "Источники финансирования"]:
-            budget_cols = Form0503317Constants.BUDGET_COLUMNS
-            mapping.update({
-                "type": "budget",
-                "budget_columns": budget_cols,
-                "approved_start": len(display_headers),
-                "executed_start": len(display_headers) + len(budget_cols)
-            })
-
-            for col in budget_cols:
-                display_headers.append(f"У. {col}")
-                tooltip_headers.append(f"Утвержденный — {col}")
-            for col in budget_cols:
-                display_headers.append(f"И. {col}")
-                tooltip_headers.append(f"Исполненный — {col}")
-
-        elif section_name == "Консолидируемые расчеты":
-            cons_cols = Form0503317Constants.CONSOLIDATED_COLUMNS
-            mapping.update({
-                "type": "consolidated",
-                "value_start": len(display_headers),
-                "columns": cons_cols
-            })
-            for col in cons_cols:
-                display_headers.append(col)
-                tooltip_headers.append(col)
-
-        self.tree_headers = display_headers
-        self.tree_header_tooltips = tooltip_headers
-        self.tree_column_mapping = mapping
-
-        # Настраиваем заголовки для всех деревьев
-        for tree_widget in self._get_tree_widgets():
-            self._configure_tree_headers_for_widget(tree_widget, section_name, display_headers, mapping)
-
-        # Вычисляем высоту заголовка с учетом автоматического переноса текста
-        # Обновляем высоту синхронно для всех деревьев
-        self._update_tree_header_height_for_all()
-        # Также обновляем через таймер на случай, если размеры столбцов еще не установлены
-        QTimer.singleShot(100, lambda: self._update_tree_header_height_for_all())
+        """Конфигурация заголовков дерева под выбранный раздел (делегирует к tree_config)"""
+        self.tree_config.configure_tree_headers(section_name)
     
     def _configure_tree_headers_for_widget(self, tree_widget, section_name, display_headers=None, mapping=None):
-        """Настройка заголовков для конкретного виджета дерева"""
-        if display_headers is None:
-            display_headers = self.tree_headers
-        if mapping is None:
-            mapping = self.tree_column_mapping
-        
-        # Устанавливаем делегат для переноса текста в ячейках
-        tree_widget.setItemDelegate(WordWrapItemDelegate())
-        # Отключаем единую высоту строк, чтобы высота подстраивалась под содержимое
-        tree_widget.setUniformRowHeights(False)
-        
-        # Применяем текущий размер шрифта
-        font = tree_widget.font()
-        font.setPointSize(self.font_size)
-        tree_widget.setFont(font)
-        
-        tree_widget.setColumnCount(len(display_headers))
-        
-        # Проверяем, есть ли уже кастомный заголовок, если нет - создаем новый
-        header = tree_widget.header()
-        if not isinstance(header, WrapHeaderView):
-            # Создаем и устанавливаем кастомный заголовок с поддержкой переноса текста
-            custom_header = WrapHeaderView(Qt.Horizontal, tree_widget)
-            custom_header.setHeaderTexts({idx: text for idx, text in enumerate(display_headers)})
-            tree_widget.setHeader(custom_header)
-            header = tree_widget.header()
-        
-        # Устанавливаем заголовки ПОСЛЕ установки кастомного заголовка
-        tree_widget.setHeaderLabels(display_headers)
-        
-        # Убеждаемся, что заголовок видим
-        tree_widget.setHeaderHidden(False)
-        
-        # После setHeaderLabels нужно снова получить заголовок, так как он может быть пересоздан
-        header = tree_widget.header()
-        
-        # Если заголовок не кастомный, создаем и устанавливаем его снова
-        if not isinstance(header, WrapHeaderView):
-            custom_header = WrapHeaderView(Qt.Horizontal, tree_widget)
-            custom_header.setHeaderTexts({idx: text for idx, text in enumerate(display_headers)})
-            tree_widget.setHeader(custom_header)
-            header = tree_widget.header()
-        
-        # Обновляем тексты заголовков в кастомном заголовке
-        if isinstance(header, WrapHeaderView):
-            header.setHeaderTexts({idx: text for idx, text in enumerate(display_headers)})
-        
-        header.setDefaultAlignment(Qt.AlignCenter)
-        
-        # Применяем размер шрифта к заголовкам
-        header_font = header.font()
-        header_font.setPointSize(self.header_font_size)
-        header.setFont(header_font)
-        
-        # Включаем перенос текста в заголовках
-        header.setTextElideMode(Qt.ElideNone)
-        
-        # Убеждаемся, что заголовок видим
-        tree_widget.setHeaderHidden(False)
-        
-        # Устанавливаем минимальную ширину столбцов
-        for idx in range(len(display_headers)):
-            header.setMinimumSectionSize(50)
-        
-        # Устанавливаем режимы изменения размера и ширину столбцов
-        # Столбец 0 ("Наименование") - Interactive с фиксированной шириной с учетом отступов
-        # Столбец 1 ("Код строки") - Fixed с шириной 80px
-        # Столбец 2 ("Код классификации") - Interactive с фиксированной шириной 200px
-        # Столбец 3 ("Уровень") - Fixed с шириной 50px
-        # Остальные столбцы - Fixed с шириной 150px (текст будет переноситься)
-        for idx in range(len(display_headers)):
-            if idx == 0:
-                # Столбец "Наименование" - Interactive режим с фиксированной шириной
-                header.setSectionResizeMode(idx, QHeaderView.Interactive)
-                # Получаем отступы дерева и добавляем запас
-                indentation = tree_widget.indentation()
-                # Добавляем запас на отступы (примерно 6 уровней * отступ + небольшой запас)
-                indent_reserve = indentation * 6 + 50  # Запас на отступы и дополнительные элементы
-                # Устанавливаем ширину 400 пикселей + запас на отступы
-                header.resizeSection(idx, 400 + indent_reserve)
-            elif idx == 1:
-                # Столбец "Код строки" - Fixed режим с шириной 80px
-                header.setSectionResizeMode(idx, QHeaderView.Fixed)
-                header.resizeSection(idx, 80)
-            elif idx == 2:
-                # Столбец "Код классификации" - Interactive режим с фиксированной шириной
-                header.setSectionResizeMode(idx, QHeaderView.Interactive)
-                header.resizeSection(idx, 200)
-            elif idx == 3:
-                # Столбец "Уровень" - Fixed режим с шириной 50px
-                header.setSectionResizeMode(idx, QHeaderView.Fixed)
-                header.resizeSection(idx, 50)
-            else:
-                # Остальные столбцы - Fixed режим с шириной 150px
-                header.setSectionResizeMode(idx, QHeaderView.Fixed)
-                header.resizeSection(idx, 150)
-        
-        # Подключаем обработчик изменения размера столбцов для обновления высоты заголовка
-        # и ограничения ширины столбца "Наименование"
-        def on_section_resized(logical_index, old_size, new_size):
-            # Ограничиваем ширину столбца "Наименование" (индекс 0) с учетом отступов
-            if logical_index == 0:
-                indentation = tree_widget.indentation()
-                indent_reserve = indentation * 6 + 50  # Запас на отступы
-                max_width = 400 + indent_reserve
-                if new_size > max_width:
-                    header.resizeSection(0, max_width)
-            # Для столбцов с Fixed режимом восстанавливаем их фиксированные размеры
-            elif logical_index == 1:  # Столбец "Код строки" - 80px
-                if header.sectionResizeMode(logical_index) == QHeaderView.Fixed:
-                    if new_size != 80:
-                        header.resizeSection(logical_index, 80)
-            elif logical_index == 3:  # Столбец "Уровень" - 50px
-                if header.sectionResizeMode(logical_index) == QHeaderView.Fixed:
-                    if new_size != 50:
-                        header.resizeSection(logical_index, 50)
-            elif logical_index != 2:  # Остальные столбцы (кроме 0 и 2) - 150px
-                # Проверяем, что это столбец с Fixed режимом
-                if header.sectionResizeMode(logical_index) == QHeaderView.Fixed:
-                    if new_size != 150:
-                        header.resizeSection(logical_index, 150)
-            QTimer.singleShot(50, lambda tw=tree_widget: self._update_tree_header_height(tw))
-        
-        header.sectionResized.connect(on_section_resized)
-        
-        # Обновляем тексты заголовков в кастомном заголовке при изменении размера
-        if isinstance(header, WrapHeaderView):
-            header.setHeaderTexts({idx: text for idx, text in enumerate(display_headers)})
-            header.update()  # Принудительно обновляем отрисовку
-
-        # Для консолидируемых расчетов колонку "Код классификации" не показываем
-        # Для остальных разделов - показываем
-        if section_name == "Консолидируемые расчеты" and len(display_headers) > 2:
-            tree_widget.setColumnHidden(2, True)
-        else:
-            # Убеждаемся, что столбец "Код классификации" видим для других разделов
-            if len(display_headers) > 2:
-                tree_widget.setColumnHidden(2, False)
-        
-        # Обновляем высоту заголовка сразу после настройки
-        # Это предотвращает наезд заголовка на данные при смене раздела
-        QApplication.processEvents()  # Обрабатываем события, чтобы заголовки были установлены
-        self._update_tree_header_height(tree_widget)
-
-    def _update_tree_header_height_for_all(self):
-        """Обновляет высоту заголовка для всех деревьев"""
-        for tree_widget in self._get_tree_widgets():
-            self._update_tree_header_height(tree_widget)
+        """Настройка заголовков для конкретного виджета дерева (делегирует к tree_config)"""
+        self.tree_config._configure_tree_headers_for_widget(tree_widget, section_name, display_headers, mapping)
     
     def _update_tree_header_height(self, tree_widget=None):
-        """Обновляет высоту заголовка дерева с учетом автоматического переноса текста"""
-        if tree_widget is None:
-            tree_widget = self.data_tree
-        try:
-            header = tree_widget.header()
-            font_metrics = header.fontMetrics()
-            max_height = 0
-            
-            # Получаем заголовки из headerItem
-            header_item = tree_widget.headerItem()
-            if header_item:
-                # Проходим по всем заголовкам и вычисляем максимальную высоту с учетом переноса
-                for idx in range(tree_widget.columnCount()):
-                    if tree_widget.isColumnHidden(idx):
-                        continue
-                    
-                    # Получаем текст из headerItem
-                    text = header_item.text(idx) if idx < tree_widget.columnCount() else ""
-                    if not text and idx < len(self.tree_headers):
-                        text = self.tree_headers[idx]
-                    
-                    if text:
-                        # Получаем ширину столбца
-                        width = max(header.sectionSize(idx), 50)
-                        
-                        # Создаем документ для расчета высоты с учетом переноса
-                        from PyQt5.QtGui import QTextDocument, QTextOption
-                        doc = QTextDocument()
-                        doc.setDefaultFont(header.font())
-                        doc.setPlainText(str(text))
-                        
-                        # Настраиваем перенос текста
-                        text_option = QTextOption()
-                        text_option.setWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
-                        doc.setDefaultTextOption(text_option)
-                        
-                        # Устанавливаем ширину документа (с учетом отступов)
-                        padding = 4
-                        doc.setTextWidth(width - 2 * padding)
-                        
-                        # Получаем высоту документа
-                        doc_height = doc.size().height()
-                        max_height = max(max_height, doc_height)
-            else:
-                # Если нет headerItem, используем tree_headers
-                for idx, text in enumerate(self.tree_headers):
-                    if text and not tree_widget.isColumnHidden(idx):
-                        width = max(header.sectionSize(idx), 50)
-                        
-                        # Создаем документ для расчета высоты
-                        from PyQt5.QtGui import QTextDocument, QTextOption
-                        doc = QTextDocument()
-                        doc.setDefaultFont(header.font())
-                        doc.setPlainText(str(text))
-                        
-                        text_option = QTextOption()
-                        text_option.setWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
-                        doc.setDefaultTextOption(text_option)
-                        doc.setTextWidth(width)
-                        
-                        doc_height = doc.size().height()
-                        max_height = max(max_height, doc_height)
-            
-            # Устанавливаем высоту заголовка с небольшим отступом
-            if max_height > 0:
-                header.setFixedHeight(int(max_height) + 8)
-            else:
-                # Если не удалось рассчитать, используем стандартную высоту
-                line_height = font_metrics.lineSpacing()
-                header.setFixedHeight(line_height + 6)
-        except Exception as e:
-            logger.warning(f"Ошибка обновления высоты заголовка дерева: {e}", exc_info=True)
-            # В случае ошибки используем минимальную высоту
-            try:
-                header = self.data_tree.header()
-                font_metrics = header.fontMetrics()
-                header.setFixedHeight(font_metrics.lineSpacing() + 6)
-            except:
-                pass
-    
-    def _on_tree_header_section_resized(self, logicalIndex, oldSize, newSize):
-        """Обработчик изменения размера столбца заголовка дерева"""
-        # Обновляем высоту заголовка при изменении размера столбца
-        try:
-            QTimer.singleShot(100, self._update_tree_header_height)
-        except Exception as e:
-            logger.warning(f"Ошибка в _on_tree_header_section_resized: {e}", exc_info=True)
+        """Обновляет высоту заголовка дерева (делегирует к tree_config)"""
+        self.tree_config._update_tree_header_height(tree_widget)
 
     def hide_zero_columns_in_tree(self, section_key: str, data):
-        """
-        Скрытие столбцов дерева, в которых итоговое значение равно 0.
-        Логика аналогична табличному представлению.
-        """
-        if not data:
-            return
-
-        if section_key == "консолидируемые_расчеты_data":
-            cons_cols = Form0503317Constants.CONSOLIDATED_COLUMNS
-            mapping = self.tree_column_mapping or {}
-            if mapping.get("type") != "consolidated":
-                return
-
-            # Ищем итоговую строку
-            total_item = None
-            for item in data:
-                name = str(item.get("наименование_показателя", "")).strip().lower()
-                code = str(item.get("код_строки", "")).strip().lower()
-                # Для консолидированных: строка начинается с "всего" ИЛИ код 899
-                if name.startswith("всего") or code == "899":
-                    total_item = item
-                    break
-            if not total_item:
-                return
-
-            value_start = mapping.get("value_start", 4)
-            totals = total_item.get("поступления", {}) or {}
-
-            header = self.data_tree.header()
-            zero_cols = []
-            for i, col_name in enumerate(cons_cols):
-                val = totals.get(col_name, 0)
-                if isinstance(val, (int, float)) and abs(val) < 1e-9:
-                    col_index = value_start + i
-                    if 0 <= col_index < self.data_tree.columnCount():
-                        zero_cols.append(col_index)
-
-            # Сужаем «нулевые» колонки до минимальной ширины и очищаем заголовки
-            header_item = self.data_tree.headerItem()
-            for col_index in zero_cols:
-                header.resizeSection(col_index, 2)  # минимальная ширина
-                if header_item:
-                    header_item.setText(col_index, "")
-                    header_item.setToolTip(col_index, "")
-            return
-
-        # Доходы, расходы, источники
-        # Паттерн: итоговые строки для первых трёх разделов
-        # оканчиваются на "всего" (регистр не важен).
-        budget_cols = Form0503317Constants.BUDGET_COLUMNS
-        mapping = self.tree_column_mapping or {}
-        if mapping.get("type") != "budget":
-            return
-
-        total_item = None
-        for item in data:
-            name = str(item.get("наименование_показателя", "")).strip().lower()
-            # Ищем первую строку, где встречается слово "всего"
-            # (без жёсткого условия «только в конце», чтобы не зависеть
-            #  от возможных двоеточий, уточнений и т.п.)
-            if "всего" in name:
-                total_item = item
-                break
-        
-        if not total_item:
-            logger.debug(f"Итоговая строка не найдена для раздела {section_key}")
-            return
-
-        approved = total_item.get("утвержденный", {}) or {}
-        executed = total_item.get("исполненный", {}) or {}
-
-        approved_start = mapping.get("approved_start", 4)
-        executed_start = mapping.get("executed_start", approved_start + len(budget_cols))
-
-        # Учитываем видимость столбцов по типу данных
-        show_approved = self.current_data_type in ("Утвержденный", "Оба")
-        show_executed = self.current_data_type in ("Исполненный", "Оба")
-
-        header = self.data_tree.header()
-        zero_cols = set()
-        for i, col_name in enumerate(budget_cols):
-            a_val = approved.get(col_name, 0) or 0
-            e_val = executed.get(col_name, 0) or 0
-            if isinstance(a_val, (int, float)) and isinstance(e_val, (int, float)):
-                if abs(a_val) < 1e-9 and abs(e_val) < 1e-9:
-                    appr_idx = approved_start + i
-                    exec_idx = executed_start + i
-                    if show_approved and 0 <= appr_idx < self.data_tree.columnCount():
-                        zero_cols.add(appr_idx)
-                    if show_executed and 0 <= exec_idx < self.data_tree.columnCount():
-                        zero_cols.add(exec_idx)
-
-        # Сужаем «нулевые» колонки до минимальной ширины и очищаем заголовки
-        header_item = self.data_tree.headerItem()
-        for col_index in zero_cols:
-            header.resizeSection(col_index, 2)  # минимальная ширина
-            if header_item:
-                header_item.setText(col_index, "")
-                header_item.setToolTip(col_index, "")
+        """Скрытие столбцов дерева (делегирует к tree_config)"""
+        self.tree_config.hide_zero_columns_in_tree(section_key, data)
 
     def apply_tree_data_type_visibility(self):
-        """Скрывает столбцы дерева в зависимости от выбранного типа данных"""
-        if not self.tree_column_mapping:
-            return
-
-        column_total = len(self.tree_headers)
-        
-        # Применяем ко всем деревьям
-        for tree_widget in self._get_tree_widgets():
-            for col in range(column_total):
-                tree_widget.setColumnHidden(col, False)
-
-            if self.tree_column_mapping.get("type") != "budget":
-                continue
-
-            approved_start = self.tree_column_mapping.get("approved_start", 0)
-            executed_start = self.tree_column_mapping.get("executed_start", 0)
-            budget_cols = self.tree_column_mapping.get("budget_columns", [])
-
-            approved_range = range(approved_start, approved_start + len(budget_cols))
-            executed_range = range(executed_start, executed_start + len(budget_cols))
-
-            show_approved = self.current_data_type in ("Утвержденный", "Оба")
-            show_executed = self.current_data_type in ("Исполненный", "Оба")
-
-            for idx in approved_range:
-                tree_widget.setColumnHidden(idx, not show_approved)
-            for idx in executed_range:
-                tree_widget.setColumnHidden(idx, not show_executed)
+        """Скрывает столбцы дерева в зависимости от выбранного типа данных (делегирует к tree_config)"""
+        self.tree_config.apply_tree_data_type_visibility()
 
     def format_budget_value(self, value):
-        """Форматирование значения бюджета для отображения"""
-        if value in (None, "", "0", 0):
-            return ""
-        if value == 'x':
-            return 'x'
-        try:
-            return f"{float(value):,.2f}"
-        except (ValueError, TypeError):
-            return str(value)
+        """Форматирование значения бюджета для отображения (делегирует к tree_builder)"""
+        return self.tree_builder.format_budget_value(value)
     
     def build_tree_from_data(self, data, tree_widget=None):
-        """Построение дерева из данных"""
-        try:
-            if tree_widget is None:
-                tree_widget = self.data_tree
-            
-            if not data:
-                return
-            
-            if not isinstance(data, list) or len(data) == 0:
-                return
-            
-            # Цвета для уровней
-            level_colors = {
-                0: "#E6E6FA", 1: "#68e368", 2: "#98FB98", 3: "#FFFF99", 
-                4: "#FFB366", 5: "#FF9999", 6: "#FFCCCC"
-            }
-            
-            # Строим дерево, учитывая последовательность уровней:
-            # каждая строка является дочерней для ближайшей предыдущей строки
-            # с меньшим уровнем (обычно level-1).
-            parents_stack = []  # список кортежей (level, QTreeWidgetItem)
-            items_created = 0
-            items_failed = 0
-
-            for item in data:
-                try:
-                    if not isinstance(item, dict):
-                        items_failed += 1
-                        continue
-                    
-                    level = item.get('уровень', 0)
-                    tree_item = self.create_tree_item(item, level_colors, tree_widget)
-                
-                    # Убираем из стека все уровни, которые не могут быть родителями
-                    while parents_stack and parents_stack[-1][0] >= level:
-                        parents_stack.pop()
-
-                    if parents_stack:
-                        # Текущий элемент становится ребёнком последнего подходящего родителя
-                        parents_stack[-1][1].addChild(tree_item)
-                    else:
-                        # Если родителя нет, это корневой элемент
-                        tree_widget.addTopLevelItem(tree_item)
-
-                    # Запоминаем текущий элемент как последний для своего уровня
-                    parents_stack.append((level, tree_item))
-                    items_created += 1
-                except Exception as e:
-                    items_failed += 1
-                    logger.warning(f"Ошибка создания элемента дерева: {e}", exc_info=True)
-                    continue
-            
-            # Разворачиваем уровень 0
-            for i in range(tree_widget.topLevelItemCount()):
-                try:
-                    tree_widget.topLevelItem(i).setExpanded(True)
-                except:
-                    pass
-            
-            # Обновляем размеры столбцов после загрузки данных
-            if items_created > 0:
-                header = tree_widget.header()
-                # Обновляем размеры столбцов
-                for idx in range(tree_widget.columnCount()):
-                    if not tree_widget.isColumnHidden(idx):
-                        if idx == 0:  # Столбец "Наименование" - устанавливаем ширину с учетом отступов дерева
-                            # Получаем отступы дерева и добавляем запас
-                            indentation = tree_widget.indentation()
-                            # Добавляем запас на отступы (примерно 6 уровней * отступ + небольшой запас)
-                            indent_reserve = indentation * 6 + 50  # Запас на отступы и дополнительные элементы
-                            header.resizeSection(idx, 400 + indent_reserve)
-                        elif idx == 1:  # Столбец "Код строки" - устанавливаем фиксированную ширину 80px
-                            header.setSectionResizeMode(idx, QHeaderView.Fixed)
-                            header.resizeSection(idx, 80)
-                        elif idx == 2:  # Столбец "Код классификации" - устанавливаем фиксированную ширину 200px
-                            header.resizeSection(idx, 200)
-                        elif idx == 3:  # Столбец "Уровень" - устанавливаем фиксированную ширину 50px
-                            header.setSectionResizeMode(idx, QHeaderView.Fixed)
-                            header.resizeSection(idx, 50)
-                        else:
-                            # Остальные столбцы - фиксированная ширина 150px
-                            header.setSectionResizeMode(idx, QHeaderView.Fixed)
-                            header.resizeSection(idx, 150)
-                # Обновляем высоту заголовка
-                QTimer.singleShot(100, lambda tw=tree_widget: self._update_tree_header_height(tw))
-            
-            if items_created > 0 and tree_widget == self.data_tree:
-                msg = f"Построено дерево: {items_created} элементов"
-                if items_failed > 0:
-                    msg += f", ошибок: {items_failed}"
-                self.status_bar.showMessage(msg)
-        except Exception as e:
-            error_msg = f"Ошибка построения дерева: {e}"
-            logger.error(error_msg, exc_info=True)
-            if tree_widget == self.data_tree:
-                self.status_bar.showMessage(error_msg)
+        """Построение дерева из данных (делегирует к tree_builder)"""
+        self.tree_builder.build_tree_from_data(data, tree_widget)
     
     def create_tree_item(self, item, level_colors, tree_widget=None):
-        """Создание элемента дерева"""
-        try:
-            if tree_widget is None:
-                tree_widget = self.data_tree
-            
-            level = item.get('уровень', 0)
-
-            column_count = tree_widget.columnCount()
-            if column_count == 0:
-                # Если колонок нет, создаем хотя бы одну
-                tree_widget.setColumnCount(1)
-                column_count = 1
-            
-            tree_item = QTreeWidgetItem([""] * column_count)
-            
-            # Основные данные
-            name = str(item.get('наименование_показателя', ''))
-            code_line = str(item.get('код_строки', ''))
-            class_code = str(item.get('код_классификации_форматированный', item.get('код_классификации', '')))
-
-            if column_count > 0:
-                tree_item.setText(0, name)
-            if column_count > 1:
-                tree_item.setText(1, code_line)
-            if column_count > 2:
-                tree_item.setText(2, class_code)
-            if column_count > 3:
-                tree_item.setText(3, str(level))
-
-            mapping = self.tree_column_mapping or {}
-            column_type = mapping.get("type", "base")
-
-            if column_type == "budget":
-                budget_cols = mapping.get("budget_columns", [])
-                approved_start = mapping.get("approved_start", 4)
-                executed_start = mapping.get("executed_start", approved_start + len(budget_cols))
-                approved_data = item.get('утвержденный', {}) or {}
-                executed_data = item.get('исполненный', {}) or {}
-                
-                # Цвет для выделения несоответствий (красный)
-                error_color = QColor("#FF6B6B")
-
-                for idx, col in enumerate(budget_cols):
-                    try:
-                        # Утвержденные значения
-                        original_approved = approved_data.get(col, 0) or 0
-                        calculated_approved = item.get(f'расчетный_утвержденный_{col}', original_approved)
-                        
-                        # Проверяем несоответствие (только для уровней < 6)
-                        if level < 6 and self._is_value_different(original_approved, calculated_approved):
-                            # Показываем значение с расчетным в скобках
-                            if isinstance(original_approved, (int, float)) and isinstance(calculated_approved, (int, float)):
-                                approved_value = f"{original_approved:,.2f} ({calculated_approved:,.2f})"
-                            else:
-                                approved_value = f"{original_approved} ({calculated_approved})"
-                            # Выделяем красным цветом
-                            if approved_start + idx < column_count:
-                                tree_item.setText(approved_start + idx, approved_value)
-                                tree_item.setForeground(approved_start + idx, QBrush(error_color))
-                        else:
-                            approved_value = self.format_budget_value(original_approved)
-                            if approved_start + idx < column_count:
-                                tree_item.setText(approved_start + idx, approved_value)
-                        
-                        # Исполненные значения
-                        original_executed = executed_data.get(col, 0) or 0
-                        calculated_executed = item.get(f'расчетный_исполненный_{col}', original_executed)
-                        
-                        # Проверяем несоответствие (только для уровней < 6)
-                        if level < 6 and self._is_value_different(original_executed, calculated_executed):
-                            # Показываем значение с расчетным в скобках
-                            if isinstance(original_executed, (int, float)) and isinstance(calculated_executed, (int, float)):
-                                executed_value = f"{original_executed:,.2f} ({calculated_executed:,.2f})"
-                            else:
-                                executed_value = f"{original_executed} ({calculated_executed})"
-                            # Выделяем красным цветом
-                            if executed_start + idx < column_count:
-                                tree_item.setText(executed_start + idx, executed_value)
-                                tree_item.setForeground(executed_start + idx, QBrush(error_color))
-                        else:
-                            executed_value = self.format_budget_value(original_executed)
-                            if executed_start + idx < column_count:
-                                tree_item.setText(executed_start + idx, executed_value)
-                    except Exception as e:
-                        logger.warning(f"Ошибка обработки несоответствий для колонки {col}: {e}", exc_info=True)
-                        pass
-
-            elif column_type == "consolidated":
-                value_start = mapping.get("value_start", 4)
-                cons_cols = mapping.get("columns", [])
-                
-                # Получаем данные поступлений (может быть вложенным словарем или плоскими полями)
-                cons_data = item.get('поступления', {}) or {}
-                
-                # Цвет для выделения несоответствий (красный)
-                error_color = QColor("#FF6B6B")
-                
-                for idx, col in enumerate(cons_cols):
-                    try:
-                        # Оригинальное значение - проверяем и вложенный словарь, и плоские поля
-                        if isinstance(cons_data, dict) and col in cons_data:
-                            original_value = cons_data.get(col, 0) or 0
-                        else:
-                            # Если нет вложенного словаря, проверяем плоские поля
-                            original_value = item.get(f'поступления_{col}', 0) or 0
-                        
-                        # Расчетное значение - проверяем плоские поля (после to_dict('records'))
-                        calculated_value = item.get(f'расчетный_поступления_{col}')
-                        if calculated_value is None:
-                            # Fallback на оригинальное значение, если расчетного нет
-                            calculated_value = original_value
-                        
-                        # Проверяем несоответствие (аналогично бюджетным разделам — до 5 уровня),
-                        # а для столбца "ИТОГО" проверяем на всех уровнях, так как это итоговая сумма
-                        is_total_column = (col == 'ИТОГО')
-                        should_check = (level < 6) or is_total_column
-                        
-                        if should_check and self._is_value_different(original_value, calculated_value):
-                            # Показываем значение с расчетным в скобках
-                            if isinstance(original_value, (int, float)) and isinstance(calculated_value, (int, float)):
-                                display_value = f"{original_value:,.2f} ({calculated_value:,.2f})"
-                            else:
-                                display_value = f"{original_value} ({calculated_value})"
-                            # Выделяем красным цветом
-                            if value_start + idx < column_count:
-                                tree_item.setText(value_start + idx, display_value)
-                                tree_item.setForeground(value_start + idx, QBrush(error_color))
-                        else:
-                            # Обычное отображение без несоответствий
-                            if value_start + idx < column_count:
-                                tree_item.setText(value_start + idx, self.format_budget_value(original_value))
-                    except Exception as e:
-                        logger.warning(f"Ошибка обработки несоответствий для консолидируемых расчетов, колонка {col}: {e}", exc_info=True)
-                        pass
-            
-            # Устанавливаем цвет фона для всех столбцов
-            try:
-                if level in level_colors:
-                    color = QColor(level_colors[level])
-                    brush = QBrush(color)
-                    # Применяем цвет ко всем столбцам
-                    for i in range(column_count):
-                        tree_item.setBackground(i, brush)
-            except Exception as e:
-                logger.warning(f"Ошибка установки цвета фона для уровня {level}: {e}", exc_info=True)
-                pass
-            
-            # Устанавливаем подсказки (колонка -> заголовок)
-            try:
-                for idx, tip in enumerate(self.tree_header_tooltips):
-                    if idx < tree_item.columnCount() and idx < len(self.tree_header_tooltips):
-                        current_text = tree_item.text(idx)
-                        if current_text:
-                            tree_item.setToolTip(idx, f"{tip}: {current_text}")
-                        else:
-                            tree_item.setToolTip(idx, tip)
-            except:
-                pass
-
-            # Сохраняем исходные данные
-            try:
-                tree_item.setData(0, Qt.UserRole, item)
-            except:
-                pass
-            
-            return tree_item
-        except Exception as e:
-            logger.error(f"Ошибка создания элемента дерева: {e}", exc_info=True)
-            # Возвращаем пустой элемент в случае ошибки
-            column_count = max(self.data_tree.columnCount(), 1)
-            tree_item = QTreeWidgetItem([""] * column_count)
-            return tree_item
-    
-    def _is_value_different(self, original: float, calculated: float) -> bool:
-        """Проверка различия значений (аналогично методу в Form0503317)"""
-        try:
-            original_val = float(original) if original not in (None, "", "x") else 0.0
-            calculated_val = float(calculated) if calculated not in (None, "", "x") else 0.0
-            return abs(original_val - calculated_val) > 0.00001
-        except (ValueError, TypeError):
-            return False
-    
-    def load_metadata(self, project):
-        """Загрузка метаданных для выбранной ревизии"""
-        # Метаданные должны быть только у ревизии, а не у проекта
-        # Проверяем, что загружена ревизия (current_revision_id установлен)
-        rev_id = getattr(self.controller, "current_revision_id", None)
-        
-        # Получаем все виджеты метаданных
-        metadata_widgets = self._get_metadata_widgets()
-        
-        if not rev_id:
-            # Если ревизия не загружена, метаданные не отображаем
-            for metadata_widget in metadata_widgets:
-                metadata_widget.setHtml("")
-            return
-        
-        # Метаданные берём из данных проекта (которые загружаются из ревизии)
-        if not project or not project.data:
-            for metadata_widget in metadata_widgets:
-                metadata_widget.setHtml("")
-            return
-        
-        meta_info = project.data.get('meta_info', {})
-        if not meta_info:
-            for metadata_widget in metadata_widgets:
-                metadata_widget.setHtml("")
-            return
-        
-        metadata_text = ""
-        for key, value in meta_info.items():
-            metadata_text += f"<b>{key}:</b> {value}<br>"
-        
-        # Обновляем все виджеты метаданных
-        for metadata_widget in metadata_widgets:
-            metadata_widget.setHtml(metadata_text)
+        """Создание элемента дерева (делегирует к tree_builder)"""
+        return self.tree_builder.create_tree_item(item, level_colors, tree_widget)
     
     def on_section_changed(self, section_name):
         """Обработка смены раздела"""
@@ -2731,7 +658,7 @@ class MainWindow(QMainWindow):
         # Сбрасываем столбец выделения при смене раздела
         self.selection_start_column = None
         if self.controller.current_project:
-            self.load_project_data_to_tree(self.controller.current_project)
+            self.tree_builder.load_project_data_to_tree(self.controller.current_project)
             # Применяем скрытие нулевых столбцов, если чекбокс включен
             if hasattr(self, 'hide_zero_columns_checkbox') and self.hide_zero_columns_checkbox.isChecked():
                 QTimer.singleShot(200, lambda: self.apply_hide_zero_columns())
@@ -2739,12 +666,12 @@ class MainWindow(QMainWindow):
     def on_data_type_changed(self, data_type):
         """Обработка смены типа данных"""
         self.current_data_type = data_type
-        self.apply_tree_data_type_visibility()
+        self.tree_config.apply_tree_data_type_visibility()
         # Применяем скрытие нулевых столбцов, если чекбокс включен
         if hasattr(self, 'hide_zero_columns_checkbox') and self.hide_zero_columns_checkbox.isChecked():
             self.apply_hide_zero_columns()
         if self.controller.current_project:
-            self.load_project_data_to_tree(self.controller.current_project)
+            self.tree_builder.load_project_data_to_tree(self.controller.current_project)
     
     def on_hide_zero_columns_changed(self, state):
         """Обработка изменения состояния чекбокса 'Скрыть нулевые столбцы'"""
@@ -2778,84 +705,47 @@ class MainWindow(QMainWindow):
         logger.debug(f"apply_hide_zero_columns: применяю скрытие для раздела {section_key}, записей: {len(data)}")
 
         # Сначала показываем все столбцы
-        self.show_all_columns()
+        self.tree_handlers.show_all_columns()
         
         # Применяем отображение колонок в зависимости от выбранного типа данных
-        self.apply_tree_data_type_visibility()
+        self.tree_config.apply_tree_data_type_visibility()
 
         # Затем применяем скрытие нулевых столбцов (после применения видимости по типу данных)
-        self.hide_zero_columns_in_tree(section_key, data)
+        self.tree_config.hide_zero_columns_in_tree(section_key, data)
     
     def expand_all_tree(self):
         """Развернуть все узлы дерева"""
-        for tree_widget in self._get_tree_widgets():
+        for tree_widget in self.tree_builder._get_tree_widgets():
             tree_widget.expandAll()
     
     def collapse_all_tree(self):
         """Свернуть все узлы дерева"""
-        for tree_widget in self._get_tree_widgets():
+        for tree_widget in self.tree_builder._get_tree_widgets():
             tree_widget.collapseAll()
     
     def on_tree_item_expanded(self, item):
-        """Обработка разворачивания узла дерева"""
-        pass
+        """Обработка разворачивания узла дерева (делегирует к tree_handlers)"""
+        self.tree_handlers.on_tree_item_expanded(item)
     
     def on_tree_item_collapsed(self, item):
-        """Обработка сворачивания узла дерева"""
-        pass
+        """Обработка сворачивания узла дерева (делегирует к tree_handlers)"""
+        self.tree_handlers.on_tree_item_collapsed(item)
     
     def show_tree_context_menu(self, position):
-        """Контекстное меню для дерева"""
-        item = self.data_tree.itemAt(position)
-        if not item:
-            return
-        
-        menu = QMenu()
-        copy_action = menu.addAction("Копировать значение")
-        
-        action = menu.exec_(self.data_tree.mapToGlobal(position))
-        
-        if action == copy_action:
-            self.copy_tree_item_value(item)
+        """Контекстное меню для дерева (делегирует к tree_handlers)"""
+        self.tree_handlers.show_tree_context_menu(position)
 
     def show_tree_header_context_menu(self, position):
-        """Контекстное меню для заголовков дерева (скрытие/отображение столбцов)"""
-        header = self.data_tree.header()
-        col = header.logicalIndexAt(position)
-        if col < 0:
-            return
-
-        menu = QMenu(self)
-        hide_action = menu.addAction("Скрыть столбец")
-        show_all_action = menu.addAction("Показать все столбцы")
-        chosen = menu.exec_(header.mapToGlobal(position))
-
-        if chosen == hide_action:
-            # Не скрываем первый столбец с названием
-            if col > 0:
-                self.data_tree.setColumnHidden(col, True)
-        elif chosen == show_all_action:
-            for i in range(self.data_tree.columnCount()):
-                self.data_tree.setColumnHidden(i, False)
+        """Контекстное меню для заголовков дерева (делегирует к tree_handlers)"""
+        self.tree_handlers.show_tree_header_context_menu(position)
     
     def show_all_columns(self):
         """Показать все столбцы в дереве и вернуть им нормальные ширины/заголовки"""
-        # Проще всего — переинициализировать заголовки и ширины так же,
-        # как это делается при загрузке данных
-        tree_widgets = self._get_tree_widgets()
-        for tree_widget in tree_widgets:
-            if tree_widget:
-                self._configure_tree_headers_for_widget(tree_widget, self.current_section)
-
-        # Снова применяем фильтр по типу данных (утверждённый/исполненный/оба)
-        self.apply_tree_data_type_visibility()
+        self.tree_handlers.show_all_columns()
 
     def copy_tree_item_value(self, item):
-        """Копировать значение из дерева"""
-        if item:
-            text = item.text(0)  # Копируем значение из первого столбца
-            clipboard = QApplication.clipboard()
-            clipboard.setText(text)
+        """Копировать значение из дерева (делегирует к tree_handlers)"""
+        self.tree_handlers.copy_tree_item_value(item)
     
     
     def show_new_project_dialog(self):
@@ -3041,7 +931,7 @@ class MainWindow(QMainWindow):
             if success:
                 # Перезагружаем данные проекта после загрузки формы
                 if self.controller.current_project:
-                    self.load_project_data_to_tree(self.controller.current_project)
+                    self.tree_builder.load_project_data_to_tree(self.controller.current_project)
                 QMessageBox.information(self, "Успех", "Форма загружена и распарсена")
                 self.status_bar.showMessage("Форма успешно загружена")
             else:
@@ -3086,9 +976,9 @@ class MainWindow(QMainWindow):
         
         # Обновляем отображение данных
         if self.controller.current_project:
-            self.load_project_data_to_tree(self.controller.current_project)
+            self.tree_builder.load_project_data_to_tree(self.controller.current_project)
             # Обновляем вкладку ошибок
-            self.load_errors_to_tab(self.controller.current_project.data)
+            self.errors_manager.load_errors_to_tab(self.controller.current_project.data)
 
     def export_validation(self):
         """Экспорт формы с проверкой (обертка для экспорта пересчитанной таблицы)"""
@@ -3220,7 +1110,7 @@ class MainWindow(QMainWindow):
     def apply_font_sizes(self):
         """Применение размеров шрифтов ко всем деревьям"""
         # Получаем все виджеты дерева
-        tree_widgets = self._get_tree_widgets()
+        tree_widgets = self.tree_builder._get_tree_widgets()
         
         for tree_widget in tree_widgets:
             if tree_widget:
@@ -3237,7 +1127,7 @@ class MainWindow(QMainWindow):
                     header.setFont(header_font)
                     
                     # Обновляем высоту заголовка с учетом нового размера шрифта
-                    self._update_tree_header_height(tree_widget)
+                    self.tree_config._update_tree_header_height(tree_widget)
                 
                 # Обновляем делегат, если он использует шрифт
                 delegate = tree_widget.itemDelegate()
@@ -3283,117 +1173,14 @@ class MainWindow(QMainWindow):
             super().keyPressEvent(event)
     
     def on_tree_item_clicked(self, item, column):
-        """Обработчик клика по элементу дерева - запоминаем столбец начала выделения"""
-        self.selection_start_column = column
+        """Обработчик клика по элементу дерева (делегирует к tree_handlers)"""
+        self.tree_handlers.on_tree_item_clicked(item, column)
         # Также обновляем сумму сразу после клика
         QTimer.singleShot(10, self.on_tree_selection_changed)
     
     def on_tree_selection_changed(self):
-        """Обработчик изменения выделения - подсчитываем сумму"""
-        selected_items = self.data_tree.selectedItems()
-        
-        if not selected_items:
-            # Если ничего не выбрано, очищаем статус
-            self.status_bar.showMessage("Готов к работе")
-            return
-        
-        # Определяем столбец: сначала используем сохраненный, если нет - текущий столбец
-        column_index = self.selection_start_column
-        if column_index is None:
-            # Пытаемся определить столбец из текущего элемента
-            current_item = self.data_tree.currentItem()
-            if current_item:
-                # Используем столбец текущего элемента
-                column_index = self.data_tree.currentColumn()
-                if column_index < 0:
-                    column_index = 0
-            else:
-                # Если не можем определить, используем первый столбец данных (после базовых)
-                mapping = self.tree_column_mapping or {}
-                column_type = mapping.get("type", "base")
-                if column_type == "budget":
-                    column_index = mapping.get("approved_start", 4)
-                elif column_type == "consolidated":
-                    column_index = mapping.get("value_start", 4)
-                else:
-                    column_index = 4  # По умолчанию
-        
-        # Определяем тип столбца и получаем данные
-        mapping = self.tree_column_mapping or {}
-        column_type = mapping.get("type", "base")
-        
-        total = 0.0
-        count = 0
-        column_name = ""
-        
-        # Определяем название столбца для отображения
-        if column_index < len(self.tree_headers):
-            column_name = self.tree_headers[column_index]
-        
-        # Обрабатываем выбранные элементы
-        for tree_item in selected_items:
-            # Получаем исходные данные из UserRole
-            item_data = tree_item.data(0, Qt.UserRole)
-            if not item_data or not isinstance(item_data, dict):
-                continue
-            
-            value = None
-            
-            if column_type == "budget":
-                # Бюджетные столбцы (утвержденный/исполненный)
-                budget_cols = mapping.get("budget_columns", [])
-                approved_start = mapping.get("approved_start", 4)
-                executed_start = mapping.get("executed_start", approved_start + len(budget_cols))
-                
-                if approved_start <= column_index < executed_start:
-                    # Столбец утвержденного
-                    col_idx = column_index - approved_start
-                    if col_idx < len(budget_cols):
-                        col_name = budget_cols[col_idx]
-                        approved_data = item_data.get('утвержденный', {}) or {}
-                        value = approved_data.get(col_name, 0) or 0
-                elif executed_start <= column_index < executed_start + len(budget_cols):
-                    # Столбец исполненного
-                    col_idx = column_index - executed_start
-                    if col_idx < len(budget_cols):
-                        col_name = budget_cols[col_idx]
-                        executed_data = item_data.get('исполненный', {}) or {}
-                        value = executed_data.get(col_name, 0) or 0
-            
-            elif column_type == "consolidated":
-                # Консолидируемые расчеты
-                value_start = mapping.get("value_start", 4)
-                cons_cols = mapping.get("columns", [])
-                
-                if value_start <= column_index < value_start + len(cons_cols):
-                    col_idx = column_index - value_start
-                    if col_idx < len(cons_cols):
-                        col_name = cons_cols[col_idx]
-                        cons_data = item_data.get('поступления', {}) or {}
-                        if isinstance(cons_data, dict) and col_name in cons_data:
-                            value = cons_data.get(col_name, 0) or 0
-                        else:
-                            # Проверяем плоские поля
-                            value = item_data.get(f'поступления_{col_name}', 0) or 0
-            
-            # Преобразуем значение в число и добавляем к сумме
-            if value is not None:
-                try:
-                    if value == 'x' or value == '':
-                        continue
-                    num_value = float(value)
-                    total += num_value
-                    count += 1
-                except (ValueError, TypeError):
-                    continue
-        
-        # Форматируем и выводим результат
-        if count > 0:
-            formatted_total = f"{total:,.2f}".replace(",", " ")
-            message = f"Выбрано строк: {count} | Сумма по столбцу '{column_name}': {formatted_total}"
-            self.status_bar.showMessage(message)
-        else:
-            self.status_bar.showMessage("Готов к работе")
+        """Обработчик изменения выделения (делегирует к tree_handlers)"""
+        self.tree_handlers.on_tree_selection_changed()
     
     def show_about(self):
         """Показать информацию о программе"""
@@ -3425,7 +1212,7 @@ class MainWindow(QMainWindow):
             return
         
         # Загружаем ошибки из текущих данных проекта
-        self.load_errors_to_tab(self.controller.current_project.data)
+        self.errors_manager.load_errors_to_tab(self.controller.current_project.data)
         
         # Переключаемся на вкладку ошибок
         tabs = self.tabs_panel

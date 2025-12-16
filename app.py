@@ -42,4 +42,3 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
-# TODO: оптимизировать структуру main_controller и main_window, разбивка по файлам и папкам
