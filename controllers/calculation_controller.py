@@ -181,9 +181,15 @@ class CalculationController(QObject):
         if not source_file_path:
             source_file_path = getattr(self.current_project, 'file_path', None)
         
+        # Проверяем существование исходного файла перед экспортом
         if not source_file_path or not os.path.exists(source_file_path):
-            # Для экспорта рассчитываем по данным из БД, исходный файл не обязателен
-            source_file_path = output_path  # будет перезаписан export_validation
+            error_msg = (
+                f"Исходный файл не найден: {source_file_path}. "
+                f"Для экспорта с валидацией необходим исходный Excel файл."
+            )
+            logger.error(error_msg)
+            self.error_occurred.emit(error_msg)
+            return None
         
         try:
             # Всегда используем данные из нормализованных таблиц *_values (level/source_row уже сохранены).
@@ -202,13 +208,26 @@ class CalculationController(QObject):
                 self.error_occurred.emit("Нет данных в *_values для экспорта")
                 return None
 
-            # Обновляем данные формы из БД
-            self.current_form.доходы_data = values_data.get('доходы_data', [])
-            self.current_form.расходы_data = values_data.get('расходы_data', [])
-            self.current_form.источники_финансирования_data = values_data.get('источники_финансирования_data', [])
-            self.current_form.консолидируемые_расчеты_data = values_data.get('консолидируемые_расчеты_data', [])
-            # Обновляем кэш проекта
-            self.current_project.data.update(values_data)
+            # Выполняем расчет сумм из нормализованных данных, чтобы получить расчетные значения
+            # для подсветки ошибок в Excel (аналогично calculate_sums).
+            reference_data_доходы = self.references.get('доходы')
+            reference_data_источники = self.references.get('источники')
+            calculation_results = self.db_manager.calculate_sums_from_values(
+                project_id=self.current_project.id,
+                revision_id=self.current_revision_id,
+                reference_data_доходы=reference_data_доходы,
+                reference_data_источники=reference_data_источники,
+            )
+
+            # Обновляем данные формы расчетными значениями
+            self.current_form.доходы_data = calculation_results.get('доходы_data', [])
+            self.current_form.расходы_data = calculation_results.get('расходы_data', [])
+            self.current_form.источники_финансирования_data = calculation_results.get('источники_финансирования_data', [])
+            self.current_form.консолидируемые_расчеты_data = calculation_results.get('консолидируемые_расчеты_data', [])
+            self.current_form.calculated_deficit_proficit = calculation_results.get('calculated_deficit_proficit')
+
+            # Обновляем кэш проекта (оригинальные + расчетные данные)
+            self.current_project.data.update(calculation_results)
 
             output_file = self.current_form.export_validation(
                 source_file_path,

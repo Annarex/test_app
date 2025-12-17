@@ -11,6 +11,7 @@ from docx.shared import Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 import re
+import pandas as pd
 from logger import logger
 
 from models.database import DatabaseManager
@@ -59,12 +60,6 @@ class DocumentController(QObject):
             Путь к сгенерированному файлу или None при ошибке
         """
         try:
-            # Загружаем данные ревизии
-            revision_data = self.db_manager.load_revision_data(project_id, revision_id)
-            if not revision_data:
-                self.error_occurred.emit("Данные ревизии не найдены")
-                return None
-            
             # Загружаем проект
             projects = self.db_manager.load_projects()
             project = next((p for p in projects if p.id == project_id), None)
@@ -85,8 +80,8 @@ class DocumentController(QObject):
             
             doc = docx.Document(str(template_path))
             
-            # Извлекаем данные из формы
-            form_data = self._extract_form_data(revision_data)
+            # Извлекаем данные из формы (используем нормализованные данные)
+            form_data = self._extract_form_data(project_id, revision_id)
             
             # Заменяем метки в документе
             self._replace_placeholders(
@@ -177,24 +172,20 @@ class DocumentController(QObject):
             self.error_occurred.emit(error_msg)
             return result
     
-    def _extract_form_data(self, revision_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Извлечение данных из формы для формирования заключения"""
-        доходы_data = revision_data.get('доходы_data', [])
-        расходы_data = revision_data.get('расходы_data', [])
+    def _extract_form_data(self, project_id: int, revision_id: int) -> Dict[str, Any]:
+        """Извлечение данных из формы для формирования заключения (использует нормализованные данные)"""
+        
+        # Загружаем нормализованные данные из БД
+        income_df = self.db_manager.load_income_values_df(project_id, revision_id)
+        expense_df = self.db_manager.load_expense_values_df(project_id, revision_id)
+        
+        # Преобразуем DataFrame в формат словарей
+        доходы_data = self._convert_df_to_form_format(income_df, 'доходы')
+        расходы_data = self._convert_df_to_form_format(expense_df, 'расходы')
         
         # Находим строки "Доходы бюджета - всего" и "Расходы бюджета - всего"
-        доходы_всего = None
-        расходы_всего = None
-        
-        for item in доходы_data:
-            if 'доходы бюджета - всего' in item.get('наименование_показателя', '').lower():
-                доходы_всего = item
-                break
-        
-        for item in расходы_data:
-            if 'расходы бюджета - всего' in item.get('наименование_показателя', '').lower():
-                расходы_всего = item
-                break
+        доходы_всего = self._find_total_row(доходы_data, 'доходы бюджета - всего')
+        расходы_всего = self._find_total_row(расходы_data, 'расходы бюджета - всего')
         
         # Берем значение из первого столбца бюджета (обычно это "бюджет субъекта Российской Федерации")
         budget_col = 'бюджет субъекта Российской Федерации'
@@ -230,6 +221,102 @@ class DocumentController(QObject):
             'доходы_data': доходы_data,
             'расходы_data': расходы_data
         }
+    
+    def _convert_df_to_form_format(self, df: pd.DataFrame, section_type: str) -> List[Dict[str, Any]]:
+        """
+        Преобразование DataFrame из нормализованных таблиц в формат словарей для работы с формой.
+        
+        Args:
+            df: DataFrame из load_income_values_df или load_expense_values_df
+            section_type: Тип раздела ('доходы' или 'расходы')
+        
+        Returns:
+            Список словарей в формате, аналогичном доходы_data/расходы_data
+        """
+        from models.constants.form_0503317_constants import Form0503317Constants
+        
+        if df.empty:
+            return []
+        
+        budget_cols = Form0503317Constants.BUDGET_COLUMNS
+        
+        # Группируем по уникальным строкам (classification_code, indicator_name, line_code)
+        grouped = df.groupby(['код_классификации', 'наименование_показателя', 'код_строки'])
+        
+        result = []
+        
+        for (code, name, line_code), group in grouped:
+            row_data = {
+                'код_классификации': code or '',
+                'наименование_показателя': name or '',
+                'код_строки': line_code or '',
+                'утвержденный': {},
+                'исполненный': {},
+            }
+            
+            # Получаем уровень и исходную строку из первой записи группы
+            level = None
+            source_row = None
+            for _, r in group.iterrows():
+                if pd.notna(r.get('level')):
+                    level = int(r['level'])
+                if pd.notna(r.get('source_row')):
+                    source_row = int(r['source_row'])
+                break
+            
+            if level is not None:
+                row_data['уровень'] = level
+            if source_row is not None:
+                row_data['исходная_строка'] = source_row
+            
+            # Собираем значения по бюджетным колонкам
+            for _, r in group.iterrows():
+                budget_type = r.get('тип_бюджета', '')
+                data_type = r.get('тип_данных', '')
+                
+                # Используем только оригинальные данные (не вычисленные)
+                if data_type != 'оригинальные':
+                    continue
+                
+                # Формируем словарь значений для утвержденного или исполненного
+                values_dict = {}
+                for i, col_name in enumerate(budget_cols):
+                    col_key = f'v{i+1}'
+                    if col_key in r and pd.notna(r[col_key]):
+                        value = r[col_key]
+                        # Обрабатываем 'x' как None
+                        if isinstance(value, str) and value.lower() == 'x':
+                            value = None
+                        values_dict[col_name] = value if value is not None else 0.0
+                    else:
+                        values_dict[col_name] = 0.0
+                
+                if budget_type == 'утвержденный':
+                    row_data['утвержденный'] = values_dict
+                elif budget_type == 'исполненный':
+                    row_data['исполненный'] = values_dict
+            
+            result.append(row_data)
+        
+        return result
+    
+    def _find_total_row(self, data: List[Dict[str, Any]], pattern: str) -> Optional[Dict[str, Any]]:
+        """
+        Поиск итоговой строки по паттерну в наименовании показателя.
+        
+        Args:
+            data: Список словарей с данными раздела
+            pattern: Паттерн для поиска (например, 'доходы бюджета - всего')
+        
+        Returns:
+            Словарь с данными строки или None, если не найдено
+        """
+        pattern_lower = pattern.lower()
+        for item in data:
+            наименование = item.get('наименование_показателя', '').lower()
+            if pattern_lower in наименование:
+                return item
+        return None
     
     def _replace_placeholders(
         self,

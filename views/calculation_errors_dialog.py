@@ -9,7 +9,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor, QBrush, QFont, QKeySequence
 from typing import List, Dict, Any, Optional
 from logger import logger
-from models.form_0503317 import Form0503317Constants
+from models.constants.form_0503317_constants import Form0503317Constants
 
 
 class CalculationErrorsDialog(QDialog):

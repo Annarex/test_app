@@ -18,6 +18,19 @@ class ExcelViewer(QWidget):
         self.sheet_data = {}
         self.init_ui()
     
+    def close_workbook(self):
+        """Закрыть текущую книгу Excel (если открыта)"""
+        if self.workbook is not None:
+            try:
+                # Явно закрываем книгу, чтобы освободить файловый дескриптор
+                self.workbook.close()
+            except Exception:
+                # Даже если закрытие не удалось, просто сбрасываем ссылку:
+                # данные уже скопированы в self.sheet_data и используются из памяти.
+                pass
+            finally:
+                self.workbook = None
+    
     def init_ui(self):
         """Инициализация интерфейса"""
         layout = QVBoxLayout(self)
@@ -55,6 +68,10 @@ class ExcelViewer(QWidget):
     def load_excel_file(self, file_path: str):
         """Загрузка Excel файла"""
         try:
+            # Перед загрузкой нового файла/повторной загрузкой
+            # явно закрываем предыдущую книгу, чтобы не держать дескриптор файла.
+            self.close_workbook()
+            
             self.current_file_path = file_path
             self.workbook = openpyxl.load_workbook(file_path, data_only=True)
             

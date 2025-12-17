@@ -186,115 +186,24 @@ class MainController(QObject):
         self.project_controller.load_project(project_id)
     
     def load_revision(self, revision_id: int, project_id: int):
-        """Загрузка конкретной ревизии проекта"""
-        try:
-            # Сначала загружаем информацию о ревизии
-            revision_record = self.db_manager.get_form_revision_by_id(revision_id)
-            if not revision_record:
-                self.error_occurred.emit("Ревизия не найдена")
-                return
-            
-            # Загружаем проект
-            self.project_controller.load_project(project_id)
-            
-            if not self.current_project:
-                self.error_occurred.emit("Проект не найден")
-                return
-            
-            # Определяем тип формы из project_form, связанного с ревизией
-            # Оптимизация: создаем словарь для быстрого поиска вместо next()
-            project_forms = self.db_manager.load_project_forms(project_id)
-            project_forms_by_id = {pf.id: pf for pf in project_forms}
-            project_form = project_forms_by_id.get(revision_record.project_form_id)
-            
-            if not project_form:
-                self.error_occurred.emit(f"ProjectForm не найден для ревизии {revision_id}")
-                return
-            
-            # Получаем метаданные типа формы
-            form_types_meta = {ft.id: ft for ft in self.db_manager.load_form_types_meta()}
-            form_meta = form_types_meta.get(project_form.form_type_id)
-            
-            if not form_meta:
-                self.error_occurred.emit(f"Тип формы не найден для form_type_id={project_form.form_type_id}")
-                return
-            
-            # Сохраняем ID текущей ревизии ДО инициализации формы
-            # Это нужно, чтобы _initialize_form_for_project мог определить тип формы из ревизии
+        """Загрузка конкретной ревизии проекта (делегирует к revision_controller)"""
+        # Используем расширенный метод revision_controller для полной загрузки
+        project = self.revision_controller.load_revision_with_form_initialization(
+            revision_id,
+            project_id,
+            self.project_controller,
+            self.form_controller
+        )
+        
+        if project:
+            # Обновляем состояние
+            self.current_project = project
             self.current_revision_id = revision_id
-            # Инициализируем форму заранее, чтобы при необходимости можно было спарсить файл
-            self._initialize_form_for_project(form_meta=form_meta)
-            
-            # Загружаем данные ревизии
-            revision_data = self.db_manager.load_revision_data(project_id, revision_id)
-            need_sections = ['доходы_data', 'расходы_data', 'источники_финансирования_data', 'консолидируемые_расчеты_data']
-            has_sections = revision_data and any(revision_data.get(k) for k in need_sections)
-
-            if not has_sections:
-                self.error_occurred.emit("Данные ревизии не найдены")
-                return
-            
-            # Обновляем данные проекта данными ревизии (для отображения в UI)
-            self.current_project.data = revision_data
-            
-            # Инициализируем форму с правильным типом (теперь current_revision_id уже установлен)
-            # Передаём form_meta как fallback на случай, если определение из ревизии не сработает
-            self._initialize_form_for_project(form_meta=form_meta)
-            
-            # Загружаем данные в форму
-            if not self.current_form:
-                self.error_occurred.emit(f"Форма типа '{form_meta.code}' не поддерживается")
-                return
-            
-            self.current_form.load_saved_data(revision_data)
-            # Пересчитываем дефицит/профицит при загрузке ревизии, чтобы
-            # calculated_deficit_proficit всегда был доступен в project.data
-            try:
-                if hasattr(self.current_form, "_calculate_deficit_proficit"):
-                    self.current_form._calculate_deficit_proficit()
-                    if getattr(self.current_form, "calculated_deficit_proficit", None):
-                        revision_data["calculated_deficit_proficit"] = (
-                            self.current_form.calculated_deficit_proficit
-                        )
-                        self.current_project.data = revision_data
-            except Exception as e:
-                logger.error(
-                    f"Ошибка пересчета дефицита/профицита при загрузке ревизии: {e}",
-                    exc_info=True,
-                )
-            
-            # Пересчитываем уровни и значения на основе справочников, если файл есть
-            # Файл нужен только для покраски по уровням и отображения пересчитанных значений
-            if revision_record.file_path and os.path.exists(revision_record.file_path):
-                try:
-                    reference_data_доходы = self.references.get('доходы')
-                    reference_data_источники = self.references.get('источники')
-                    
-                    # Пересчитываем уровни и значения на основе справочников
-                    if isinstance(self.current_form, Form0503317):
-                        updated_data = self.current_form.recalculate_levels_with_references(
-                            revision_data,
-                            reference_data_доходы,
-                            reference_data_источники
-                        )
-                        if updated_data:
-                            # Обновляем данные проекта пересчитанными значениями
-                            self.current_project.data = updated_data
-                            # Перезагружаем данные в форму с пересчитанными значениями
-                            self.current_form.load_saved_data(updated_data)
-                            logger.info("Уровни и значения пересчитаны на основе справочников")
-                except Exception as e:
-                    logger.error(f"Ошибка пересчета уровней и значений: {e}", exc_info=True)
-                    # Не блокируем загрузку ревизии из-за ошибки пересчета
-            
-            # current_revision_id уже установлен выше, перед инициализацией формы
+            self.current_form = self.form_controller.current_form
+            self._sync_controller_state()
             
             # Эмитируем сигнал загрузки проекта
-            self.project_loaded.emit(self.current_project)
-                
-        except Exception as e:
-            self.error_occurred.emit(f"Ошибка загрузки ревизии: {str(e)}")
-            logger.error(f"Ошибка загрузки ревизии: {e}", exc_info=True)
+            self.project_loaded.emit(project)
     
     def _on_project_loaded(self, project: Project):
         """Обработка загруженного проекта"""
@@ -312,44 +221,20 @@ class MainController(QObject):
             and self.current_project.data
             and self.current_revision_id is None  # Только если не загружена конкретная ревизия
         ):
-            try:
-                reference_data_доходы = self.references.get('доходы')
-                reference_data_источники = self.references.get('источники')
+            # Используем метод form_controller для пересчета уровней
+            updated_data = self.form_controller.recalculate_levels_on_load(self.current_project.data)
+            if updated_data:
+                self.current_project.data = updated_data
+                try:
+                    self.db_manager.save_project(self.current_project)
+                    logger.info("Уровни строк пересчитаны на основе справочников")
+                except Exception as e:
+                    logger.error(f"Ошибка сохранения проекта после пересчета уровней: {e}", exc_info=True)
 
-                # Если справочники отсутствуют, явно предупреждаем пользователя
-                missing_refs = []
-                if reference_data_доходы is None:
-                    missing_refs.append("доходов")
-                if reference_data_источники is None:
-                    missing_refs.append("источников финансирования")
-                if missing_refs:
-                    msg = (
-                        "При загрузке проекта не найдены справочники: "
-                        + ", ".join(missing_refs)
-                        + ". Уровни строк для соответствующих разделов могут быть некорректны (0)."
-                    )
-                    self.error_occurred.emit(msg)
-
-                # Проверяем, нужно ли пересчитывать уровни
-                # Пересчитываем только если справочники доступны
-                if reference_data_доходы is not None or reference_data_источники is not None:
-                    updated_data = self.current_form.recalculate_levels_with_references(
-                        self.current_project.data,
-                        reference_data_доходы,
-                        reference_data_источники
-                    )
-                    if updated_data:
-                        self.current_project.data = updated_data
-                        self.db_manager.save_project(self.current_project)
-                        logger.info("Уровни строк пересчитаны на основе справочников")
-
-                # Инициализируем форму данными проекта, чтобы экспорт/проверка
-                # работали сразу после загрузки без повторного парсинга файла.
+            # Инициализируем форму данными проекта, чтобы экспорт/проверка
+            # работали сразу после загрузки без повторного парсинга файла.
+            if self.current_form:
                 self.current_form.load_saved_data(self.current_project.data)
-            except Exception as e:
-                error_msg = f"Ошибка пересчета уровней при загрузке проекта: {e}"
-                logger.error(error_msg, exc_info=True)
-                # Не блокируем загрузку проекта из-за ошибки пересчета
 
         self._sync_controller_state()
         self.project_loaded.emit(project)
@@ -451,7 +336,7 @@ class MainController(QObject):
         return self.form_controller.copy_form_file_to_project(source_file_path, project_id)
     
     def load_form_file(self, file_path: str) -> bool:
-        """Загрузка файла формы"""
+        """Загрузка файла формы (делегирует к form_controller)"""
         if not self.current_project:
             self.error_occurred.emit("Проект не выбран")
             return False
@@ -459,74 +344,40 @@ class MainController(QObject):
         # Синхронизируем состояние перед загрузкой
         self._sync_controller_state()
         
-        # Используем form_controller для загрузки и парсинга
-        result = self.form_controller.load_form_file(file_path)
-        if not result:
+        # Используем form_controller для полного цикла загрузки
+        success = self.form_controller.load_and_register_form_file(
+            file_path,
+            self.revision_controller,
+            self.db_manager
+        )
+        
+        if not success:
             return False
         
-        form_data = result['form_data']
-        copied_file_path = result['file_path']
-        form_type_code = result['form_type_code']
-        period_code = result['period_code']
-        
-        # Обновляем состояние
+        # Обновляем состояние после загрузки
         self.current_form = self.form_controller.current_form
-        self.current_project.data = form_data
+        self.current_revision_id = self.revision_controller.current_revision_id
         
-        # Определяем период: в приоритете период, выбранный пользователем,
-        # а затем (если есть) период из метаданных формы.
-        if not period_code:
-            period_code = (self.revision_controller.pending_period_code or "").strip() or None
-            if form_data.get('meta_info'):
-                period_str = form_data.get('meta_info', {}).get('period')
-                if period_str:
-                    period_code = str(period_str).strip()
-
-        # Регистрируем/обновляем ревизию формы в новой архитектуре
-        revision_record = None
+        # Обновляем данные проекта из формы
+        if self.current_form:
+            form_data = {
+                'meta_info': self.current_form.meta_info,
+                'доходы_data': self.current_form.доходы_data,
+                'расходы_data': self.current_form.расходы_data,
+                'источники_финансирования_data': self.current_form.источники_финансирования_data,
+                'консолидируемые_расчеты_data': self.current_form.консолидируемые_расчеты_data
+            }
+            self.current_project.data = form_data
+        
+        # После успешного создания/обновления ревизии обновляем дерево проектов
         try:
-            revision_record = self._register_form_revision(
-                project=self.current_project,
-                status=ProjectStatus.PARSED, 
-                file_path=copied_file_path,
-                form_type_code=form_type_code,
-                period_code=period_code,
-                # Используем выбранный пользователем номер ревизии (или "1.0" по умолчанию)
-                revision=self.revision_controller.pending_revision or "1.0",
-            )
+            projects = self.project_controller.load_projects()
+            self.projects_updated.emit(projects)
         except Exception as e:
-            # Не блокируем работу, если новая архитектура ревизий дала сбой
-            logger.error(f"Ошибка регистрации ревизии формы: {e}", exc_info=True)
-        
-        # Сохраняем данные ревизии отдельно, если ревизия создана
-        if revision_record and revision_record.id:
-            self.current_revision_id = revision_record.id
-            try:
-                # Формируем полные данные ревизии, включая метаданные
-                revision_data = {
-                    'meta_info': form_data.get('meta_info', {}),
-                    'доходы_data': form_data.get('доходы_data', []),
-                    'расходы_data': form_data.get('расходы_data', []),
-                    'источники_финансирования_data': form_data.get('источники_финансирования_data', []),
-                    'консолидируемые_расчеты_data': form_data.get('консолидируемые_расчеты_data', [])
-                }
-                self.db_manager.save_revision_data(
-                    self.current_project.id,
-                    revision_record.id,
-                    revision_data
-                )
-            except Exception as e:
-                logger.error(f"Ошибка сохранения данных ревизии: {e}", exc_info=True)
+            logger.error(f"Ошибка обновления списка проектов после сохранения ревизии: {e}", exc_info=True)
 
-            # После успешного создания/обновления ревизии обновляем дерево проектов
-            try:
-                projects = self.project_controller.load_projects()
-                self.projects_updated.emit(projects)
-            except Exception as e:
-                logger.error(f"Ошибка обновления списка проектов после сохранения ревизии: {e}", exc_info=True)
-
-        logger.info(f"Форма успешно загружена. Данные: {len(form_data.get('доходы_data', []))} доходов, "
-              f"{len(form_data.get('расходы_data', []))} расходов")
+        logger.info(f"Форма успешно загружена. Данные: {len(self.current_form.доходы_data) if self.current_form else 0} доходов, "
+              f"{len(self.current_form.расходы_data) if self.current_form else 0} расходов")
         
         self._sync_controller_state()
         return True

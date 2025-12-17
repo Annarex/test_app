@@ -4,8 +4,11 @@ from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QTextDocument, QTextOption
 from views.widgets import WrapHeaderView
 from views.widgets import WordWrapItemDelegate
-from models.form_0503317 import Form0503317Constants
+from models.constants.form_0503317_constants import Form0503317Constants
 from logger import logger
+from views.tree.tree_header_configurator import TreeHeaderConfigurator
+from views.tree.tree_column_visibility_manager import TreeColumnVisibilityManager
+from views.tree.tree_header_layout_helper import TreeHeaderLayoutHelper
 
 
 class TreeConfig:
@@ -20,43 +23,19 @@ class TreeConfig:
         self.tree_headers = []
         self.tree_header_tooltips = []
         self.tree_column_mapping = {}
+        
+        # Инициализация компонентов через композицию
+        self.header_configurator = TreeHeaderConfigurator()
+        self.visibility_manager = TreeColumnVisibilityManager(main_window)
+        self.layout_helper = TreeHeaderLayoutHelper(main_window)
     
     def configure_tree_headers(self, section_name: str):
         """Конфигурация заголовков дерева под выбранный раздел"""
-        base_headers = ["Наименование", "Код строки", "Код классификации", "Уровень"]
-        display_headers = base_headers[:]
-        tooltip_headers = base_headers[:]
-        mapping = {
-            "type": "base",
-            "base_count": len(base_headers)
-        }
-
-        if section_name in ["Доходы", "Расходы", "Источники финансирования"]:
-            budget_cols = Form0503317Constants.BUDGET_COLUMNS
-            mapping.update({
-                "type": "budget",
-                "budget_columns": budget_cols,
-                "approved_start": len(display_headers),
-                "executed_start": len(display_headers) + len(budget_cols)
-            })
-
-            for col in budget_cols:
-                display_headers.append(f"У. {col}")
-                tooltip_headers.append(f"Утвержденный — {col}")
-            for col in budget_cols:
-                display_headers.append(f"И. {col}")
-                tooltip_headers.append(f"Исполненный — {col}")
-
-        elif section_name == "Консолидируемые расчеты":
-            cons_cols = Form0503317Constants.CONSOLIDATED_COLUMNS
-            mapping.update({
-                "type": "consolidated",
-                "value_start": len(display_headers),
-                "columns": cons_cols
-            })
-            for col in cons_cols:
-                display_headers.append(col)
-                tooltip_headers.append(col)
+        # Используем конфигуратор заголовков
+        config_result = self.header_configurator.configure_headers(section_name)
+        display_headers = config_result["headers"]
+        tooltip_headers = config_result["tooltips"]
+        mapping = config_result["mapping"]
 
         # Сохраняем в main_window для обратной совместимости
         self.main_window.tree_headers = display_headers
@@ -232,82 +211,8 @@ class TreeConfig:
         """Обновляет высоту заголовка дерева с учетом автоматического переноса текста"""
         if tree_widget is None:
             tree_widget = self.main_window.data_tree
-        try:
-            header = tree_widget.header()
-            font_metrics = header.fontMetrics()
-            max_height = 0
-            
-            # Получаем заголовки из headerItem
-            header_item = tree_widget.headerItem()
-            tree_headers = self.tree_headers or getattr(self.main_window, 'tree_headers', [])
-            
-            if header_item:
-                # Проходим по всем заголовкам и вычисляем максимальную высоту с учетом переноса
-                for idx in range(tree_widget.columnCount()):
-                    if tree_widget.isColumnHidden(idx):
-                        continue
-                    
-                    # Получаем текст из headerItem
-                    text = header_item.text(idx) if idx < tree_widget.columnCount() else ""
-                    if not text and idx < len(tree_headers):
-                        text = tree_headers[idx]
-                    
-                    if text:
-                        # Получаем ширину столбца
-                        width = max(header.sectionSize(idx), 50)
-                        
-                        # Создаем документ для расчета высоты с учетом переноса
-                        doc = QTextDocument()
-                        doc.setDefaultFont(header.font())
-                        doc.setPlainText(str(text))
-                        
-                        # Настраиваем перенос текста
-                        text_option = QTextOption()
-                        text_option.setWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
-                        doc.setDefaultTextOption(text_option)
-                        
-                        # Устанавливаем ширину документа (с учетом отступов)
-                        padding = 4
-                        doc.setTextWidth(width - 2 * padding)
-                        
-                        # Получаем высоту документа
-                        doc_height = doc.size().height()
-                        max_height = max(max_height, doc_height)
-            else:
-                # Если нет headerItem, используем tree_headers
-                for idx, text in enumerate(tree_headers):
-                    if text and not tree_widget.isColumnHidden(idx):
-                        width = max(header.sectionSize(idx), 50)
-                        
-                        # Создаем документ для расчета высоты
-                        doc = QTextDocument()
-                        doc.setDefaultFont(header.font())
-                        doc.setPlainText(str(text))
-                        
-                        text_option = QTextOption()
-                        text_option.setWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
-                        doc.setDefaultTextOption(text_option)
-                        doc.setTextWidth(width)
-                        
-                        doc_height = doc.size().height()
-                        max_height = max(max_height, doc_height)
-            
-            # Устанавливаем высоту заголовка с небольшим отступом
-            if max_height > 0:
-                header.setFixedHeight(int(max_height) + 8)
-            else:
-                # Если не удалось рассчитать, используем стандартную высоту
-                line_height = font_metrics.lineSpacing()
-                header.setFixedHeight(line_height + 6)
-        except Exception as e:
-            logger.warning(f"Ошибка обновления высоты заголовка дерева: {e}", exc_info=True)
-            # В случае ошибки используем минимальную высоту
-            try:
-                header = self.main_window.data_tree.header()
-                font_metrics = header.fontMetrics()
-                header.setFixedHeight(font_metrics.lineSpacing() + 6)
-            except:
-                pass
+        # Делегируем к layout_helper
+        self.layout_helper.update_header_height(tree_widget)
     
     def _get_tree_widgets(self):
         """Получить все виджеты дерева (в главном окне и открепленных)"""
@@ -332,124 +237,13 @@ class TreeConfig:
         Скрытие столбцов дерева, в которых итоговое значение равно 0.
         Логика аналогична табличному представлению.
         """
-        if not data:
-            return
-
-        if section_key == "консолидируемые_расчеты_data":
-            cons_cols = Form0503317Constants.CONSOLIDATED_COLUMNS
-            mapping = self.tree_column_mapping or getattr(self.main_window, 'tree_column_mapping', {})
-            if mapping.get("type") != "consolidated":
-                return
-
-            # Ищем итоговую строку
-            total_item = None
-            for item in data:
-                name = str(item.get("наименование_показателя", "")).strip().lower()
-                code = str(item.get("код_строки", "")).strip().lower()
-                # Для консолидированных: строка начинается с "всего" ИЛИ код 899
-                if name.startswith("всего") or code == "899":
-                    total_item = item
-                    break
-            if not total_item:
-                return
-
-            value_start = mapping.get("value_start", 4)
-            totals = total_item.get("поступления", {}) or {}
-
-            header = self.main_window.data_tree.header()
-            zero_cols = []
-            for i, col_name in enumerate(cons_cols):
-                val = totals.get(col_name, 0)
-                if isinstance(val, (int, float)) and abs(val) < 1e-9:
-                    col_index = value_start + i
-                    if 0 <= col_index < self.main_window.data_tree.columnCount():
-                        zero_cols.append(col_index)
-
-            # Сужаем «нулевые» колонки до минимальной ширины и очищаем заголовки
-            header_item = self.main_window.data_tree.headerItem()
-            for col_index in zero_cols:
-                header.resizeSection(col_index, 2)  # минимальная ширина
-                if header_item:
-                    header_item.setText(col_index, "")
-                    header_item.setToolTip(col_index, "")
-            return
-
-        # Доходы, расходы, источники
-        budget_cols = Form0503317Constants.BUDGET_COLUMNS
-        mapping = self.tree_column_mapping or getattr(self.main_window, 'tree_column_mapping', {})
-        if mapping.get("type") != "budget":
-            return
-
-        total_item = None
-        for item in data:
-            name = str(item.get("наименование_показателя", "")).strip().lower()
-            # Ищем первую строку, где встречается слово "всего"
-            if "всего" in name:
-                total_item = item
-                break
-        
-        if not total_item:
-            logger.debug(f"Итоговая строка не найдена для раздела {section_key}")
-            return
-
-        approved = total_item.get("утвержденный", {}) or {}
-        executed = total_item.get("исполненный", {}) or {}
-
-        approved_start = mapping.get("approved_start", 4)
-        executed_start = mapping.get("executed_start", approved_start + len(budget_cols))
-
-        # Учитываем видимость столбцов по типу данных
-        current_data_type = getattr(self.main_window, 'current_data_type', 'Оба')
-        show_approved = current_data_type in ("Утвержденный", "Оба")
-        show_executed = current_data_type in ("Исполненный", "Оба")
-
-        header = self.main_window.data_tree.header()
-        zero_cols = set()
-        for i, col_name in enumerate(budget_cols):
-            a_val = approved.get(col_name, 0) or 0
-            e_val = executed.get(col_name, 0) or 0
-            if isinstance(a_val, (int, float)) and isinstance(e_val, (int, float)):
-                if abs(a_val) < 1e-9 and abs(e_val) < 1e-9:
-                    appr_idx = approved_start + i
-                    exec_idx = executed_start + i
-                    if show_approved and 0 <= appr_idx < self.main_window.data_tree.columnCount():
-                        zero_cols.add(appr_idx)
-                    if show_executed and 0 <= exec_idx < self.main_window.data_tree.columnCount():
-                        zero_cols.add(exec_idx)
-
-        # Сужаем «нулевые» колонки до минимальной ширины и очищаем заголовки
-        header_item = self.main_window.data_tree.headerItem()
-        for col_index in zero_cols:
-            header.resizeSection(col_index, 2)  # минимальная ширина
-            if header_item:
-                header_item.setText(col_index, "")
-                header_item.setToolTip(col_index, "")
+        # Делегируем к visibility_manager
+        for tree_widget in self._get_tree_widgets():
+            self.visibility_manager.hide_zero_columns(section_key, data, tree_widget)
     
     def apply_tree_data_type_visibility(self):
         """Скрывает столбцы дерева в зависимости от выбранного типа данных"""
-        mapping = self.tree_column_mapping or getattr(self.main_window, 'tree_column_mapping', {})
-        if not mapping:
-            return
-
-        column_total = len(self.tree_headers or getattr(self.main_window, 'tree_headers', []))
-        
-        if mapping.get("type") == "budget":
-            budget_cols = mapping.get("budget_columns", [])
-            approved_start = mapping.get("approved_start", 4)
-            executed_start = mapping.get("executed_start", approved_start + len(budget_cols))
-            
-            current_data_type = getattr(self.main_window, 'current_data_type', 'Оба')
-            show_approved = current_data_type in ("Утвержденный", "Оба")
-            show_executed = current_data_type in ("Исполненный", "Оба")
-            
-            # Получаем все виджеты дерева
-            tree_widgets = self._get_tree_widgets()
-            
-            for tree_widget in tree_widgets:
-                approved_range = range(approved_start, executed_start)
-                executed_range = range(executed_start, executed_start + len(budget_cols))
-                
-                for idx in approved_range:
-                    tree_widget.setColumnHidden(idx, not show_approved)
-                for idx in executed_range:
-                    tree_widget.setColumnHidden(idx, not show_executed)
+        current_data_type = getattr(self.main_window, 'current_data_type', 'Оба')
+        # Делегируем к visibility_manager
+        for tree_widget in self._get_tree_widgets():
+            self.visibility_manager.apply_data_type_visibility(current_data_type, tree_widget)

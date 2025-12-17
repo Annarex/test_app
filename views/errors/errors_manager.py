@@ -3,7 +3,8 @@ from PyQt5.QtWidgets import QTableWidgetItem, QComboBox, QLabel, QTableWidget, Q
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor, QBrush
 from logger import logger
-from models.form_0503317 import Form0503317Constants
+from services.error_checker_service import ErrorCheckerService
+from utils.numeric_utils import format_numeric_value
 
 
 class ErrorsManager:
@@ -16,6 +17,8 @@ class ErrorsManager:
         """
         self.main_window = main_window
         self.errors_data = []
+        # Используем сервис для проверки ошибок
+        self.error_checker = ErrorCheckerService()
     
     def load_errors_to_tab(self, project_data):
         """Загрузка ошибок расчетов во вкладку ошибок"""
@@ -45,12 +48,15 @@ class ErrorsManager:
                 continue
             
             if section_name == "Консолидируемые расчеты":
-                self._check_consolidated_errors(section_data, section_name)
+                section_errors = self.error_checker.check_consolidated_errors(section_data, section_name)
             else:
-                self._check_budget_errors(section_data, section_name)
+                section_errors = self.error_checker.check_budget_errors(section_data, section_name)
+            
+            self.errors_data.extend(section_errors)
         
         # Проверяем дефицит/профицит (строка 450 в разделе "Расходы")
-        self._check_deficit_proficit_errors(project_data)
+        deficit_errors = self.error_checker.check_deficit_proficit_errors(project_data)
+        self.errors_data.extend(deficit_errors)
         
         # Обновляем все таблицы ошибок
         for widget_info in self._get_errors_widgets():
@@ -60,189 +66,6 @@ class ErrorsManager:
                 widget_info.get('stats')
             )
     
-    def _check_budget_errors(self, data, section_name: str):
-        """Проверка ошибок для бюджетных разделов (доходы, расходы, источники)"""
-        budget_cols = Form0503317Constants.BUDGET_COLUMNS
-        
-        for item in data:
-            level = item.get('уровень', 0)
-            # Проверяем только уровни < 6
-            if level >= 6:
-                continue
-            
-            name = item.get('наименование_показателя', '')
-            code = item.get('код_строки', '')
-            
-            approved_data = item.get('утвержденный', {}) or {}
-            executed_data = item.get('исполненный', {}) or {}
-            
-            for col in budget_cols:
-                # Проверка утвержденных значений
-                original_approved = approved_data.get(col, 0) or 0
-                calculated_approved = item.get(f'расчетный_утвержденный_{col}', original_approved)
-                
-                if self._is_value_different(original_approved, calculated_approved):
-                    diff = self._calculate_error_difference(original_approved, calculated_approved)
-                    self.errors_data.append({
-                        'section': section_name,
-                        'name': name,
-                        'code': code,
-                        'level': level,
-                        'type': 'Утвержденный',
-                        'column': col,
-                        'original': original_approved,
-                        'calculated': calculated_approved,
-                        'difference': diff
-                    })
-                
-                # Проверка исполненных значений
-                original_executed = executed_data.get(col, 0) or 0
-                calculated_executed = item.get(f'расчетный_исполненный_{col}', original_executed)
-                
-                if self._is_value_different(original_executed, calculated_executed):
-                    diff = self._calculate_error_difference(original_executed, calculated_executed)
-                    self.errors_data.append({
-                        'section': section_name,
-                        'name': name,
-                        'code': code,
-                        'level': level,
-                        'type': 'Исполненный',
-                        'column': col,
-                        'original': original_executed,
-                        'calculated': calculated_executed,
-                        'difference': diff
-                    })
-    
-    def _check_consolidated_errors(self, data, section_name: str):
-        """Проверка ошибок для консолидированных расчетов"""
-        cons_cols = Form0503317Constants.CONSOLIDATED_COLUMNS
-        
-        for item in data:
-            level = item.get('уровень', 0)
-            # Для консолидированных расчетов проверяем все уровни для столбца ИТОГО,
-            # и уровни < 6 для остальных столбцов
-            name = item.get('наименование_показателя', '')
-            code = item.get('код_строки', '')
-            
-            cons_data = item.get('поступления', {}) or {}
-            
-            for col in cons_cols:
-                # Оригинальное значение
-                if isinstance(cons_data, dict) and col in cons_data:
-                    original_value = cons_data.get(col, 0) or 0
-                else:
-                    original_value = item.get(f'поступления_{col}', 0) or 0
-                
-                # Расчетное значение
-                calculated_value = item.get(f'расчетный_поступления_{col}')
-                if calculated_value is None:
-                    calculated_value = original_value
-                
-                # Проверяем несоответствие
-                is_total_column = (col == 'ИТОГО')
-                should_check = (level < 6) or is_total_column
-                
-                if should_check and self._is_value_different(original_value, calculated_value):
-                    diff = self._calculate_error_difference(original_value, calculated_value)
-                    self.errors_data.append({
-                        'section': section_name,
-                        'name': name,
-                        'code': code,
-                        'level': level,
-                        'type': 'Поступления',
-                        'column': col,
-                        'original': original_value,
-                        'calculated': calculated_value,
-                        'difference': diff
-                    })
-    
-    def _check_deficit_proficit_errors(self, project_data):
-        """Проверка ошибок дефицита/профицита (строка 450 в разделе 'Расходы')"""
-        calculated_deficit_proficit = project_data.get('calculated_deficit_proficit')
-        if not calculated_deficit_proficit:
-            return
-        
-        # Ищем строку 450 в разделе расходов
-        расходы_data = project_data.get('расходы_data', [])
-        if not расходы_data:
-            return
-        
-        # Ищем строку с кодом 450
-        строка_450 = None
-        for item in расходы_data:
-            if str(item.get('код_строки', '')).strip() == '450':
-                строка_450 = item
-                break
-        
-        if not строка_450:
-            return
-        
-        budget_cols = Form0503317Constants.BUDGET_COLUMNS
-        name = строка_450.get('наименование_показателя', 'Результат исполнения бюджета (дефицит/профицит)')
-        code = строка_450.get('код_строки', '450')
-        level = строка_450.get('уровень', 0)
-        
-        approved_data = строка_450.get('утвержденный', {}) or {}
-        executed_data = строка_450.get('исполненный', {}) or {}
-        
-        calculated_approved = calculated_deficit_proficit.get('утвержденный', {}) or {}
-        calculated_executed = calculated_deficit_proficit.get('исполненный', {}) or {}
-        
-        # Проверяем утвержденные значения
-        for col in budget_cols:
-            original_approved = approved_data.get(col, 0) or 0
-            calc_approved = calculated_approved.get(col, 0) or 0
-            
-            if self._is_value_different(original_approved, calc_approved):
-                diff = self._calculate_error_difference(original_approved, calc_approved)
-                self.errors_data.append({
-                    'section': 'Расходы',
-                    'name': name,
-                    'code': code,
-                    'level': level,
-                    'type': 'Утвержденный',
-                    'column': col,
-                    'original': original_approved,
-                    'calculated': calc_approved,
-                    'difference': diff
-                })
-        
-        # Проверяем исполненные значения
-        for col in budget_cols:
-            original_executed = executed_data.get(col, 0) or 0
-            calc_executed = calculated_executed.get(col, 0) or 0
-            
-            if self._is_value_different(original_executed, calc_executed):
-                diff = self._calculate_error_difference(original_executed, calc_executed)
-                self.errors_data.append({
-                    'section': 'Расходы',
-                    'name': name,
-                    'code': code,
-                    'level': level,
-                    'type': 'Исполненный',
-                    'column': col,
-                    'original': original_executed,
-                    'calculated': calc_executed,
-                    'difference': diff
-                })
-    
-    def _calculate_error_difference(self, original: float, calculated: float) -> float:
-        """Вычисление разницы между значениями"""
-        try:
-            original_val = float(original) if original not in (None, "", "x") else 0.0
-            calculated_val = float(calculated) if calculated not in (None, "", "x") else 0.0
-            return calculated_val - original_val
-        except (ValueError, TypeError):
-            return 0.0
-    
-    def _is_value_different(self, original: float, calculated: float) -> bool:
-        """Проверка различия значений"""
-        try:
-            original_val = float(original) if original not in (None, "", "x") else 0.0
-            calculated_val = float(calculated) if calculated not in (None, "", "x") else 0.0
-            return abs(original_val - calculated_val) > 0.00001
-        except (ValueError, TypeError):
-            return False
     
     def _update_errors_table(self, errors_table=None, section_filter_widget=None, stats_label=None):
         """Обновление таблицы с ошибками"""
@@ -324,12 +147,7 @@ class ErrorsManager:
     
     def _format_error_value(self, value) -> str:
         """Форматирование значения ошибки для отображения"""
-        if value in (None, "", "x"):
-            return str(value) if value else ""
-        try:
-            return f"{float(value):,.2f}"
-        except (ValueError, TypeError):
-            return str(value)
+        return format_numeric_value(value)
     
     def _export_errors(self):
         """Экспорт ошибок в файл"""

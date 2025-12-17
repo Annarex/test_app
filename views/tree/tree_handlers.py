@@ -174,7 +174,11 @@ class TreeHandlers:
                     )
 
         # Снова применяем фильтр по типу данных (утверждённый/исполненный/оба)
+        # и показываем все столбцы через visibility_manager
         if hasattr(self.main_window, 'tree_config'):
+            tree_widgets = self.main_window.tree_config._get_tree_widgets()
+            for tree_widget in tree_widgets:
+                self.main_window.tree_config.visibility_manager.show_all_columns(tree_widget)
             self.main_window.tree_config.apply_tree_data_type_visibility()
         elif hasattr(self.main_window, 'apply_tree_data_type_visibility'):
             self.main_window.apply_tree_data_type_visibility()

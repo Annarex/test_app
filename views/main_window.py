@@ -19,7 +19,7 @@ import pandas as pd
 
 from controllers.main_controller import MainController
 from logger import logger
-from models.form_0503317 import Form0503317Constants
+from models.constants.form_0503317_constants import Form0503317Constants
 from views.project_dialog import ProjectDialog
 from views.reference_dialog import ReferenceDialog
 from views.excel_viewer import ExcelViewer
@@ -72,6 +72,12 @@ class MainWindow(QMainWindow):
         self.tree_handlers = TreeHandlers(self)
         self.errors_manager = ErrorsManager(self)
         self.metadata_panel = MetadataPanel(self)
+        
+        # Инициализируем менеджеры и контроллеры
+        from views.managers.tab_manager import TabManager
+        from views.controllers.documents_ui_controller import DocumentsUIController
+        self.tab_manager = TabManager(self)
+        self.documents_ui = DocumentsUIController(self)
         
         self.init_ui()
         self.connect_signals()
@@ -218,10 +224,6 @@ class MainWindow(QMainWindow):
         refresh_projects_action.setStatusTip("Обновить список проектов")
         refresh_projects_action.triggered.connect(lambda: self.controller.projects_updated.emit(self.controller.project_controller.load_projects()))
         project_menu.addAction(refresh_projects_action)
-        
-        # ========== Меню "Данные" ==========
-        data_menu = menubar.addMenu("&Данные")
-        # (действия для раздела данных сейчас управляются непосредственно формой)
         
         # ========== Меню "Справочники" ==========
         reference_menu = menubar.addMenu("&Справочники")
@@ -1010,6 +1012,14 @@ class MainWindow(QMainWindow):
     
     def _process_export(self, output_path):
         """Обработка экспорта"""
+        # Перед экспортом убеждаемся, что просмотрщик Excel не держит файл открытым
+        if hasattr(self, "excel_viewer") and self.excel_viewer is not None:
+            try:
+                self.excel_viewer.close_workbook()
+            except Exception:
+                # Даже если что-то пошло не так, продолжаем — экспорт сам сообщит об ошибке
+                pass
+
         success = self.controller.export_validation(output_path)
         self.progress_bar.setVisible(False)
         
@@ -1251,44 +1261,12 @@ class MainWindow(QMainWindow):
         msg.exec_()
     
     def show_document_dialog(self):
-        """Показать диалог формирования документов"""
-        if not self.controller.current_project or not self.controller.current_revision_id:
-            QMessageBox.warning(self, "Ошибка", "Сначала выберите проект и загрузите ревизию формы")
-            return
-        
-        dialog = DocumentDialog(self)
-        dialog.exec_()
+        """Показать диалог формирования документов (делегирует к documents_ui)"""
+        self.documents_ui.show_document_dialog()
     
     def parse_solution_document(self):
-        """Обработка решения о бюджете"""
-        if not self.controller.current_project:
-            QMessageBox.warning(self, "Ошибка", "Сначала выберите проект")
-            return
-        
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Выберите файл решения о бюджете",
-            "",
-            "Word Documents (*.docx *.doc);;All Files (*)"
-        )
-        
-        if file_path:
-            try:
-                result = self.controller.parse_solution_document(file_path)
-                if result:
-                    QMessageBox.information(
-                        self,
-                        "Успех",
-                        f"Решение обработано:\n"
-                        f"Доходов: {len(result.get('приложение1', []))}\n"
-                        f"Расходов (общие): {len(result.get('приложение2', []))}\n"
-                        f"Расходов (по ГРБС): {len(result.get('приложение3', []))}"
-                    )
-                else:
-                    QMessageBox.warning(self, "Ошибка", "Не удалось обработать решение")
-            except Exception as e:
-                logger.error(f"Ошибка обработки решения: {e}", exc_info=True)
-                QMessageBox.critical(self, "Ошибка", f"Ошибка обработки решения:\n{str(e)}")
+        """Обработка решения о бюджете (делегирует к documents_ui)"""
+        self.documents_ui.parse_solution_document()
     
     def open_file(self, file_path: str):
         """Открыть файл в системе"""
@@ -1325,191 +1303,48 @@ class MainWindow(QMainWindow):
             self.open_file(file_path)
     
     def open_last_exported_file(self):
-        """Открыть последний экспортированный файл"""
+        """
+        Открыть последний экспортированный (пересчитанный) Excel,
+        связанный с выбранной ревизией.
+        """
+        # 1) Пробуем открыть файл, привязанный к выбранной ревизии
+        if self.controller.current_project and self.controller.current_revision_id:
+            rev_id = self.controller.current_revision_id
+            try:
+                revision = self.controller.db_manager.get_form_revision_by_id(rev_id)
+            except Exception as e:
+                logger.error(
+                    f"Ошибка получения ревизии {rev_id} при открытии последнего файла: {e}",
+                    exc_info=True,
+                )
+                revision = None
+
+            file_path = getattr(revision, "file_path", None) if revision else None
+            if file_path and os.path.exists(file_path):
+                self.open_file(file_path)
+                return
+
+        # 2) Fallback: используем last_exported_file (как раньше), если он есть
         if self.last_exported_file and os.path.exists(self.last_exported_file):
             self.open_file(self.last_exported_file)
-        else:
-            QMessageBox.warning(
-                self,
-                "Ошибка",
-                "Последний экспортированный файл не найден или не был сохранен"
-            )
+            return
+
+        # 3) Если ничего не нашли — показываем понятное сообщение
+        QMessageBox.warning(
+            self,
+            "Ошибка",
+            "Не удалось найти экспортированный файл.\n"
+            "Убедитесь, что для выбранной ревизии выполнен экспорт с проверкой."
+        )
     
     def show_tab_context_menu(self, position):
-        """Контекстное меню для вкладок"""
-        # position - это позиция клика относительно QTabWidget
-        # Проверяем, что клик был именно на tabBar
-        tab_bar = self.tabs_panel.tabBar()
-        tab_bar_pos = tab_bar.mapFrom(self.tabs_panel, position)
-        tab_index = tab_bar.tabAt(tab_bar_pos)
-        
-        # Если не нашли вкладку по позиции, пробуем найти по текущей выбранной
-        if tab_index < 0:
-            tab_index = self.tabs_panel.currentIndex()
-            if tab_index < 0:
-                return
-        
-        tab_name = self.tabs_panel.tabText(tab_index)
-        if not tab_name:
-            return
-        
-        menu = QMenu(self)
-        
-        # Проверяем, откреплена ли вкладка
-        if tab_name in self.detached_windows:
-            attach_action = menu.addAction("Вернуть во вкладки")
-            attach_action.setIcon(self.style().standardIcon(QStyle.SP_DialogApplyButton))
-            action = menu.exec_(self.tabs_panel.mapToGlobal(position))
-            if action == attach_action:
-                self.attach_tab(tab_name, None)
-        else:
-            detach_action = menu.addAction("Открыть в отдельном окне")
-            detach_action.setIcon(self.style().standardIcon(QStyle.SP_TitleBarNormalButton))
-            action = menu.exec_(self.tabs_panel.mapToGlobal(position))
-            if action == detach_action:
-                self.detach_tab(tab_index, tab_name)
+        """Контекстное меню для вкладок (делегирует к tab_manager)"""
+        self.tab_manager.show_tab_context_menu(position)
     
     def detach_tab(self, tab_index, tab_name):
-        """Открепление вкладки в отдельное окно"""
-        # Получаем виджет вкладки
-        tab_widget = self.tabs_panel.widget(tab_index)
-        if not tab_widget:
-            return
-        
-        # Сохраняем текущий размер виджета
-        widget_size = tab_widget.size()
-        
-        # Удаляем вкладку из главного окна (но не удаляем сам виджет)
-        self.tabs_panel.removeTab(tab_index)
-        
-        # Убеждаемся, что виджет видим и имеет правильный размер
-        tab_widget.setParent(None)
-        tab_widget.setVisible(True)
-        if widget_size.isValid() and widget_size.width() > 0 and widget_size.height() > 0:
-            tab_widget.resize(widget_size)
-        
-        # Создаем отдельное окно
-        detached_window = DetachedTabWindow(tab_widget, tab_name, self)
-        self.detached_windows[tab_name] = detached_window
-        
-        # Показываем окно
-        detached_window.show()
-        detached_window.raise_()
-        detached_window.activateWindow()
+        """Открепление вкладки в отдельное окно (делегирует к tab_manager)"""
+        self.tab_manager.detach_tab(tab_index, tab_name)
     
     def attach_tab(self, tab_name, tab_widget=None):
-        """Возврат вкладки в главное окно"""
-        logger.debug(f"attach_tab вызван для вкладки '{tab_name}'")
-        
-        # Проверяем, есть ли эта вкладка в открепленных окнах
-        if tab_name not in self.detached_windows:
-            # Если вкладка уже не в словаре, возможно она уже была возвращена
-            # Проверяем, не находится ли она уже в tabs_panel
-            for i in range(self.tabs_panel.count()):
-                if self.tabs_panel.tabText(i) == tab_name:
-                    logger.debug(f"Вкладка '{tab_name}' уже находится в tabs_panel")
-                    return
-            logger.warning(f"Вкладка '{tab_name}' не найдена в detached_windows и не найдена в tabs_panel")
-            return
-        
-        detached_window = self.detached_windows[tab_name]
-        
-        # Получаем виджет из окна (теперь это центральный виджет напрямую)
-        if tab_widget is None:
-            tab_widget = detached_window.centralWidget()
-        
-        if not tab_widget:
-            logger.error(f"Не удалось получить виджет для вкладки '{tab_name}'")
-            # Если виджет не найден, просто удаляем запись
-            try:
-                detached_window.setProperty("attaching", True)
-                detached_window.close()
-            except:
-                pass
-            if tab_name in self.detached_windows:
-                del self.detached_windows[tab_name]
-            return
-        
-        logger.debug(f"Виджет для вкладки '{tab_name}' получен: {type(tab_widget).__name__}")
-        
-        # Сохраняем размер виджета
-        widget_size = tab_widget.size()
-        logger.debug(f"Размер виджета: {widget_size.width()}x{widget_size.height()}")
-        
-        # Устанавливаем флаг, чтобы closeEvent не вызывал attach_tab повторно
-        detached_window.setProperty("attaching", True)
-        
-        # Удаляем запись из словаря перед добавлением вкладки обратно
-        # Это предотвратит повторные вызовы attach_tab
-        if tab_name in self.detached_windows:
-            del self.detached_windows[tab_name]
-        
-        # Определяем позицию вкладки по имени
-        tab_positions = {
-            "Древовидные данные": 0,
-            "Метаданные": 1,
-            "Ошибки": 2,
-            "Просмотр формы": 3
-        }
-        position = tab_positions.get(tab_name, self.tabs_panel.count())
-        
-        logger.debug(f"Добавление вкладки '{tab_name}' в позицию {position}, текущее количество вкладок: {self.tabs_panel.count()}")
-        logger.debug(f"Виджет имеет layout: {tab_widget.layout() is not None}")
-        logger.debug(f"Виджет имеет родителя: {tab_widget.parent() is not None}, тип родителя: {type(tab_widget.parent()).__name__ if tab_widget.parent() else 'None'}")
-        
-        # ВАЖНО: Не удаляем виджет из окна до добавления в tabs_panel
-        # QTabWidget.insertTab() автоматически установит правильного родителя
-        # и удалит виджет из старого родителя
-        
-        # Убеждаемся, что виджет видим
-        tab_widget.setVisible(True)
-        
-        # Восстанавливаем размер, если он был валидным
-        if widget_size.isValid() and widget_size.width() > 0 and widget_size.height() > 0:
-            tab_widget.resize(widget_size)
-        
-        # Добавляем вкладку обратно в главное окно
-        # insertTab автоматически установит правильного родителя и удалит из старого
-        try:
-            inserted_index = self.tabs_panel.insertTab(position, tab_widget, tab_name)
-            logger.debug(f"Вкладка вставлена на индекс {inserted_index}, новое количество вкладок: {self.tabs_panel.count()}")
-            
-            # Проверяем, что вкладка действительно добавлена
-            if inserted_index >= 0 and inserted_index < self.tabs_panel.count():
-                actual_tab_name = self.tabs_panel.tabText(inserted_index)
-                logger.debug(f"Проверка: вкладка на индексе {inserted_index} имеет имя '{actual_tab_name}'")
-                
-                # Проверяем, что виджет действительно установлен как виджет вкладки
-                widget_at_index = self.tabs_panel.widget(inserted_index)
-                logger.debug(f"Виджет на индексе {inserted_index}: {type(widget_at_index).__name__ if widget_at_index else 'None'}, совпадает с tab_widget: {widget_at_index == tab_widget}")
-                
-                # Убеждаемся, что вкладка видна
-                self.tabs_panel.setCurrentIndex(inserted_index)
-                self.tabs_panel.setTabVisible(inserted_index, True)
-                
-                # Теперь можно удалить виджет из окна, так как он уже в tabs_panel
-                try:
-                    detached_window.setCentralWidget(None)
-                    logger.debug("Центральный виджет удален из окна после добавления в tabs_panel")
-                except Exception as e:
-                    logger.warning(f"Ошибка при удалении центрального виджета: {e}")
-                
-                # Принудительно обновляем отображение
-                tab_widget.show()
-                tab_widget.update()
-                self.tabs_panel.update()
-                
-                # Принудительно перерисовываем
-                QApplication.processEvents()
-            else:
-                logger.error(f"Ошибка: вкладка не была добавлена правильно. inserted_index={inserted_index}, count={self.tabs_panel.count()}")
-        except Exception as e:
-            logger.error(f"Ошибка при добавлении вкладки в tabs_panel: {e}", exc_info=True)
-        
-        # Закрываем окно после того, как вкладка добавлена
-        try:
-            detached_window.close()
-        except Exception as e:
-            logger.warning(f"Ошибка при закрытии окна: {e}")
-        
-        logger.info(f"Вкладка '{tab_name}' успешно возвращена в главное окно на позицию {position}")
+        """Возврат вкладки в главное окно (делегирует к tab_manager)"""
+        self.tab_manager.attach_tab(tab_name, tab_widget)

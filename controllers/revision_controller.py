@@ -1,4 +1,5 @@
 from typing import Dict, Any, Optional, List
+import os
 
 from PyQt5.QtCore import QObject, pyqtSignal
 
@@ -170,6 +171,126 @@ class RevisionController(QObject):
                 self.current_project.data = revision_data
 
             return self.current_project
+        except Exception as e:
+            self.error_occurred.emit(f"Ошибка загрузки ревизии: {str(e)}")
+            logger.error(f"Ошибка загрузки ревизии: {e}", exc_info=True)
+            return None
+    
+    def load_revision_with_form_initialization(
+        self, 
+        revision_id: int, 
+        project_id: int,
+        project_controller,
+        form_controller
+    ) -> Optional[Project]:
+        """
+        Полная загрузка ревизии с инициализацией формы
+        
+        Args:
+            revision_id: ID ревизии
+            project_id: ID проекта
+            project_controller: Контроллер проектов для загрузки проекта
+            form_controller: Контроллер форм для инициализации формы
+        
+        Returns:
+            Загруженный проект или None
+        """
+        try:
+            # Загружаем информацию о ревизии
+            revision_record = self.db_manager.get_form_revision_by_id(revision_id)
+            if not revision_record:
+                self.error_occurred.emit("Ревизия не найдена")
+                return None
+            
+            # Загружаем проект
+            project_controller.load_project(project_id)
+            project = project_controller.current_project
+            
+            if not project:
+                self.error_occurred.emit("Проект не найден")
+                return None
+            
+            # Определяем тип формы из project_form
+            project_forms = self.db_manager.load_project_forms(project_id)
+            project_forms_by_id = {pf.id: pf for pf in project_forms}
+            project_form = project_forms_by_id.get(revision_record.project_form_id)
+            
+            if not project_form:
+                self.error_occurred.emit(f"ProjectForm не найден для ревизии {revision_id}")
+                return None
+            
+            # Получаем метаданные типа формы
+            form_types_meta = {ft.id: ft for ft in self.db_manager.load_form_types_meta()}
+            form_meta = form_types_meta.get(project_form.form_type_id)
+            
+            if not form_meta:
+                self.error_occurred.emit(f"Тип формы не найден для form_type_id={project_form.form_type_id}")
+                return None
+            
+            # Сохраняем ID текущей ревизии ДО инициализации формы
+            self.current_revision_id = revision_id
+            self.current_project = project
+            
+            # Инициализируем форму
+            form_controller.current_project = project
+            form_controller.current_revision_id = revision_id
+            form_controller.initialize_form_for_project(form_meta=form_meta)
+            
+            # Загружаем данные ревизии
+            revision_data = self.db_manager.load_revision_data(project_id, revision_id)
+            need_sections = ['доходы_data', 'расходы_data', 'источники_финансирования_data', 'консолидируемые_расчеты_data']
+            has_sections = revision_data and any(revision_data.get(k) for k in need_sections)
+
+            if not has_sections:
+                self.error_occurred.emit("Данные ревизии не найдены")
+                return None
+            
+            # Обновляем данные проекта данными ревизии
+            project.data = revision_data
+            
+            # Загружаем данные в форму
+            if not form_controller.current_form:
+                self.error_occurred.emit(f"Форма типа '{form_meta.code}' не поддерживается")
+                return None
+            
+            form_controller.current_form.load_saved_data(revision_data)
+            
+            # Пересчитываем дефицит/профицит
+            try:
+                if hasattr(form_controller.current_form, "_calculate_deficit_proficit"):
+                    form_controller.current_form._calculate_deficit_proficit()
+                    if getattr(form_controller.current_form, "calculated_deficit_proficit", None):
+                        revision_data["calculated_deficit_proficit"] = (
+                            form_controller.current_form.calculated_deficit_proficit
+                        )
+                        project.data = revision_data
+            except Exception as e:
+                logger.error(
+                    f"Ошибка пересчета дефицита/профицита при загрузке ревизии: {e}",
+                    exc_info=True,
+                )
+            
+            # Пересчитываем уровни и значения на основе справочников, если файл есть
+            if revision_record.file_path and os.path.exists(revision_record.file_path):
+                try:
+                    reference_data_доходы = self.references.get('доходы')
+                    reference_data_источники = self.references.get('источники')
+                    
+                    if isinstance(form_controller.current_form, Form0503317):
+                        updated_data = form_controller.current_form.recalculate_levels_with_references(
+                            revision_data,
+                            reference_data_доходы,
+                            reference_data_источники
+                        )
+                        if updated_data:
+                            project.data = updated_data
+                            form_controller.current_form.load_saved_data(updated_data)
+                            logger.info("Уровни и значения пересчитаны на основе справочников")
+                except Exception as e:
+                    logger.error(f"Ошибка пересчета уровней и значений: {e}", exc_info=True)
+            
+            return project
+                
         except Exception as e:
             self.error_occurred.emit(f"Ошибка загрузки ревизии: {str(e)}")
             logger.error(f"Ошибка загрузки ревизии: {e}", exc_info=True)

@@ -191,3 +191,119 @@ class FormController(QObject):
             self.error_occurred.emit(f"Ошибка загрузки файла: {str(e)}")
             logger.error(f"Ошибка загрузки формы: {e}", exc_info=True)
             return None
+    
+    def load_and_register_form_file(
+        self, 
+        file_path: str,
+        revision_controller,
+        db_manager: DatabaseManager
+    ) -> bool:
+        """
+        Полный цикл загрузки файла формы: парсинг, регистрация ревизии, сохранение данных
+        
+        Args:
+            file_path: Путь к файлу формы
+            revision_controller: Контроллер ревизий для регистрации
+            db_manager: Менеджер БД для сохранения данных
+        
+        Returns:
+            True при успехе, False при ошибке
+        """
+        # Загружаем и парсим файл
+        result = self.load_form_file(file_path)
+        if not result:
+            return False
+        
+        form_data = result['form_data']
+        copied_file_path = result['file_path']
+        form_type_code = result['form_type_code']
+        period_code = result['period_code']
+        
+        # Определяем период: в приоритете период, выбранный пользователем
+        if not period_code:
+            period_code = (revision_controller.pending_period_code or "").strip() or None
+            if form_data.get('meta_info'):
+                period_str = form_data.get('meta_info', {}).get('period')
+                if period_str:
+                    period_code = str(period_str).strip()
+        
+        # Регистрируем/обновляем ревизию формы
+        revision_record = None
+        try:
+            revision_record = revision_controller.register_form_revision(
+                project=self.current_project,
+                status=ProjectStatus.PARSED, 
+                file_path=copied_file_path,
+                form_type_code=form_type_code,
+                period_code=period_code,
+                revision=revision_controller.pending_revision or "1.0",
+            )
+        except Exception as e:
+            logger.error(f"Ошибка регистрации ревизии формы: {e}", exc_info=True)
+            return False
+        
+        # Сохраняем данные ревизии отдельно, если ревизия создана
+        if revision_record and revision_record.id:
+            try:
+                revision_data = {
+                    'meta_info': form_data.get('meta_info', {}),
+                    'доходы_data': form_data.get('доходы_data', []),
+                    'расходы_data': form_data.get('расходы_data', []),
+                    'источники_финансирования_data': form_data.get('источники_финансирования_data', []),
+                    'консолидируемые_расчеты_data': form_data.get('консолидируемые_расчеты_data', [])
+                }
+                db_manager.save_revision_data(
+                    self.current_project.id,
+                    revision_record.id,
+                    revision_data
+                )
+            except Exception as e:
+                logger.error(f"Ошибка сохранения данных ревизии: {e}", exc_info=True)
+                return False
+        
+        return True
+    
+    def recalculate_levels_on_load(self, project_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Пересчет уровней строк при загрузке проекта
+        
+        Args:
+            project_data: Данные проекта
+        
+        Returns:
+            Обновленные данные проекта
+        """
+        if not self.current_form or not isinstance(self.current_form, Form0503317):
+            return project_data
+        
+        try:
+            reference_data_доходы = self.references.get('доходы')
+            reference_data_источники = self.references.get('источники')
+
+            # Если справочники отсутствуют, явно предупреждаем пользователя
+            missing_refs = []
+            if reference_data_доходы is None:
+                missing_refs.append("доходов")
+            if reference_data_источники is None:
+                missing_refs.append("источников финансирования")
+            if missing_refs:
+                msg = (
+                    "При загрузке проекта не найдены справочники: "
+                    + ", ".join(missing_refs)
+                    + ". Уровни строк для соответствующих разделов могут быть некорректны (0)."
+                )
+                # Предупреждение уже будет показано через error_occurred в MainController
+
+            # Пересчитываем уровни, если справочники доступны
+            if reference_data_доходы is not None or reference_data_источники is not None:
+                updated_data = self.current_form.recalculate_levels_with_references(
+                    project_data,
+                    reference_data_доходы,
+                    reference_data_источники
+                )
+                if updated_data:
+                    return updated_data
+        except Exception as e:
+            logger.error(f"Ошибка пересчета уровней при загрузке проекта: {e}", exc_info=True)
+        
+        return project_data

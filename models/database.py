@@ -399,6 +399,65 @@ class DatabaseManager:
             except sqlite3.OperationalError:
                 pass  # Колонка уже переименована или не существует
 
+            # Таблицы для хранения данных решений о бюджете
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS solution_data (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_id INTEGER NOT NULL,
+                    solution_file_path TEXT,
+                    parsed_at TEXT NOT NULL,
+                    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+                )
+            ''')
+            
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS solution_income_data (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    solution_id INTEGER NOT NULL,
+                    код TEXT,
+                    наименование TEXT,
+                    уровень INTEGER,
+                    ТТ INTEGER,
+                    сумма1 REAL DEFAULT 0,
+                    сумма2 REAL DEFAULT 0,
+                    сумма3 REAL DEFAULT 0,
+                    FOREIGN KEY (solution_id) REFERENCES solution_data(id) ON DELETE CASCADE
+                )
+            ''')
+            
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS solution_expense_data (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    solution_id INTEGER NOT NULL,
+                    код_Р TEXT,
+                    код_ПР TEXT,
+                    код_ЦС TEXT,
+                    код_ВР TEXT,
+                    уровень INTEGER,
+                    сумма1 REAL DEFAULT 0,
+                    сумма2 REAL DEFAULT 0,
+                    сумма3 REAL DEFAULT 0,
+                    наименование TEXT,
+                    FOREIGN KEY (solution_id) REFERENCES solution_data(id) ON DELETE CASCADE
+                )
+            ''')
+            
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS solution_expense_grbs_data (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    solution_id INTEGER NOT NULL,
+                    ГРБС TEXT,
+                    код_Р TEXT,
+                    код_ПР TEXT,
+                    код_ЦС TEXT,
+                    код_ВР TEXT,
+                    уровень INTEGER,
+                    сумма1 REAL DEFAULT 0,
+                    наименование TEXT,
+                    FOREIGN KEY (solution_id) REFERENCES solution_data(id) ON DELETE CASCADE
+                )
+            ''')
+
             # Первичное заполнение справочников (если они пустые)
             self._seed_config_dictionaries(cursor)
 
@@ -617,7 +676,7 @@ class DatabaseManager:
         if count_forms == 0:
             # Базовая форма 0503317 (годовая/квартальная)
             # Сохраняем mapping колонок для формы 0503317
-            from models.form_0503317 import Form0503317Constants
+            from models.constants.form_0503317_constants import Form0503317Constants
             mapping_json = json.dumps(Form0503317Constants.COLUMN_MAPPING, ensure_ascii=False)
             forms = [
                 (503317, "0503317", "Форма 0503317", "Квартальная/6М/9М/12М", mapping_json, 1),
