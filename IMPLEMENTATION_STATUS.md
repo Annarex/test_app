@@ -2,29 +2,6 @@
 
 ## Выполнено
 
-### 1. Расширение схемы базы данных
-- ✅ Добавлены таблицы для новых справочников:
-  - `ref_municipality_types` - виды муниципальных образований
-  - `ref_municipalities` - расширена (добавлены поля для адресов, ФИО, почт)
-  - `ref_periods` - расширена (добавлены поля код_периода, отчет_на_дату)
-  - `ref_grbs` - перечень ГРБС
-  - `ref_expense_sections` - разделы/подразделы классификации расходов
-  - `ref_target_articles` - целевые статьи расходов
-  - `ref_expense_types` - виды статьи расходов
-  - `ref_program_nonprogram` - программные/непрограммные статьи
-  - `ref_expense_kinds` - виды расходов
-  - `ref_national_projects` - национальные проекты
-  - `ref_gadb` - перечень ГАДБ
-  - `ref_income_groups` - группы доходов
-  - `ref_income_subgroups` - подгруппы доходов
-  - `ref_income_articles` - статьи/подстатьи доходов
-  - `ref_income_elements` - элементы доходов
-  - `ref_income_subkind_groups` - группы подвидов доходов
-  - `ref_income_analytical_groups` - аналитические группы подвидов доходов
-  - `ref_income_levels` - уровни доходов
-  - `ref_income_codes` - коды доходов (для работы с решениями)
-  - `ref_expense_codes` - коды расходов (для работы с решениями)
-
 ### 2. Контроллеры для работы с Word документами
 - ✅ `DocumentController` - контроллер для формирования заключений и писем
   - Метод `generate_conclusion()` - формирование заключения

@@ -25,6 +25,7 @@ from views.reference_dialog import ReferenceDialog
 from views.excel_viewer import ExcelViewer
 from views.reference_viewer import ReferenceViewer
 from views.dictionaries_dialog import DictionariesDialog
+from views.references_management_dialog import ReferencesManagementDialog
 from views.form_load_dialog import FormLoadDialog
 from views.document_dialog import DocumentDialog
 from views.widgets import WrapHeaderView, WordWrapItemDelegate, DetachedTabWindow
@@ -828,6 +829,11 @@ class MainWindow(QMainWindow):
     def show_config_dictionaries(self):
         """Показать диалог редактирования справочников конфигурации"""
         dlg = DictionariesDialog(self.controller.db_manager, self)
+        dlg.exec_()
+    
+    def show_references_management(self):
+        """Показать диалог управления справочниками (коды доходов, расходов и т.д.)"""
+        dlg = ReferencesManagementDialog(self.controller.db_manager, self)
         dlg.exec_()
 
     def on_projects_side_button_clicked(self):

@@ -2,6 +2,7 @@
 from PyQt5.QtWidgets import QMessageBox, QFileDialog
 from logger import logger
 from views.document_dialog import DocumentDialog
+from views.solution_load_dialog import SolutionLoadDialog
 
 
 class DocumentsUIController:
@@ -33,31 +34,6 @@ class DocumentsUIController:
             QMessageBox.warning(self.main_window, "Ошибка", "Сначала выберите проект")
             return
         
-        file_path, _ = QFileDialog.getOpenFileName(
-            self.main_window,
-            "Выберите файл решения о бюджете",
-            "",
-            "Word Documents (*.docx *.doc);;All Files (*)"
-        )
-        
-        if file_path:
-            try:
-                result = self.main_window.controller.parse_solution_document(file_path)
-                if result:
-                    QMessageBox.information(
-                        self.main_window,
-                        "Успех",
-                        f"Решение обработано:\n"
-                        f"Доходов: {len(result.get('приложение1', []))}\n"
-                        f"Расходов (общие): {len(result.get('приложение2', []))}\n"
-                        f"Расходов (по ГРБС): {len(result.get('приложение3', []))}"
-                    )
-                else:
-                    QMessageBox.warning(self.main_window, "Ошибка", "Не удалось обработать решение")
-            except Exception as e:
-                logger.error(f"Ошибка обработки решения: {e}", exc_info=True)
-                QMessageBox.critical(
-                    self.main_window, 
-                    "Ошибка", 
-                    f"Ошибка обработки решения:\n{str(e)}"
-                )
+        # Используем новый диалог для загрузки решений
+        dialog = SolutionLoadDialog(self.main_window)
+        dialog.exec_()

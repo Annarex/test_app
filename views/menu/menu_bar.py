@@ -140,6 +140,12 @@ class MenuBar:
         config_dicts_action.triggered.connect(self.main_window.show_config_dictionaries)
         reference_menu.addAction(config_dicts_action)
         
+        manage_refs_action = QAction("&Управление справочниками...", self.main_window)
+        manage_refs_action.setIcon(self.main_window.style().standardIcon(QStyle.SP_FileDialogListView))
+        manage_refs_action.setStatusTip("Управление справочниками (коды доходов, расходов, ГРБС и т.д.)")
+        manage_refs_action.triggered.connect(self.main_window.show_references_management)
+        reference_menu.addAction(manage_refs_action)
+        
         # ========== Меню "Вид" ==========
         view_menu = menubar.addMenu("&Вид")
         

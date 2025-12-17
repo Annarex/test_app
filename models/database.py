@@ -458,6 +458,28 @@ class DatabaseManager:
                 )
             ''')
 
+            # Миграции: добавляем поля для компонентов кодов
+            # Для solution_income_data - компоненты кода доходов
+            for col_name, col_type in [
+                ('код_ГАДБ', 'VARCHAR(3)'),
+                ('код_группы_ДБ', 'VARCHAR(1)'),
+                ('код_подгруппы_ДБ', 'VARCHAR(2)'),
+                ('код_статьи_подстатьи_ДБ', 'VARCHAR(5)'),
+                ('код_элемента_ДБ', 'VARCHAR(2)'),
+                ('код_группы_ПДБ', 'VARCHAR(4)'),
+                ('код_группы_АПДБ', 'VARCHAR(3)')
+            ]:
+                try:
+                    cursor.execute(f'ALTER TABLE solution_income_data ADD COLUMN {col_name} {col_type}')
+                except sqlite3.OperationalError:
+                    pass  # Колонка уже существует
+            
+            # Для solution_expense_data - поле ГРБС
+            try:
+                cursor.execute('ALTER TABLE solution_expense_data ADD COLUMN ГРБС VARCHAR(3)')
+            except sqlite3.OperationalError:
+                pass  # Колонка уже существует
+
             # Первичное заполнение справочников (если они пустые)
             self._seed_config_dictionaries(cursor)
 
@@ -2062,6 +2084,32 @@ class DatabaseManager:
             '''
             df = pd.read_sql_query(query, conn)
         return df
+    
+    def load_income_levels_df(self) -> pd.DataFrame:
+        """
+        Загрузка справочника уровней доходов как DataFrame.
+        
+        Использует таблицу ref_income_levels, если она существует.
+        Возвращает пустой DataFrame, если таблица не найдена.
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='ref_income_levels'"
+            )
+            if not cursor.fetchone():
+                # Справочник уровней доходов ещё не загружен/не создан
+                return pd.DataFrame()
+
+            query = '''
+                SELECT
+                    код_уровня AS код_уровня,
+                    наименование AS наименование,
+                    цвет AS цвет
+                FROM ref_income_levels
+            '''
+            df = pd.read_sql_query(query, conn)
+        return df
 
     # ----- Нормализованные данные форм (values) -----
 
@@ -2961,3 +3009,8 @@ class DatabaseManager:
             column_mapping={'код_вида_МО': 'код_вида_МО', 'наименование': 'наименование'},
             primary_key_column='код_вида_МО'
         )
+    
+    # Примечание: Методы load_income_codes_from_excel и load_expense_codes_from_excel удалены,
+    # так как справочники кодов доходов и расходов уже загружаются через существующий механизм:
+    # - income_reference_records загружается через ReferenceController.load_reference_file('доходы', ...)
+    # - ref_expense_codes используется через load_expense_reference_df() и загружается отдельно
