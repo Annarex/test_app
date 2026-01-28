@@ -75,38 +75,7 @@ class TreeBuilder:
                     tree_widget.topLevelItem(i).setExpanded(True)
                 except:
                     pass
-            
-            # Обновляем размеры столбцов после загрузки данных
-            if items_created > 0:
-                header = tree_widget.header()
-                # Обновляем размеры столбцов
-                for idx in range(tree_widget.columnCount()):
-                    if not tree_widget.isColumnHidden(idx):
-                        if idx == 0:  # Столбец "Наименование" - устанавливаем ширину с учетом отступов дерева
-                            # Получаем отступы дерева и добавляем запас
-                            indentation = tree_widget.indentation()
-                            # Добавляем запас на отступы (примерно 6 уровней * отступ + небольшой запас)
-                            indent_reserve = indentation * 6 + 50  # Запас на отступы и дополнительные элементы
-                            header.resizeSection(idx, 400 + indent_reserve)
-                        elif idx == 1:  # Столбец "Код строки" - устанавливаем фиксированную ширину 80px
-                            header.setSectionResizeMode(idx, QHeaderView.Fixed)
-                            header.resizeSection(idx, 80)
-                        elif idx == 2:  # Столбец "Код классификации" - устанавливаем фиксированную ширину 200px
-                            header.resizeSection(idx, 200)
-                        elif idx == 3:  # Столбец "Уровень" - устанавливаем фиксированную ширину 50px
-                            header.setSectionResizeMode(idx, QHeaderView.Fixed)
-                            header.resizeSection(idx, 50)
-                        else:
-                            # Остальные столбцы - фиксированная ширина 150px
-                            header.setSectionResizeMode(idx, QHeaderView.Fixed)
-                            header.resizeSection(idx, 150)
-                # Обновляем высоту заголовка
-                from PyQt5.QtCore import QTimer
-                if hasattr(self.main_window, 'tree_config'):
-                    QTimer.singleShot(100, lambda tw=tree_widget: self.main_window.tree_config._update_tree_header_height(tw))
-                elif hasattr(self.main_window, '_update_tree_header_height'):
-                    QTimer.singleShot(100, lambda tw=tree_widget: self.main_window._update_tree_header_height(tw))
-            
+
             if items_created > 0 and tree_widget == self.main_window.data_tree:
                 msg = f"Построено дерево: {items_created} элементов"
                 if items_failed > 0:
@@ -133,20 +102,34 @@ class TreeBuilder:
                 column_count = 1
             
             tree_item = QTreeWidgetItem([""] * column_count)
-            
+
+            # Маппинг «исходный индекс столбца -> индекс в дереве» (учёт скрытых столбцов)
+            visible_columns = getattr(self.main_window, 'tree_visible_columns', None)
+            if not visible_columns or len(visible_columns) != column_count:
+                visible_columns = list(range(column_count))
+            source_to_proxy = {src: idx for idx, src in enumerate(visible_columns)}
+
             # Основные данные
             name = str(item.get('наименование_показателя', ''))
             code_line = str(item.get('код_строки', ''))
             class_code = str(item.get('код_классификации_форматированный', item.get('код_классификации', '')))
 
-            if column_count > 0:
-                tree_item.setText(0, name)
-            if column_count > 1:
-                tree_item.setText(1, code_line)
-            if column_count > 2:
-                tree_item.setText(2, class_code)
-            if column_count > 3:
-                tree_item.setText(3, str(level))
+            # 0: Наименование
+            if 0 in source_to_proxy:
+                col_idx = source_to_proxy[0]
+                tree_item.setText(col_idx, name)
+            # 1: Код строки
+            if 1 in source_to_proxy:
+                col_idx = source_to_proxy[1]
+                tree_item.setText(col_idx, code_line)
+            # 2: Код классификации
+            if 2 in source_to_proxy:
+                col_idx = source_to_proxy[2]
+                tree_item.setText(col_idx, class_code)
+            # 3: Уровень
+            if 3 in source_to_proxy:
+                col_idx = source_to_proxy[3]
+                tree_item.setText(col_idx, str(level))
 
             # Получаем mapping из main_window
             mapping = getattr(self.main_window, 'tree_column_mapping', {})
@@ -176,13 +159,17 @@ class TreeBuilder:
                             else:
                                 approved_value = f"{original_approved} ({calculated_approved})"
                             # Выделяем красным цветом
-                            if approved_start + idx < column_count:
-                                tree_item.setText(approved_start + idx, approved_value)
-                                tree_item.setForeground(approved_start + idx, QBrush(error_color))
+                            src_col = approved_start + idx
+                            proxy_col = source_to_proxy.get(src_col)
+                            if proxy_col is not None:
+                                tree_item.setText(proxy_col, approved_value)
+                                tree_item.setForeground(proxy_col, QBrush(error_color))
                         else:
                             approved_value = self.format_budget_value(original_approved)
-                            if approved_start + idx < column_count:
-                                tree_item.setText(approved_start + idx, approved_value)
+                            src_col = approved_start + idx
+                            proxy_col = source_to_proxy.get(src_col)
+                            if proxy_col is not None:
+                                tree_item.setText(proxy_col, approved_value)
                         
                         # Исполненные значения
                         original_executed = executed_data.get(col, 0) or 0
@@ -196,13 +183,17 @@ class TreeBuilder:
                             else:
                                 executed_value = f"{original_executed} ({calculated_executed})"
                             # Выделяем красным цветом
-                            if executed_start + idx < column_count:
-                                tree_item.setText(executed_start + idx, executed_value)
-                                tree_item.setForeground(executed_start + idx, QBrush(error_color))
+                            src_col = executed_start + idx
+                            proxy_col = source_to_proxy.get(src_col)
+                            if proxy_col is not None:
+                                tree_item.setText(proxy_col, executed_value)
+                                tree_item.setForeground(proxy_col, QBrush(error_color))
                         else:
                             executed_value = self.format_budget_value(original_executed)
-                            if executed_start + idx < column_count:
-                                tree_item.setText(executed_start + idx, executed_value)
+                            src_col = executed_start + idx
+                            proxy_col = source_to_proxy.get(src_col)
+                            if proxy_col is not None:
+                                tree_item.setText(proxy_col, executed_value)
                     except Exception as e:
                         logger.warning(f"Ошибка обработки несоответствий для колонки {col}: {e}", exc_info=True)
                         pass
@@ -244,39 +235,43 @@ class TreeBuilder:
                             else:
                                 display_value = f"{original_value} ({calculated_value})"
                             # Выделяем красным цветом
-                            if value_start + idx < column_count:
-                                tree_item.setText(value_start + idx, display_value)
-                                tree_item.setForeground(value_start + idx, QBrush(error_color))
+                            src_col = value_start + idx
+                            proxy_col = source_to_proxy.get(src_col)
+                            if proxy_col is not None:
+                                tree_item.setText(proxy_col, display_value)
+                                tree_item.setForeground(proxy_col, QBrush(error_color))
                         else:
                             # Обычное отображение без несоответствий
-                            if value_start + idx < column_count:
-                                tree_item.setText(value_start + idx, self.format_budget_value(original_value))
+                            src_col = value_start + idx
+                            proxy_col = source_to_proxy.get(src_col)
+                            if proxy_col is not None:
+                                tree_item.setText(proxy_col, self.format_budget_value(original_value))
                     except Exception as e:
                         logger.warning(f"Ошибка обработки несоответствий для консолидируемых расчетов, колонка {col}: {e}", exc_info=True)
                         pass
             
-            # Устанавливаем цвет фона для всех столбцов
+            # Устанавливаем цвет фона для всех видимых столбцов
             try:
                 if level in level_colors:
                     color = QColor(level_colors[level])
                     brush = QBrush(color)
-                    # Применяем цвет ко всем столбцам
-                    for i in range(column_count):
-                        tree_item.setBackground(i, brush)
+                    for proxy_col in range(column_count):
+                        tree_item.setBackground(proxy_col, brush)
             except Exception as e:
                 logger.warning(f"Ошибка установки цвета фона для уровня {level}: {e}", exc_info=True)
                 pass
             
-            # Устанавливаем подсказки (колонка -> заголовок)
+            # Устанавливаем подсказки (колонка -> заголовок) с учетом видимых столбцов
             try:
                 tree_header_tooltips = getattr(self.main_window, 'tree_header_tooltips', [])
-                for idx, tip in enumerate(tree_header_tooltips):
-                    if idx < tree_item.columnCount() and idx < len(tree_header_tooltips):
-                        current_text = tree_item.text(idx)
+                for proxy_col, src_col in enumerate(visible_columns):
+                    if 0 <= src_col < len(tree_header_tooltips):
+                        tip = tree_header_tooltips[src_col]
+                        current_text = tree_item.text(proxy_col)
                         if current_text:
-                            tree_item.setToolTip(idx, f"{tip}: {current_text}")
+                            tree_item.setToolTip(proxy_col, f"{tip}: {current_text}")
                         else:
-                            tree_item.setToolTip(idx, tip)
+                            tree_item.setToolTip(proxy_col, tip)
             except:
                 pass
 
@@ -386,16 +381,7 @@ class TreeBuilder:
                     
                     # Строим дерево для всех виджетов (в главном окне и открепленных)
                     for tree_widget in tree_widgets:
-                        # Сначала настраиваем заголовки, чтобы кастомный заголовок был установлен
-                        if hasattr(self.main_window, 'tree_config'):
-                            self.main_window.tree_config._configure_tree_headers_for_widget(
-                                tree_widget, self.main_window.current_section
-                            )
-                        elif hasattr(self.main_window, '_configure_tree_headers_for_widget'):
-                            self.main_window._configure_tree_headers_for_widget(
-                                tree_widget, self.main_window.current_section
-                            )
-                        # Затем загружаем данные
+                        # Заголовки уже настроены в configure_tree_headers с учетом видимых столбцов
                         self.build_tree_from_data(data, tree_widget)
                     
                     # Обновляем высоту заголовка после загрузки данных
@@ -416,9 +402,6 @@ class TreeBuilder:
                         self.main_window.load_errors_to_tab(project.data)
                     
                     # Применяем скрытие нулевых столбцов, если чекбокс включен
-                    if hasattr(self.main_window, 'hide_zero_columns_checkbox') and self.main_window.hide_zero_columns_checkbox.isChecked():
-                        from PyQt5.QtCore import QTimer
-                        QTimer.singleShot(150, lambda: self.main_window.apply_hide_zero_columns())
                     self.main_window.status_bar.showMessage(f"Загружено {len(data)} записей в разделе '{self.main_window.current_section}'")
                 else:
                     self.main_window.status_bar.showMessage(f"В разделе '{self.main_window.current_section}' нет данных для отображения")

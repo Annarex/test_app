@@ -207,6 +207,13 @@ class WordWrapItemDelegate(QStyledItemDelegate):
         if not index.isValid():
             return
         
+        # Для эксперимента: проверяем, скрыт ли столбец, и закрашиваем его черным
+        column = index.column()
+        widget = option.widget
+        if widget and hasattr(widget, 'isColumnHidden'):
+            if widget.isColumnHidden(column):
+                return
+        
         # Настраиваем опции отрисовки (нужно сделать до проверки текста)
         option = option.__class__(option)
         self.initStyleOption(option, index)

@@ -1,0 +1,433 @@
+/* Общие стили для диалогов и виджетов приложения */
+
+QMainWindow {
+    background-color: #f5f5f5;
+}
+
+QDialog {
+    background-color: #f5f5f5;
+}
+
+/* ============================================================================
+   БАЗОВЫЕ СТИЛИ КНОПОК
+   ============================================================================ */
+
+QPushButton {
+    background-color: #D6D4D4;
+    color: #464646;
+    padding: 3px 16px;
+    border-radius: 4px;
+    font-weight: bold;
+    min-height: 20px;
+}
+
+QPushButton:hover {
+    background-color: #E4E2E2;
+}
+
+QPushButton:pressed {
+    background-color: #E2DDDD;
+}
+
+/* Кнопки в таблицах - компактные */
+QTableWidget QPushButton {
+    min-height: 20px;
+    max-height: 28px;
+    padding: 3px 8px;
+}
+
+QTextEdit {
+    background-color: #ffffff;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    padding: 5px;
+}
+
+/* Стили для текстовых полей в формах (более светлый фон) */
+QTextEdit#formTextEdit {
+    background-color: #f9f9f9;
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+    padding: 8px;
+    font-size: 9pt;
+    max-width: 500px;
+}
+
+QFrame {
+    background-color: #ffffff;
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+}
+
+QFormLayout QLabel {
+    border: none;
+    color: #555555;
+    padding: 5px 0px;
+    background-color: transparent;
+}
+
+/* Убираем обводку у всех QLabel в диалогах */
+QDialog QLabel {
+    border: none;
+    background-color: transparent;
+}
+
+QLineEdit {
+    background-color: #ffffff;
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+    padding: 4px;
+    min-height: 12px;
+}
+
+QLineEdit:focus {
+    border: 1px solid #9e9e9e;
+}
+
+QListWidget {
+    background-color: #ffffff;
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+}
+
+QListWidget::item {
+    padding: 5px;
+}
+
+QListWidget::item:selected {
+    background-color: #9e9e9e;
+    color: white;
+}
+
+QListWidget::item:hover {
+    background-color: #e3f2fd;
+}
+
+QTableWidget {
+    background-color: #ffffff;
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+    gridline-color: #e0e0e0;
+}
+
+QTableWidget::item {
+    padding: 4px;
+    min-height: 12px;
+}
+
+/* Ячейки таблицы с кнопками - без ограничений по высоте */
+QTableWidget::item:has-child(QPushButton) {
+    min-height: 0px;
+}
+
+QTableWidget::item:selected {
+    background-color: #9e9e9e;
+    color: white;
+}
+
+/* Стили для редакторов ячеек таблиц */
+QTableWidget QLineEdit,
+QTableWidget QTextEdit {
+    padding: 4px;
+    min-height: 12px;
+    border: 2px solid #9e9e9e;
+}
+
+QHeaderView::section {
+    background-color: #fafafa;
+    border: 1px solid #e0e0e0;
+    padding: 5px;
+    font-weight: bold;
+}
+
+QTabWidget::pane {
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+    background-color: #ffffff;
+}
+
+QTabBar {
+    qproperty-drawBase: 0;
+}
+
+QTabBar::tab {
+    background-color: #e0e0e0;
+    color: #888888;
+    padding: 4px 8px;
+    border-top-left-radius: 4px;
+    border-top-right-radius: 4px;
+    margin-right: 2px;
+}
+
+QTabBar::tab:selected {
+    background-color: #ffffff;
+    color: #333333;
+    font-weight: bold;
+    padding: 6px 12px;
+    border: 1px solid #e0e0e0;
+    border-bottom: 2px solid #9e9e9e;
+}
+
+QTabBar::tab:hover {
+    background-color: #f0f0f0;
+    color: #666666;
+}
+
+QScrollArea {
+    border: none;
+    background-color: transparent;
+}
+
+QScrollBar:vertical {
+    background-color: #e0e0e0;
+    width: 12px;
+    border-radius: 6px;
+}
+
+QScrollBar::handle:vertical {
+    background-color: #bdbdbd;
+    border-radius: 6px;
+    min-height: 30px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background-color: #9e9e9e;
+}
+
+QScrollBar:horizontal {
+    background-color: #e0e0e0;
+    height: 12px;
+    border-radius: 6px;
+}
+
+QScrollBar::handle:horizontal {
+    background-color: #bdbdbd;
+    border-radius: 6px;
+    min-width: 30px;
+}
+
+QScrollBar::handle:horizontal:hover {
+    background-color: #9e9e9e;
+}
+
+QLabel {
+    color: #555555;
+    border: none;
+    background-color: transparent;
+}
+
+/* Стили для QFrame */
+QFrame#headerFrame {
+    border-radius: 6px;
+    padding: 10px;
+}
+
+QFrame#formFrame {
+    background-color: white;
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+}
+
+QFrame#separator {
+    color: #e0e0e0;
+}
+
+/* ============================================================================
+   СТИЛИ КНОПОК С ID (специфичные типы кнопок)
+   ============================================================================ */
+
+/* Основная кнопка */
+QPushButton#buttonPrimary {
+    background-color: rgb(237, 243, 237);;
+    color: black;
+    padding: 3px 10px;
+    border-radius: 3px;
+    min-width: 80px;
+    min-height: 20px;
+    max-height: 28px;
+}
+
+QPushButton#buttonPrimary:hover {
+    background-color: rgb(233, 245, 233);;
+}
+
+QPushButton#buttonPrimary:disabled {
+    background-color: #cccccc;
+}
+
+/* Кнопка успеха (зеленая) */
+QPushButton#buttonSuccess {
+    background-color: #4CAF50;
+    color: white;
+    padding: 3px 12px;
+    border-radius: 3px;
+    min-width: 80px;
+}
+
+QPushButton#buttonSuccess:hover {
+    background-color: #45a049;
+}
+
+QPushButton#buttonSuccess:disabled {
+    background-color: #cccccc;
+}
+
+/* Кнопка загрузки (светло-зеленая) */
+QPushButton#buttonLoading {
+    background-color: #81C784;
+    color: white;
+    padding: 3px 12px;
+    border-radius: 3px;
+    min-width: 80px;
+}
+
+QPushButton#buttonLoading:hover {
+    background-color: #66BB6A;
+}
+
+QPushButton#buttonLoading:disabled {
+    background-color: #cccccc;
+}
+
+/* Кнопка успеха большая */
+QPushButton#buttonSuccessLarge {
+    background-color: #4CAF50;
+    color: white;
+    font-weight: bold;
+    padding: 8px;
+    border-radius: 4px;
+}
+
+QPushButton#buttonSuccessLarge:hover {
+    background-color: #45a049;
+}
+
+QPushButton#buttonSuccessLarge:disabled {
+    background-color: #cccccc;
+}
+
+/* Кнопка опасности (красная) */
+QPushButton#buttonDanger {
+    background-color: #f44336;
+    color: white;
+    padding: 3px 10px;
+    border-radius: 3px;
+    min-width: 80px;
+    min-height: 20px;
+    max-height: 28px;
+}
+
+QPushButton#buttonDanger:hover {
+    background-color: #d32f2f;
+}
+
+QPushButton#buttonDanger:disabled {
+    background-color: #cccccc;
+}
+
+/* Кнопка предупреждения (оранжевая) */
+QPushButton#buttonWarning {
+    background-color: #ff9800;
+    color: white;
+    padding: 4px 12px;
+    border-radius: 3px;
+    min-width: 80px;
+}
+
+QPushButton#buttonWarning:hover {
+    background-color: #f57c00;
+}
+
+QPushButton#buttonWarning:disabled {
+    background-color: #cccccc;
+}
+
+/* Компактные кнопки - тоньше обычных */
+QPushButton#compactButton {
+    padding: 3px 8px;
+    min-height: 20px;
+    max-height: 24px;
+    font-size: 11px;
+}
+
+QPushButton#compactButton:hover {
+    background-color: #8e8e8e;
+}
+
+QPushButton#compactButton:pressed {
+    background-color: #7e7e7e;
+}
+
+QPushButton#compactButton:disabled {
+    background-color: #cccccc;
+}
+
+/* Кнопки пагинации - компактные с иконками */
+QPushButton#paginationButton {
+    padding: 2px 4px;
+    color: white;
+    text-decoration: none;
+    min-width: 20px;
+}
+
+/* Стили для прогресс-бара */
+QProgressBar#progressBarPrimary {
+    border: 1px solid rgb(237, 243, 237);
+    border-radius: 3px;
+    text-align: center;
+    background-color: #E3F2FD;
+    color: #1976D2;
+    font-weight: bold;
+    padding: 2px;
+    min-width: 80px;
+}
+
+QProgressBar#progressBarPrimary::chunk {
+    background-color:rgb(237, 243, 237);
+    border-radius: 2px;
+}
+
+/* Прогресс-бар загрузки (светло-зеленый) */
+QProgressBar#progressBarLoading {
+    border: 1px solid #81C784;
+    border-radius: 3px;
+    text-align: center;
+    background-color: #E8F5E9;
+    color: #2E7D32;
+    font-weight: bold;
+    padding: 2px;
+    min-width: 80px;
+}
+
+QProgressBar#progressBarLoading::chunk {
+    background-color: #81C784;
+    border-radius: 2px;
+}
+
+/* Кнопки пагинации - компактные с иконками */
+QPushButton#paginationButton {
+    padding: 2px 4px;
+    color: white;
+    text-decoration: none;
+    min-width: 20px;
+}
+
+/* Компактные кнопки - тоньше обычных */
+QPushButton#compactButton {
+    padding: 3px 8px;
+    min-height: 20px;
+    max-height: 24px;
+    font-size: 11px;
+}
+
+QPushButton#compactButton:hover {
+    background-color: #8e8e8e;
+}
+
+QPushButton#compactButton:pressed {
+    background-color: #7e7e7e;
+}
+
+QPushButton#compactButton:disabled {
+    background-color: #cccccc;
+}

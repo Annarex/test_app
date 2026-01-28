@@ -1,6 +1,6 @@
 """Кастомные заголовки для таблиц"""
 from PyQt5.QtWidgets import QHeaderView, QStyleOptionHeader
-from PyQt5.QtCore import Qt, QRect
+from PyQt5.QtCore import Qt, QRect, QTimer
 from PyQt5.QtGui import QTextDocument, QTextOption, QPainter
 
 
@@ -12,9 +12,69 @@ class WrapHeaderView(QHeaderView):
         self.setTextElideMode(Qt.ElideNone)
         self._header_texts = {}  # Кэш текстов заголовков
     
+    def moveSection(self, fromVisualIndex: int, toVisualIndex: int):
+        """После перемещения секции принудительно задаём скрытым столбцам ширину 0."""
+        super().moveSection(fromVisualIndex, toVisualIndex)
+        self._enforce_hidden_sections_zero_width()
+        QTimer.singleShot(0, self._enforce_hidden_sections_zero_width)
+        QTimer.singleShot(50, self._enforce_hidden_sections_zero_width)
+    
+    def _enforce_hidden_sections_zero_width(self):
+        """Для всех скрытых секций: режим Fixed и ширина 0. Временно разрешаем min=0."""
+        old_min = self.minimumSectionSize()
+        self.setMinimumSectionSize(0)
+        tree = self.parent()
+        try:
+            for i in range(self.count()):
+                if self.isSectionHidden(i):
+                    self.setSectionResizeMode(i, QHeaderView.Fixed)
+                    self.resizeSection(i, 1)
+                    self.resizeSection(i, 0)
+            if tree is not None and hasattr(tree, 'setColumnWidth'):
+                for i in range(self.count()):
+                    if self.isSectionHidden(i):
+                        tree.setColumnWidth(i, 1)
+                        tree.setColumnWidth(i, 0)
+        finally:
+            self.setMinimumSectionSize(max(old_min, 1) if old_min > 0 else 1)
+        self.updateGeometries()
+        if tree is not None:
+            if hasattr(tree, 'viewport'):
+                tree.viewport().update()
+            if hasattr(tree, 'updateGeometry'):
+                tree.updateGeometry()
+            if hasattr(tree, 'doItemsLayout'):
+                tree.doItemsLayout()
+    
     def setHeaderTexts(self, texts):
         """Устанавливает тексты заголовков для кэширования"""
         self._header_texts = texts
+    
+    def sectionSize(self, logicalIndex):
+        """Переопределяем размер секции - возвращаем 0 для скрытых столбцов"""
+        if self.isSectionHidden(logicalIndex):
+            # Принудительно возвращаем 0 для скрытых столбцов
+            # Даже если базовый метод возвращает другое значение
+            return 0
+        size = super().sectionSize(logicalIndex)
+        # Дополнительная проверка: если размер > 0, но столбец скрыт, возвращаем 0
+        if size > 0 and self.isSectionHidden(logicalIndex):
+            return 0
+        return size
+    
+    def sectionPosition(self, logicalIndex):
+        """Переопределяем позицию секции - пропускаем скрытые столбцы при вычислении позиций"""
+        # Вычисляем позицию, суммируя размеры всех видимых столбцов перед данным индексом
+        # Используем self.sectionSize() чтобы учитывать наши переопределения (возврат 0 для скрытых)
+        pos = 0
+        for i in range(logicalIndex):
+            pos += self.sectionSize(i)  # Используем self, а не super, чтобы учитывать переопределения
+        return pos
+    
+    def sectionViewportPosition(self, logicalIndex):
+        """Переопределяем позицию секции во viewport - пропускаем скрытые столбцы"""
+        # Позиция во viewport = позиция в контенте минус смещение прокрутки
+        return self.sectionPosition(logicalIndex) - self.offset()
     
     def paintSection(self, painter, rect, logicalIndex):
         """Переопределяем отрисовку секции заголовка с поддержкой переноса текста"""
@@ -84,8 +144,12 @@ class WrapHeaderView(QHeaderView):
         painter.restore()
     
     def sizeHint(self):
-        """Возвращаем размер заголовка с учетом переноса текста"""
+        """Возвращаем размер заголовка с учетом переноса текста и только видимых столбцов."""
         size = super().sizeHint()
+        # Ширина = сумма только видимых (sectionSize для скрытых у нас 0)
+        if self.orientation() == Qt.Horizontal:
+            w = sum(self.sectionSize(i) for i in range(self.count()))
+            size.setWidth(w)
         
         # Вычисляем максимальную высоту с учетом переноса текста
         max_height = 0

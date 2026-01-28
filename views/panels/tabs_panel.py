@@ -1,12 +1,14 @@
 """Панель вкладок"""
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
                              QComboBox, QLabel, QCheckBox, QPushButton, QToolButton,
-                             QTextEdit, QTableWidget, QHeaderView, QMenu)
+                             QTextEdit, QTableWidget, QHeaderView, QMenu, QAction)
 from PyQt5.QtCore import Qt, QSize
-from PyQt5.QtGui import QFont
+from PyQt5.QtGui import QFont, QFontMetrics
 from PyQt5.QtWidgets import QStyle
 from views.excel_viewer import ExcelViewer
 from views.widgets import WordWrapItemDelegate
+from views.column_visibility_dialog import ColumnVisibilityDialog
+from styles.styles import set_tab_bar_min_width
 
 
 class TabsPanel:
@@ -76,11 +78,6 @@ class TabsPanel:
         tree_control_layout.addWidget(self.data_type_combo)
         
         # Чекбокс для скрытия нулевых столбцов
-        self.hide_zero_columns_checkbox = QCheckBox("Скрыть нулевые столбцы")
-        self.hide_zero_columns_checkbox.setToolTip("Скрыть столбцы, где в итоговой строке оба значения (утвержденный и исполненный) равны 0")
-        self.hide_zero_columns_checkbox.stateChanged.connect(self.main_window.on_hide_zero_columns_changed)
-        tree_control_layout.addWidget(self.hide_zero_columns_checkbox)
-        
         # Панель инструментов для ревизии (активна только при выбранной ревизии)
         self.revision_toolbar = QHBoxLayout()
         self.revision_toolbar.setSpacing(5)
@@ -101,14 +98,6 @@ class TabsPanel:
         self.export_calculated_btn.clicked.connect(self.main_window.export_calculated_table)
         self.revision_toolbar.addWidget(self.export_calculated_btn)
         
-        # Кнопка показа ошибок расчетов
-        self.show_errors_btn = QPushButton("Ошибки расчетов")
-        self.show_errors_btn.setIcon(self.main_window.style().standardIcon(QStyle.SP_MessageBoxWarning))
-        self.show_errors_btn.setToolTip("Показать ошибки расчетов")
-        self.show_errors_btn.setEnabled(False)
-        self.show_errors_btn.clicked.connect(self.main_window.show_calculation_errors)
-        self.revision_toolbar.addWidget(self.show_errors_btn)
-        
         # Кнопка открытия файла
         self.open_file_btn = QPushButton("Открыть файл")
         self.open_file_btn.setIcon(self.main_window.style().standardIcon(QStyle.SP_DirOpenIcon))
@@ -124,34 +113,6 @@ class TabsPanel:
         self.open_last_file_btn.setEnabled(False)
         self.open_last_file_btn.clicked.connect(self.main_window.open_last_exported_file)
         self.revision_toolbar.addWidget(self.open_last_file_btn)
-        
-        # Меню документов
-        self.documents_menu_btn = QPushButton("Документы ▼")
-        self.documents_menu_btn.setIcon(self.main_window.style().standardIcon(QStyle.SP_FileDialogNewFolder))
-        self.documents_menu_btn.setToolTip("Формирование документов")
-        self.documents_menu_btn.setEnabled(False)
-        self.documents_menu_btn.setMenu(QMenu(self.main_window))
-        documents_menu = self.documents_menu_btn.menu()
-        
-        from PyQt5.QtWidgets import QAction
-        generate_conclusion_action = QAction("Сформировать заключение...", self.main_window)
-        generate_conclusion_action.setIcon(self.main_window.style().standardIcon(QStyle.SP_FileDialogNewFolder))
-        generate_conclusion_action.triggered.connect(self.main_window.show_document_dialog)
-        documents_menu.addAction(generate_conclusion_action)
-        
-        generate_letters_action = QAction("Сформировать письма...", self.main_window)
-        generate_letters_action.setIcon(self.main_window.style().standardIcon(QStyle.SP_FileDialogNewFolder))
-        generate_letters_action.triggered.connect(self.main_window.show_document_dialog)
-        documents_menu.addAction(generate_letters_action)
-        
-        documents_menu.addSeparator()
-        
-        parse_solution_action = QAction("Обработать решение о бюджете...", self.main_window)
-        parse_solution_action.setIcon(self.main_window.style().standardIcon(QStyle.SP_DialogOpenButton))
-        parse_solution_action.triggered.connect(self.main_window.parse_solution_document)
-        documents_menu.addAction(parse_solution_action)
-        
-        self.revision_toolbar.addWidget(self.documents_menu_btn)
         
         tree_control_layout.addLayout(self.revision_toolbar)
         tree_layout.addLayout(tree_control_layout)
@@ -175,6 +136,8 @@ class TabsPanel:
         # Обработчики выделения
         self.data_tree.itemSelectionChanged.connect(self.main_window.on_tree_selection_changed)
         self.data_tree.itemClicked.connect(self.main_window.on_tree_item_clicked)
+        # Обработчик двойного клика для открытия детальной информации
+        self.data_tree.itemDoubleClicked.connect(self.main_window.on_tree_item_double_clicked)
 
         # Контекстное меню по заголовкам дерева (управление столбцами)
         header = self.data_tree.header()
@@ -188,16 +151,13 @@ class TabsPanel:
         self.main_window.data_tree = self.data_tree
         self.main_window.section_combo = self.section_combo
         self.main_window.data_type_combo = self.data_type_combo
-        self.main_window.hide_zero_columns_checkbox = self.hide_zero_columns_checkbox
         self.main_window.expand_all_btn = self.expand_all_btn
         self.main_window.collapse_all_btn = self.collapse_all_btn
         self.main_window.revision_toolbar = self.revision_toolbar
         self.main_window.recalculate_btn = self.recalculate_btn
         self.main_window.export_calculated_btn = self.export_calculated_btn
-        self.main_window.show_errors_btn = self.show_errors_btn
         self.main_window.open_file_btn = self.open_file_btn
         self.main_window.open_last_file_btn = self.open_last_file_btn
-        self.main_window.documents_menu_btn = self.documents_menu_btn
         
         tabs.addTab(self.tree_tab, "Древовидные данные")
         
@@ -275,6 +235,10 @@ class TabsPanel:
         self.errors_table.setAlternatingRowColors(True)
         self.errors_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.errors_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        # Контекстное меню для заголовков таблицы ошибок
+        errors_header = self.errors_table.horizontalHeader()
+        errors_header.setContextMenuPolicy(Qt.CustomContextMenu)
+        errors_header.customContextMenuRequested.connect(self.show_errors_table_header_context_menu)
         
         errors_layout.addWidget(self.errors_table)
         
@@ -308,4 +272,60 @@ class TabsPanel:
         self.main_window.excel_viewer = self.excel_viewer
         tabs.addTab(self.excel_viewer, "Просмотр формы")
         
+        # Настраиваем табы для предотвращения обрезания текста
+        tabs.tabBar().setUsesScrollButtons(True)
+        tabs.tabBar().setElideMode(Qt.ElideNone)
+        
+        # Вычисляем минимальную ширину на основе самого длинного текста вкладки с учетом жирного шрифта
+        max_bold_width = 0
+        for i in range(tabs.count()):
+            tab_text = tabs.tabText(i)
+            if tab_text:
+                # Получаем метрики шрифта для жирного текста (выделенные вкладки)
+                bold_font = tabs.tabBar().font()
+                bold_font.setBold(True)
+                bold_font_metrics = QFontMetrics(bold_font)
+                
+                # Вычисляем ширину текста для жирного шрифта
+                try:
+                    bold_width = bold_font_metrics.horizontalAdvance(tab_text)
+                except AttributeError:
+                    # Для старых версий PyQt5 используем width()
+                    bold_width = bold_font_metrics.width(tab_text)
+                
+                # Находим максимальную ширину
+                if bold_width > max_bold_width:
+                    max_bold_width = bold_width
+        
+        # Устанавливаем минимальную ширину для всех вкладок через CSS
+        # Добавляем padding (20px с каждой стороны для выделенных вкладок)
+        if max_bold_width > 0:
+            min_width = max_bold_width + 10
+            # Применяем стиль к QTabBar
+            set_tab_bar_min_width(tabs.tabBar(), min_width)
+        
         return tabs
+    
+    def show_errors_table_header_context_menu(self, position):
+        """Показать контекстное меню для заголовков таблицы ошибок"""
+        try:
+            header = self.errors_table.horizontalHeader()
+            column = header.logicalIndexAt(position.x())
+            
+            menu = QMenu(self.main_window)
+            action = menu.addAction("Выбрать столбцы...")
+            action.triggered.connect(self.show_errors_column_visibility_dialog)
+            
+            menu.exec_(header.mapToGlobal(position))
+        except Exception as e:
+            from logger import logger
+            logger.error(f"Ошибка при показе контекстного меню заголовков таблицы ошибок: {e}", exc_info=True)
+    
+    def show_errors_column_visibility_dialog(self):
+        """Показать диалог выбора столбцов для таблицы ошибок"""
+        try:
+            dialog = ColumnVisibilityDialog(self.errors_table, self.main_window)
+            dialog.exec_()
+        except Exception as e:
+            from logger import logger
+            logger.error(f"Ошибка при открытии диалога выбора столбцов: {e}", exc_info=True)

@@ -23,16 +23,21 @@ class TabManager:
             position: Позиция клика относительно QTabWidget
         """
         # position - это позиция клика относительно QTabWidget
-        # Проверяем, что клик был именно на tabBar
+        # Проверяем, что клик был именно на tabBar, а не на содержимом вкладки
         tab_bar = self.main_window.tabs_panel.tabBar()
         tab_bar_pos = tab_bar.mapFrom(self.main_window.tabs_panel, position)
+        
+        # Проверяем, что позиция находится в пределах tabBar
+        tab_bar_rect = tab_bar.rect()
+        if not tab_bar_rect.contains(tab_bar_pos):
+            # Клик был не на tabBar, а на содержимом вкладки - не показываем меню
+            return
+        
         tab_index = tab_bar.tabAt(tab_bar_pos)
         
-        # Если не нашли вкладку по позиции, пробуем найти по текущей выбранной
+        # Если не нашли вкладку по позиции, значит клик был между вкладками или вне их
         if tab_index < 0:
-            tab_index = self.main_window.tabs_panel.currentIndex()
-            if tab_index < 0:
-                return
+            return
         
         tab_name = self.main_window.tabs_panel.tabText(tab_index)
         if not tab_name:

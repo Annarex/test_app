@@ -31,26 +31,9 @@ class ToolBar:
         
         toolbar.addSeparator()
         
-        # Отдельные действия для справочников доходов и источников
-        load_income_ref_action = QAction("Справочник доходов", self.main_window)
-        load_income_ref_action.setIcon(self.main_window.style().standardIcon(QStyle.SP_DialogOpenButton))
-        load_income_ref_action.triggered.connect(lambda: self.main_window.show_reference_dialog("доходы"))
-        toolbar.addAction(load_income_ref_action)
-        
-        load_sources_ref_action = QAction("Справочник источников", self.main_window)
-        load_sources_ref_action.setIcon(self.main_window.style().standardIcon(QStyle.SP_DialogOpenButton))
-        load_sources_ref_action.triggered.connect(lambda: self.main_window.show_reference_dialog("источники"))
-        toolbar.addAction(load_sources_ref_action)
-        
-        show_references_action = QAction("Просмотр справочников", self.main_window)
-        show_references_action.setIcon(self.main_window.style().standardIcon(QStyle.SP_FileDialogInfoView))
-        show_references_action.triggered.connect(self.main_window.show_reference_viewer)
-        toolbar.addAction(show_references_action)
-        
-        # Редактор конфигурационных справочников (годы, МО, типы форм, периоды)
-        config_dicts_action = QAction("Справочники конфигурации", self.main_window)
-        config_dicts_action.setIcon(self.main_window.style().standardIcon(QStyle.SP_FileDialogListView))
-        config_dicts_action.triggered.connect(self.main_window.show_config_dictionaries)
-        toolbar.addAction(config_dicts_action)
+        manage_refs_action = QAction("Управление справочниками", self.main_window)
+        manage_refs_action.setIcon(self.main_window.style().standardIcon(QStyle.SP_FileDialogListView))
+        manage_refs_action.triggered.connect(self.main_window.show_reference_viewer)
+        toolbar.addAction(manage_refs_action)
         
         # Кнопки управления панелью проектов размещены непосредственно на самой панели

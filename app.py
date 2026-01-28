@@ -8,32 +8,30 @@ from PyQt5.QtGui import QFont
 
 from controllers import main_controller
 from views.main_window import MainWindow
+from styles import apply_styles_to_app
 from logger import logger
 
 def setup_application():
     """Настройка приложения"""
-    # Создаем необходимые директории
-    data_dir = Path("data")
-    
-    # Настраиваем приложение
+
     app = QApplication(sys.argv)
-    
-    # Устанавливаем шрифт по умолчанию
+
     font = QFont("Arial", 10)
     app.setFont(font)
     
-    # Создаем и показываем главное окно
-    main_window = MainWindow()
-    main_window.show()
+    if not apply_styles_to_app(app):
+        logger.warning("Не удалось загрузить стили приложения")
     
+    main_window = MainWindow()
+    
+    QTimer.singleShot(10, main_window._center_window)
     return app, main_window
 
 def main():
     """Главная функция приложения"""
     try:
         app, main_window = setup_application()
-        
-        # Запускаем приложение
+        main_window.show()
         return app.exec_()
         
     except Exception as e:

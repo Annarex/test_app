@@ -103,51 +103,28 @@ class MenuBar:
         )
         project_menu.addAction(refresh_projects_action)
         
-        # ========== Меню "Данные" ==========
-        data_menu = menubar.addMenu("&Данные")
-        # (действия для раздела данных сейчас управляются непосредственно формой)
-        
         # ========== Меню "Справочники" ==========
         reference_menu = menubar.addMenu("&Справочники")
         
-        load_income_ref_action = QAction("&Загрузить справочник доходов...", self.main_window)
-        load_income_ref_action.setIcon(self.main_window.style().standardIcon(QStyle.SP_DialogOpenButton))
-        load_income_ref_action.setStatusTip("Загрузить справочник доходов")
-        load_income_ref_action.triggered.connect(lambda: self.main_window.show_reference_dialog("доходы"))
-        reference_menu.addAction(load_income_ref_action)
-        
-        load_sources_ref_action = QAction("&Загрузить справочник источников...", self.main_window)
-        load_sources_ref_action.setIcon(self.main_window.style().standardIcon(QStyle.SP_DialogOpenButton))
-        load_sources_ref_action.setStatusTip("Загрузить справочник источников финансирования")
-        load_sources_ref_action.triggered.connect(lambda: self.main_window.show_reference_dialog("источники"))
-        reference_menu.addAction(load_sources_ref_action)
-        
-        reference_menu.addSeparator()
-        
-        show_references_action = QAction("&Просмотр справочников", self.main_window)
-        show_references_action.setIcon(self.main_window.style().standardIcon(QStyle.SP_FileDialogInfoView))
-        show_references_action.setShortcut("Ctrl+R")
-        show_references_action.setStatusTip("Открыть окно просмотра справочников")
-        show_references_action.triggered.connect(self.main_window.show_reference_viewer)
-        reference_menu.addAction(show_references_action)
-        
-        reference_menu.addSeparator()
-        
-        config_dicts_action = QAction("&Справочники конфигурации...", self.main_window)
-        config_dicts_action.setIcon(self.main_window.style().standardIcon(QStyle.SP_FileDialogListView))
-        config_dicts_action.setShortcut("Ctrl+D")
-        config_dicts_action.setStatusTip("Редактировать справочники конфигурации (годы, МО, типы форм, периоды)")
-        config_dicts_action.triggered.connect(self.main_window.show_config_dictionaries)
-        reference_menu.addAction(config_dicts_action)
-        
         manage_refs_action = QAction("&Управление справочниками...", self.main_window)
         manage_refs_action.setIcon(self.main_window.style().standardIcon(QStyle.SP_FileDialogListView))
-        manage_refs_action.setStatusTip("Управление справочниками (коды доходов, расходов, ГРБС и т.д.)")
-        manage_refs_action.triggered.connect(self.main_window.show_references_management)
+        manage_refs_action.setShortcut("Ctrl+R")
+        manage_refs_action.setStatusTip("Управление справочниками (коды доходов, расходов, ГРБС, конфигурация и т.д.)")
+        manage_refs_action.triggered.connect(self.main_window.show_reference_viewer)
         reference_menu.addAction(manage_refs_action)
         
-        # ========== Меню "Вид" ==========
-        view_menu = menubar.addMenu("&Вид")
+        update_online_refs_action = QAction("&Обновить онлайн справочники...", self.main_window)
+        update_online_refs_action.setIcon(self.main_window.style().standardIcon(QStyle.SP_BrowserReload))
+        update_online_refs_action.setShortcut("Ctrl+Shift+R")
+        update_online_refs_action.setStatusTip("Обновление справочников из API бюджетной системы")
+        update_online_refs_action.triggered.connect(self.main_window.show_budget_references_update_dialog)
+        reference_menu.addAction(update_online_refs_action)
+        
+        # ========== Меню "Конфигурация" ==========
+        config_menu = menubar.addMenu("&Конфигурация")
+        
+        # Подменю "Вид"
+        view_menu = config_menu.addMenu("&Вид")
         
         toggle_projects_panel_action = QAction("&Панель проектов", self.main_window)
         toggle_projects_panel_action.setCheckable(True)
@@ -201,6 +178,15 @@ class MenuBar:
         fullscreen_action.setStatusTip("Переключить полноэкранный режим")
         fullscreen_action.triggered.connect(self.main_window.toggle_fullscreen)
         view_menu.addAction(fullscreen_action)
+        
+        config_menu.addSeparator()
+        
+        # Сброс настроек столбцов
+        reset_columns_action = QAction("&Сбросить настройки столбцов", self.main_window)
+        reset_columns_action.setIcon(self.main_window.style().standardIcon(QStyle.SP_BrowserReload))
+        reset_columns_action.setStatusTip("Сбросить все настройки видимости столбцов в таблицах справочников")
+        reset_columns_action.triggered.connect(self.main_window.reset_column_visibility_settings)
+        config_menu.addAction(reset_columns_action)
         
         # ========== Меню "Справка" ==========
         help_menu = menubar.addMenu("&Справка")

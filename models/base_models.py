@@ -311,14 +311,14 @@ class MunicipalityTypeRef:
     """Справочник видов муниципальных образований"""
     
     def __init__(self):
-        self.код_вида_МО: str = ""
-        self.наименование: str = ""
+        self.municipality_type_code: str = ""
+        self.name: str = ""
     
     @classmethod
     def from_row(cls, row: Dict[str, Any]) -> "MunicipalityTypeRef":
         m = cls()
-        m.код_вида_МО = str(row.get("код_вида_МО", "")).strip()
-        m.наименование = str(row.get("наименование", "")).strip()
+        m.municipality_type_code = str(row.get("municipality_type_code", "")).strip()
+        m.name = str(row.get("name", "")).strip()
         return m
 
 
@@ -327,26 +327,27 @@ class ExtendedMunicipalityRef(MunicipalityRef):
     
     def __init__(self):
         super().__init__()
-        self.код_вида_МО: Optional[str] = None
-        self.адрес_совет: str = ""
-        self.адрес_администрация: str = ""
-        self.совет_почта: str = ""
-        self.администрация_почта: str = ""
-        self.должность_совет: str = ""
-        self.фамилия_совет: str = ""
-        self.имя_совет: str = ""
-        self.отчество_совет: str = ""
-        self.должность_администрация: str = ""
-        self.фамилия_администрация: str = ""
-        self.имя_администрация: str = ""
-        self.отчество_администрация: str = ""
-        self.родительный_падеж: str = ""
-        self.дата_соглашения: Optional[datetime] = None
-        self.дата_решения: Optional[datetime] = None
-        self.номер_решения: str = ""
-        self.начальная_доходы: float = 0.0
-        self.начальная_расходы: float = 0.0
-        self.начальная_дефицит: float = 0.0
+        self.municipality_type_code: Optional[str] = None
+        self.municipality_code: Optional[str] = None
+        self.council_address: str = ""
+        self.administration_address: str = ""
+        self.council_email: str = ""
+        self.administration_email: str = ""
+        self.council_position: str = ""
+        self.council_surname: str = ""
+        self.council_first_name: str = ""
+        self.council_patronymic: str = ""
+        self.administration_position: str = ""
+        self.administration_surname: str = ""
+        self.administration_first_name: str = ""
+        self.administration_patronymic: str = ""
+        self.genitive_case: str = ""
+        self.agreement_date: Optional[datetime] = None
+        self.decision_date: Optional[datetime] = None
+        self.decision_number: str = ""
+        self.initial_income: float = 0.0
+        self.initial_expense: float = 0.0
+        self.initial_deficit: float = 0.0
     
     @classmethod
     def from_row(cls, row: Dict[str, Any]) -> "ExtendedMunicipalityRef":
@@ -354,46 +355,47 @@ class ExtendedMunicipalityRef(MunicipalityRef):
         m.id = row.get("id")
         m.code = str(row.get("code", "")).strip()
         m.name = str(row.get("name", "")).strip()
-        m.код_вида_МО = row.get("код_вида_МО")
-        m.адрес_совет = str(row.get("адрес_совет", "")).strip()
-        m.адрес_администрация = str(row.get("адрес_администрация", "")).strip()
-        m.совет_почта = str(row.get("совет_почта", "")).strip()
-        m.администрация_почта = str(row.get("администрация_почта", "")).strip()
-        m.должность_совет = str(row.get("должность_совет", "")).strip()
-        m.фамилия_совет = str(row.get("фамилия_совет", "")).strip()
-        m.имя_совет = str(row.get("имя_совет", "")).strip()
-        m.отчество_совет = str(row.get("отчество_совет", "")).strip()
-        m.должность_администрация = str(row.get("должность_администрация", "")).strip()
-        m.фамилия_администрация = str(row.get("фамилия_администрация", "")).strip()
-        m.имя_администрация = str(row.get("имя_администрация", "")).strip()
-        m.отчество_администрация = str(row.get("отчество_администрация", "")).strip()
-        m.родительный_падеж = str(row.get("родительный_падеж", "")).strip()
+        m.municipality_type_code = row.get("municipality_type_code")
+        m.municipality_code = row.get("municipality_code")
+        m.council_address = str(row.get("council_address", "")).strip()
+        m.administration_address = str(row.get("administration_address", "")).strip()
+        m.council_email = str(row.get("council_email", "")).strip()
+        m.administration_email = str(row.get("administration_email", "")).strip()
+        m.council_position = str(row.get("council_position", "")).strip()
+        m.council_surname = str(row.get("council_surname", "")).strip()
+        m.council_first_name = str(row.get("council_first_name", "")).strip()
+        m.council_patronymic = str(row.get("council_patronymic", "")).strip()
+        m.administration_position = str(row.get("administration_position", "")).strip()
+        m.administration_surname = str(row.get("administration_surname", "")).strip()
+        m.administration_first_name = str(row.get("administration_first_name", "")).strip()
+        m.administration_patronymic = str(row.get("administration_patronymic", "")).strip()
+        m.genitive_case = str(row.get("genitive_case", "")).strip()
         
         # Даты
-        дата_соглашения = row.get("дата_соглашения")
-        if дата_соглашения:
-            if isinstance(дата_соглашения, str):
+        agreement_date = row.get("agreement_date")
+        if agreement_date:
+            if isinstance(agreement_date, str):
                 try:
-                    m.дата_соглашения = datetime.fromisoformat(дата_соглашения)
+                    m.agreement_date = datetime.fromisoformat(agreement_date)
                 except:
-                    m.дата_соглашения = None
-            elif isinstance(дата_соглашения, datetime):
-                m.дата_соглашения = дата_соглашения
+                    m.agreement_date = None
+            elif isinstance(agreement_date, datetime):
+                m.agreement_date = agreement_date
         
-        дата_решения = row.get("дата_решения")
-        if дата_решения:
-            if isinstance(дата_решения, str):
+        decision_date = row.get("decision_date")
+        if decision_date:
+            if isinstance(decision_date, str):
                 try:
-                    m.дата_решения = datetime.fromisoformat(дата_решения)
+                    m.decision_date = datetime.fromisoformat(decision_date)
                 except:
-                    m.дата_решения = None
-            elif isinstance(дата_решения, datetime):
-                m.дата_решения = дата_решения
+                    m.decision_date = None
+            elif isinstance(decision_date, datetime):
+                m.decision_date = decision_date
         
-        m.номер_решения = str(row.get("номер_решения", "")).strip()
-        m.начальная_доходы = float(row.get("начальная_доходы", 0) or 0)
-        m.начальная_расходы = float(row.get("начальная_расходы", 0) or 0)
-        m.начальная_дефицит = float(row.get("начальная_дефицит", 0) or 0)
+        m.decision_number = str(row.get("decision_number", "")).strip()
+        m.initial_income = float(row.get("initial_income", 0) or 0)
+        m.initial_expense = float(row.get("initial_expense", 0) or 0)
+        m.initial_deficit = float(row.get("initial_deficit", 0) or 0)
         m.is_active = bool(row.get("is_active", 1))
         return m
 

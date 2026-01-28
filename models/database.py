@@ -1,5 +1,6 @@
 import sqlite3
 import json
+import shutil
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Iterable, Tuple
 from datetime import datetime
@@ -25,6 +26,11 @@ class DatabaseManager:
     
     def __init__(self, db_path: str = "budget_forms.db"):
         self.db_path = db_path
+        # Проверяем, существует ли база данных
+        db_exists = os.path.exists(db_path)
+        # Если база не существует (создается новая), очищаем папку проектов
+        if not db_exists:
+            self._clean_projects_folder()
         self._init_database()
     
     def _init_database(self):
@@ -47,16 +53,6 @@ class DatabaseManager:
                     created_at TEXT NOT NULL
                 )
             ''')
-            
-            # Добавляем новые поля, если их нет (миграция)
-            try:
-                cursor.execute('ALTER TABLE projects ADD COLUMN year_id INTEGER')
-            except sqlite3.OperationalError:
-                pass  # Колонка уже существует
-            try:
-                cursor.execute('ALTER TABLE projects ADD COLUMN municipality_id INTEGER')
-            except sqlite3.OperationalError:
-                pass  # Колонка уже существует
             
             # Таблица справочников (метаданные файлов справочников)
             cursor.execute('''
@@ -108,8 +104,8 @@ class DatabaseManager:
             # Справочник видов муниципальных образований
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS ref_municipality_types (
-                    код_вида_МО VARCHAR(1) PRIMARY KEY,
-                    наименование TEXT NOT NULL
+                    municipality_type_code VARCHAR(1) PRIMARY KEY,
+                    name TEXT NOT NULL
                 )
             ''')
             
@@ -119,50 +115,30 @@ class DatabaseManager:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     code VARCHAR(3) UNIQUE,
                     name TEXT NOT NULL,
-                    код_вида_МО VARCHAR(1) REFERENCES ref_municipality_types(код_вида_МО),
-                    код_МО VARCHAR(3),
-                    родительный_падеж TEXT,
-                    адрес_совет TEXT,
-                    адрес_администрация TEXT,
-                    совет_почта VARCHAR(50),
-                    администрация_почта VARCHAR(50),
-                    должность_совет VARCHAR(30),
-                    фамилия_совет VARCHAR(30),
-                    имя_совет VARCHAR(30),
-                    отчество_совет VARCHAR(30),
-                    должность_администрация VARCHAR(30),
-                    фамилия_администрация VARCHAR(30),
-                    имя_администрация VARCHAR(30),
-                    отчество_администрация VARCHAR(30),
-                    дата_соглашения DATE,
-                    дата_решения DATE,
-                    номер_решения VARCHAR(50),
-                    начальная_доходы REAL,
-                    начальная_расходы REAL,
-                    начальная_дефицит REAL,
+                    municipality_type_code VARCHAR(1) REFERENCES ref_municipality_types(municipality_type_code),
+                    municipality_code VARCHAR(3),
+                    genitive_case TEXT,
+                    council_address TEXT,
+                    administration_address TEXT,
+                    council_email VARCHAR(50),
+                    administration_email VARCHAR(50),
+                    council_position VARCHAR(30),
+                    council_surname VARCHAR(30),
+                    council_first_name VARCHAR(30),
+                    council_patronymic VARCHAR(30),
+                    administration_position VARCHAR(30),
+                    administration_surname VARCHAR(30),
+                    administration_first_name VARCHAR(30),
+                    administration_patronymic VARCHAR(30),
+                    agreement_date DATE,
+                    decision_date DATE,
+                    decision_number VARCHAR(50),
+                    initial_income REAL,
+                    initial_expense REAL,
+                    initial_deficit REAL,
                     is_active INTEGER NOT NULL DEFAULT 1
                 )
             ''')
-            
-            # Миграция: добавляем новые поля в существующую таблицу
-            for col_name, col_type in [
-                ('код_МО', 'VARCHAR(3)'), ('код_вида_МО', 'VARCHAR(1)'),
-                ('родительный_падеж', 'TEXT'),
-                ('адрес_совет', 'TEXT'), ('адрес_администрация', 'TEXT'),
-                ('совет_почта', 'VARCHAR(50)'), ('администрация_почта', 'VARCHAR(50)'),
-                ('должность_совет', 'VARCHAR(30)'), ('фамилия_совет', 'VARCHAR(30)'),
-                ('имя_совет', 'VARCHAR(30)'), ('отчество_совет', 'VARCHAR(30)'),
-                ('должность_администрация', 'VARCHAR(30)'), ('фамилия_администрация', 'VARCHAR(30)'),
-                ('имя_администрация', 'VARCHAR(30)'), ('отчество_администрация', 'VARCHAR(30)'),
-                ('дата_соглашения', 'DATE'), ('дата_решения', 'DATE'),
-                ('номер_решения', 'VARCHAR(50)'),
-                ('начальная_доходы', 'REAL'), ('начальная_расходы', 'REAL'),
-                ('начальная_дефицит', 'REAL')
-            ]:
-                try:
-                    cursor.execute(f'ALTER TABLE ref_municipalities ADD COLUMN {col_name} {col_type}')
-                except sqlite3.OperationalError:
-                    pass  # Колонка уже существует
 
             # Справочник типов форм (0503317, 0503314 и т.д.)
             # ID задаём вручную в коде (не полагаемся на AUTOINCREMENT),
@@ -177,19 +153,13 @@ class DatabaseManager:
                     is_active INTEGER NOT NULL DEFAULT 1
                 )
             ''')
-            
-            # Миграция: добавляем поле column_mapping в существующую таблицу
-            try:
-                cursor.execute('ALTER TABLE ref_form_types ADD COLUMN column_mapping TEXT')
-            except sqlite3.OperationalError:
-                pass  # Колонка уже существует
 
             # Справочник периодов (расширенный)
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS ref_periods (
-                    код_периода VARCHAR(2),
-                    наименование VARCHAR(30),
-                    отчет_на_дату DATE,
+                    period_code VARCHAR(2),
+                    name VARCHAR(30),
+                    report_date DATE,
                     id INTEGER PRIMARY KEY,
                     code TEXT NOT NULL,       -- Y, Q1, Q2, Q3, Q4, H1, H2 и т.п.
                     sort_order INTEGER NOT NULL DEFAULT 0,
@@ -197,16 +167,6 @@ class DatabaseManager:
                     is_active INTEGER NOT NULL DEFAULT 1
                 )
             ''')
-            
-            # Миграция: добавляем новые поля
-            for col_name, col_type in [
-                ('код_периода', 'VARCHAR(2)'), ('наименование', 'VARCHAR(30)'),
-                ('отчет_на_дату', 'DATE')
-            ]:
-                try:
-                    cursor.execute(f'ALTER TABLE ref_periods ADD COLUMN {col_name} {col_type}')
-                except sqlite3.OperationalError:
-                    pass
 
             # Связка Проект ↔ Форма ↔ Период
             cursor.execute('''
@@ -241,247 +201,15 @@ class DatabaseManager:
                     calculated_deficit_proficit TEXT,  -- ранее результат_исполнения_data
                     FOREIGN KEY (revision_id) REFERENCES form_revisions(id) ON DELETE CASCADE
                 )
-            ''')
-
-            # Миграция: переименовываем старый столбец результат_исполнения_data,
-            # если он ещё существует, в calculated_deficit_proficit
-            try:
-                cursor.execute(
-                    'ALTER TABLE revision_metadata '
-                    'RENAME COLUMN результат_исполнения_data TO calculated_deficit_proficit'
-                )
-            except sqlite3.OperationalError:
-                # Либо столбец уже переименован, либо старая версия SQLite без RENAME COLUMN.
-                # В этом случае продолжаем работать с тем, что есть.
-                pass
-
-            # Справочники для классификаций расходов бюджетов
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS ref_grbs (
-                    код_ГРБС VARCHAR(3) PRIMARY KEY,
-                    наименование TEXT NOT NULL
-                )
-            ''')
-            
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS ref_expense_sections (
-                    код_РП VARCHAR(4) PRIMARY KEY,
-                    наименование TEXT NOT NULL,
-                    утверждающий_документ TEXT
-                )
-            ''')
-            
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS ref_target_articles (
-                    код_ЦСР VARCHAR(10) PRIMARY KEY,
-                    наименование TEXT NOT NULL
-                )
-            ''')
-            
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS ref_expense_types (
-                    код_вида_СР VARCHAR(5) PRIMARY KEY,
-                    наименование TEXT NOT NULL
-                )
-            ''')
-            
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS ref_program_nonprogram (
-                    код_ПНС VARCHAR(5) PRIMARY KEY,
-                    наименование TEXT NOT NULL
-                )
-            ''')
-            
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS ref_expense_kinds (
-                    код_ВР VARCHAR(3) PRIMARY KEY,
-                    наименование TEXT NOT NULL,
-                    утверждающий_документ TEXT
-                )
-            ''')
-            
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS ref_national_projects (
-                    код_НПЦСР VARCHAR(1) PRIMARY KEY,
-                    наименование TEXT NOT NULL,
-                    утверждающий_документ TEXT
-                )
-            ''')
-            
-            # Справочники для классификаций доходов бюджетов
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS ref_gadb (
-                    код_ГАДБ VARCHAR(3) PRIMARY KEY,
-                    наименование TEXT
-                )
-            ''')
-            
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS ref_income_groups (
-                    код_группы_ДБ VARCHAR(1) PRIMARY KEY,
-                    наименование TEXT
-                )
-            ''')
-            
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS ref_income_subgroups (
-                    код_подгруппы_ДБ VARCHAR(2) PRIMARY KEY,
-                    наименование TEXT
-                )
-            ''')
-            
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS ref_income_articles (
-                    код_статьи_подстатьи_ДБ VARCHAR(5) PRIMARY KEY,
-                    наименование TEXT
-                )
-            ''')
-            
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS ref_income_elements (
-                    код_элемента_ДБ VARCHAR(2) PRIMARY KEY,
-                    наименование TEXT
-                )
-            ''')
-            
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS ref_income_subkind_groups (
-                    код_группы_ПДБ VARCHAR(4) PRIMARY KEY,
-                    наименование TEXT
-                )
-            ''')
-            
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS ref_income_analytical_groups (
-                    код_группы_АПДБ VARCHAR(3) PRIMARY KEY,
-                    наименование TEXT
-                )
-            ''')
-            
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS ref_income_levels (
-                    код_уровня VARCHAR(2) PRIMARY KEY,
-                    наименование TEXT,
-                    цвет VARCHAR(10)
-                )
-            ''')
-            
-            # Справочники кодов доходов и расходов (для работы с решениями)
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS ref_income_codes (
-                    код VARCHAR(20) PRIMARY KEY,
-                    название TEXT,
-                    уровень INTEGER,
-                    наименование TEXT
-                )
-            ''')
-            
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS ref_expense_codes (
-                    код VARCHAR(20) PRIMARY KEY,
-                    название TEXT,
-                    уровень INTEGER,
-                    код_Р VARCHAR(4),
-                    код_ПР VARCHAR(2),
-                    код_ЦС VARCHAR(10),
-                    код_ВР VARCHAR(3)
-                )
-            ''')
-            
-            # Миграция: переименовываем ЛВЛ в уровень, если таблицы уже существуют
-            try:
-                cursor.execute('ALTER TABLE ref_income_codes RENAME COLUMN ЛВЛ TO уровень')
-            except sqlite3.OperationalError:
-                pass  # Колонка уже переименована или не существует
-            
-            try:
-                cursor.execute('ALTER TABLE ref_expense_codes RENAME COLUMN ЛВЛ TO уровень')
-            except sqlite3.OperationalError:
-                pass  # Колонка уже переименована или не существует
-
-            # Таблицы для хранения данных решений о бюджете
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS solution_data (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    project_id INTEGER NOT NULL,
-                    solution_file_path TEXT,
-                    parsed_at TEXT NOT NULL,
-                    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
-                )
-            ''')
-            
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS solution_income_data (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    solution_id INTEGER NOT NULL,
-                    код TEXT,
-                    наименование TEXT,
-                    уровень INTEGER,
-                    ТТ INTEGER,
-                    сумма1 REAL DEFAULT 0,
-                    сумма2 REAL DEFAULT 0,
-                    сумма3 REAL DEFAULT 0,
-                    FOREIGN KEY (solution_id) REFERENCES solution_data(id) ON DELETE CASCADE
-                )
-            ''')
-            
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS solution_expense_data (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    solution_id INTEGER NOT NULL,
-                    код_Р TEXT,
-                    код_ПР TEXT,
-                    код_ЦС TEXT,
-                    код_ВР TEXT,
-                    уровень INTEGER,
-                    сумма1 REAL DEFAULT 0,
-                    сумма2 REAL DEFAULT 0,
-                    сумма3 REAL DEFAULT 0,
-                    наименование TEXT,
-                    FOREIGN KEY (solution_id) REFERENCES solution_data(id) ON DELETE CASCADE
-                )
-            ''')
-            
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS solution_expense_grbs_data (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    solution_id INTEGER NOT NULL,
-                    ГРБС TEXT,
-                    код_Р TEXT,
-                    код_ПР TEXT,
-                    код_ЦС TEXT,
-                    код_ВР TEXT,
-                    уровень INTEGER,
-                    сумма1 REAL DEFAULT 0,
-                    наименование TEXT,
-                    FOREIGN KEY (solution_id) REFERENCES solution_data(id) ON DELETE CASCADE
-                )
-            ''')
-
-            # Миграции: добавляем поля для компонентов кодов
-            # Для solution_income_data - компоненты кода доходов
-            for col_name, col_type in [
-                ('код_ГАДБ', 'VARCHAR(3)'),
-                ('код_группы_ДБ', 'VARCHAR(1)'),
-                ('код_подгруппы_ДБ', 'VARCHAR(2)'),
-                ('код_статьи_подстатьи_ДБ', 'VARCHAR(5)'),
-                ('код_элемента_ДБ', 'VARCHAR(2)'),
-                ('код_группы_ПДБ', 'VARCHAR(4)'),
-                ('код_группы_АПДБ', 'VARCHAR(3)')
-            ]:
-                try:
-                    cursor.execute(f'ALTER TABLE solution_income_data ADD COLUMN {col_name} {col_type}')
-                except sqlite3.OperationalError:
-                    pass  # Колонка уже существует
-            
-            # Для solution_expense_data - поле ГРБС
-            try:
-                cursor.execute('ALTER TABLE solution_expense_data ADD COLUMN ГРБС VARCHAR(3)')
-            except sqlite3.OperationalError:
-                pass  # Колонка уже существует
+            ''')           
 
             # Первичное заполнение справочников (если они пустые)
             self._seed_config_dictionaries(cursor)
+
+            # --------------------------------------------------
+            # ТАБЛИЦЫ БЮДЖЕТНЫХ СПРАВОЧНИКОВ (из Osnova/database_schema.sql)
+            # --------------------------------------------------
+            self._init_budget_references_tables(cursor)
 
             # --------------------------------------------------
             # НОВЫЕ НОРМАЛИЗОВАННЫЕ ТАБЛИЦЫ ДЛЯ ЗНАЧЕНИЙ РАЗДЕЛОВ
@@ -516,12 +244,6 @@ class DatabaseManager:
                     )
                     '''
                 )
-                # Миграция: добавляем новые поля в существующие таблицы
-                for col_name, col_type in [('level', 'INTEGER'), ('source_row', 'INTEGER')]:
-                    try:
-                        cursor.execute(f'ALTER TABLE {table_name} ADD COLUMN {col_name} {col_type}')
-                    except sqlite3.OperationalError:
-                        pass  # Колонка уже существует
 
             # Консолидируемые расчёты – отдельная таблица
             cursor.execute(
@@ -541,12 +263,6 @@ class DatabaseManager:
                 )
                 '''
             )
-            # Миграция: добавляем новые поля в существующую таблицу
-            for col_name, col_type in [('level', 'INTEGER'), ('source_row', 'INTEGER')]:
-                try:
-                    cursor.execute(f'ALTER TABLE consolidated_values ADD COLUMN {col_name} {col_type}')
-                except sqlite3.OperationalError:
-                    pass  # Колонка уже существует
 
             # Индексы для ускорения выборок по проекту/ревизии/коду
             for tbl in ('income_values', 'expense_values', 'source_values', 'consolidated_values'):
@@ -585,6 +301,24 @@ class DatabaseManager:
             
             # Автозагрузка справочников при создании новой БД
             self._auto_load_references_if_new()
+    
+    def _clean_projects_folder(self):
+        """
+        Очищает папку data/projects при создании новой базы данных.
+        Удаляет все файлы и подпапки, чтобы не оставались старые данные проектов.
+        """
+        try:
+            projects_dir = Path("data") / "projects"
+            if projects_dir.exists():
+                # Удаляем все содержимое папки
+                for item in projects_dir.iterdir():
+                    if item.is_file():
+                        item.unlink()
+                    elif item.is_dir():
+                        shutil.rmtree(item)
+                logger.info(f"Очищена папка проектов: {projects_dir}")
+        except Exception as e:
+            logger.warning(f"Не удалось очистить папку проектов: {e}")
     
     def _auto_load_references_if_new(self):
         """
@@ -724,7 +458,7 @@ class DatabaseManager:
                 ("M9", "9 месяцев", 6, None, 1),
             ]
             cursor.executemany(
-                'INSERT INTO ref_periods (code, наименование, sort_order, form_type_code, is_active) '
+                'INSERT INTO ref_periods (code, name, sort_order, form_type_code, is_active) '
                 'VALUES (?, ?, ?, ?, ?)',
                 periods,
             )
@@ -761,6 +495,682 @@ class DatabaseManager:
                 'INSERT INTO ref_municipalities (code, name, is_active) VALUES (?, ?, ?)',
                 municipalities,
             )
+    
+    def _init_budget_references_tables(self, cursor: sqlite3.Cursor) -> None:
+        """
+        Инициализация таблиц бюджетных справочников из Osnova/database_schema.sql.
+        Создает таблицы для работы с данными из API бюджетной системы.
+        """
+        # Таблица: ОКТМО
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS oktmo (
+                guid TEXT PRIMARY KEY,
+                startdate TEXT,
+                enddate TEXT,
+                status TEXT,
+                regioncode TEXT,
+                areacode TEXT,
+                citycode TEXT,
+                localcode TEXT,
+                controlnum TEXT,
+                section TEXT,
+                code TEXT NOT NULL,
+                name TEXT,
+                centrename TEXT,
+                clarification TEXT,
+                lastChangeNum TEXT,
+                lastchangetype TEXT,
+                changedate TEXT,
+                introductiondate TEXT,
+                filedate TEXT,
+                loaddate TEXT
+            )
+        ''')
+        
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_oktmo_code ON oktmo(code)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_oktmo_regioncode ON oktmo(regioncode)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_oktmo_status ON oktmo(status)')
+        
+        # Таблица: Классификаторы доходов бюджета ФУ
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS budgetclastypeinc (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT,
+                startdate TEXT,
+                enddate TEXT,
+                level TEXT,
+                stagename TEXT,
+                budgetname TEXT,
+                pponame TEXT,
+                ppocode TEXT,
+                year TEXT,
+                inctypecode TEXT,
+                incsubtypecode TEXT,
+                analyticalgroupcode TEXT,
+                npa_id INTEGER,
+                created_at TEXT DEFAULT (strftime('%d.%m.%Y %H:%M:%S', 'now', 'localtime')),
+                FOREIGN KEY (npa_id) REFERENCES npa(id)
+            )
+        ''')
+        
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_typeinc_ppocode ON budgetclastypeinc(ppocode)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_typeinc_dates ON budgetclastypeinc(startdate, enddate)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_typeinc_inctypecode ON budgetclastypeinc(inctypecode)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_typeinc_level ON budgetclastypeinc(level)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_typeinc_npa_id ON budgetclastypeinc(npa_id)')
+        
+        # Таблица: Классификаторы доходов бюджета МО
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS budgetclassubtypincmo (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT,
+                startdate TEXT,
+                enddate TEXT,
+                level TEXT,
+                stagename TEXT,
+                budgetname TEXT,
+                pponame TEXT,
+                ppocode TEXT,
+                year TEXT,
+                inctypecode TEXT,
+                incsubtypecode TEXT,
+                analyticalgroupcode TEXT,
+                npa_id INTEGER,
+                created_at TEXT DEFAULT (strftime('%d.%m.%Y %H:%M:%S', 'now', 'localtime')),
+                FOREIGN KEY (npa_id) REFERENCES npa(id)
+            )
+        ''')
+        
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_subtypincmo_ppocode ON budgetclassubtypincmo(ppocode)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_subtypincmo_dates ON budgetclassubtypincmo(startdate, enddate)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_subtypincmo_inctypecode ON budgetclassubtypincmo(inctypecode)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_subtypincmo_level ON budgetclassubtypincmo(level)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_subtypincmo_npa_id ON budgetclassubtypincmo(npa_id)')
+        
+        # Таблица: Классификаторы расходов бюджета ФУ
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS budgetclascosts (
+                id INTEGER PRIMARY KEY,
+                name TEXT,
+                startdate TEXT,
+                enddate TEXT,
+                stagename TEXT,
+                budgetname TEXT,
+                pponame TEXT,
+                ppocode TEXT,
+                year TEXT,
+                rzpr TEXT,
+                kcsr TEXT,
+                kvr TEXT,
+                grbscode TEXT,
+                id_code TEXT,
+                loaddate TEXT,
+                npa_id INTEGER,
+                created_at TEXT DEFAULT (strftime('%d.%m.%Y %H:%M:%S', 'now', 'localtime')),
+                FOREIGN KEY (npa_id) REFERENCES npa(id)
+            )
+        ''')
+        
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_costs_ppocode ON budgetclascosts(ppocode)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_costs_grbscode ON budgetclascosts(grbscode)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_costs_dates ON budgetclascosts(startdate, enddate)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_costs_npa_id ON budgetclascosts(npa_id)')
+        
+        # Таблица: Классификаторы расходов бюджета МО
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS budgetclascostsmo (
+                id INTEGER PRIMARY KEY,
+                name TEXT,
+                startdate TEXT,
+                enddate TEXT,
+                stagename TEXT,
+                budgetname TEXT,
+                pponame TEXT,
+                ppocode TEXT,
+                year TEXT,
+                rzpr TEXT,
+                kcsr TEXT,
+                kvr TEXT,
+                grbscode TEXT,
+                id_code TEXT,
+                loaddate TEXT,
+                npa_id INTEGER,
+                created_at TEXT DEFAULT (strftime('%d.%m.%Y %H:%M:%S', 'now', 'localtime')),
+                FOREIGN KEY (npa_id) REFERENCES npa(id)
+            )
+        ''')
+        
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_costsmo_ppocode ON budgetclascostsmo(ppocode)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_costsmo_grbscode ON budgetclascostsmo(grbscode)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_costsmo_dates ON budgetclascostsmo(startdate, enddate)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_costsmo_npa_id ON budgetclascostsmo(npa_id)')
+        
+        # Таблица: Распорядители бюджета ФУ
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS budgetclasgrbs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT,
+                name TEXT,
+                startdate TEXT,
+                enddate TEXT,
+                stagename TEXT,
+                budgetname TEXT,
+                pponame TEXT,
+                ppocode TEXT,
+                year TEXT,
+                npa_id INTEGER,
+                created_at TEXT DEFAULT (strftime('%d.%m.%Y %H:%M:%S', 'now', 'localtime')),
+                FOREIGN KEY (npa_id) REFERENCES npa(id)
+            )
+        ''')
+        
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_grbs_ppocode ON budgetclasgrbs(ppocode)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_grbs_code ON budgetclasgrbs(code)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_grbs_dates ON budgetclasgrbs(startdate, enddate)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_grbs_npa_id ON budgetclasgrbs(npa_id)')
+        
+        # Таблица: Распорядители бюджета МО
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS budgetclasgrbsmo (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT,
+                name TEXT,
+                startdate TEXT,
+                enddate TEXT,
+                stagename TEXT,
+                budgetname TEXT,
+                pponame TEXT,
+                ppocode TEXT,
+                year TEXT,
+                codereestr TEXT,
+                npa_id INTEGER,
+                created_at TEXT DEFAULT (strftime('%d.%m.%Y %H:%M:%S', 'now', 'localtime')),
+                FOREIGN KEY (npa_id) REFERENCES npa(id)
+            )
+        ''')
+        
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_grbsmo_ppocode ON budgetclasgrbsmo(ppocode)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_grbsmo_code ON budgetclasgrbsmo(code)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_grbsmo_dates ON budgetclasgrbsmo(startdate, enddate)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_grbsmo_npa_id ON budgetclasgrbsmo(npa_id)')
+        
+        # Таблица: Администраторы бюджета ФУ
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS budgetclasgabs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT,
+                name TEXT,
+                startdate TEXT,
+                enddate TEXT,
+                stagename TEXT,
+                budgetname TEXT,
+                pponame TEXT,
+                ppocode TEXT,
+                year TEXT,
+                npa_id INTEGER,
+                created_at TEXT DEFAULT (strftime('%d.%m.%Y %H:%M:%S', 'now', 'localtime')),
+                FOREIGN KEY (npa_id) REFERENCES npa(id)
+            )
+        ''')
+        
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_gabs_ppocode ON budgetclasgabs(ppocode)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_gabs_code ON budgetclasgabs(code)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_gabs_dates ON budgetclasgabs(startdate, enddate)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_gabs_npa_id ON budgetclasgabs(npa_id)')
+        
+        # Таблица: Администраторы бюджета МО
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS budgetclasgabsmo (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT,
+                name TEXT,
+                startdate TEXT,
+                enddate TEXT,
+                stagename TEXT,
+                budgetname TEXT,
+                pponame TEXT,
+                ppocode TEXT,
+                year TEXT,
+                npa_id INTEGER,
+                created_at TEXT DEFAULT (strftime('%d.%m.%Y %H:%M:%S', 'now', 'localtime')),
+                FOREIGN KEY (npa_id) REFERENCES npa(id)
+            )
+        ''')
+        
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_gabsmo_ppocode ON budgetclasgabsmo(ppocode)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_gabsmo_code ON budgetclasgabsmo(code)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_gabsmo_dates ON budgetclasgabsmo(startdate, enddate)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_gabsmo_npa_id ON budgetclasgabsmo(npa_id)')
+        
+        # Таблица: Источники финансирования дефицита ФУ
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS budgetclasgaiffb (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT,
+                name TEXT,
+                startdate TEXT,
+                enddate TEXT,
+                stagename TEXT,
+                budgetname TEXT,
+                pponame TEXT,
+                ppocode TEXT,
+                year TEXT,
+                npa_id INTEGER,
+                created_at TEXT DEFAULT (strftime('%d.%m.%Y %H:%M:%S', 'now', 'localtime')),
+                FOREIGN KEY (npa_id) REFERENCES npa(id)
+            )
+        ''')
+        
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_gaiffb_ppocode ON budgetclasgaiffb(ppocode)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_gaiffb_code ON budgetclasgaiffb(code)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_gaiffb_dates ON budgetclasgaiffb(startdate, enddate)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_gaiffb_npa_id ON budgetclasgaiffb(npa_id)')
+        
+        # Таблица: Источники финансирования дефицита МО
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS budgetclasgaifmo (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT,
+                name TEXT,
+                startdate TEXT,
+                enddate TEXT,
+                stagename TEXT,
+                budgetname TEXT,
+                pponame TEXT,
+                ppocode TEXT,
+                year TEXT,
+                npa_id INTEGER,
+                created_at TEXT DEFAULT (strftime('%d.%m.%Y %H:%M:%S', 'now', 'localtime')),
+                FOREIGN KEY (npa_id) REFERENCES npa(id)
+            )
+        ''')
+        
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_gaifmo_ppocode ON budgetclasgaifmo(ppocode)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_gaifmo_code ON budgetclasgaifmo(code)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_gaifmo_dates ON budgetclasgaifmo(startdate, enddate)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_gaifmo_npa_id ON budgetclasgaifmo(npa_id)')
+        
+        # Таблица: Классификаторы источников финансирования ФУ
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS budgetclassources (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT,
+                name TEXT,
+                startdate TEXT,
+                enddate TEXT,
+                level TEXT,
+                stagename TEXT,
+                budgetname TEXT,
+                pponame TEXT,
+                ppocode TEXT,
+                year TEXT,
+                gaifcode TEXT,
+                npa_id INTEGER,
+                created_at TEXT DEFAULT (strftime('%d.%m.%Y %H:%M:%S', 'now', 'localtime')),
+                FOREIGN KEY (npa_id) REFERENCES npa(id)
+            )
+        ''')
+        
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sources_ppocode ON budgetclassources(ppocode)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sources_code ON budgetclassources(code)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sources_dates ON budgetclassources(startdate, enddate)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sources_level ON budgetclassources(level)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sources_gaifcode ON budgetclassources(gaifcode)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sources_npa_id ON budgetclassources(npa_id)')
+        
+        # Таблица: Классификаторы источников финансирования МО
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS budgetclassourcesmo (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT,
+                name TEXT,
+                startdate TEXT,
+                enddate TEXT,
+                level TEXT,
+                stagename TEXT,
+                budgetname TEXT,
+                pponame TEXT,
+                ppocode TEXT,
+                year TEXT,
+                gaifcode TEXT,
+                npa_id INTEGER,
+                created_at TEXT DEFAULT (strftime('%d.%m.%Y %H:%M:%S', 'now', 'localtime')),
+                FOREIGN KEY (npa_id) REFERENCES npa(id)
+            )
+        ''')
+        
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sourcesmo_ppocode ON budgetclassourcesmo(ppocode)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sourcesmo_code ON budgetclassourcesmo(code)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sourcesmo_dates ON budgetclassourcesmo(startdate, enddate)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sourcesmo_level ON budgetclassourcesmo(level)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sourcesmo_gaifcode ON budgetclassourcesmo(gaifcode)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sourcesmo_npa_id ON budgetclassourcesmo(npa_id)')
+        
+        # Таблица: Нормативно-правовые акты (НПА)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS npa (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                numdoc TEXT NOT NULL,
+                approvaldate TEXT NOT NULL,
+                kindname TEXT NOT NULL,
+                created_at TEXT DEFAULT (strftime('%d.%m.%Y %H:%M:%S', 'now', 'localtime')),
+                UNIQUE(name, numdoc, approvaldate, kindname)
+            )
+        ''')
+        
+        # Таблица: Даты последнего обновления онлайн справочников
+        # Записываются только записи с изменением количества записей
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS budget_references_updates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                table_name TEXT NOT NULL,
+                records_count INTEGER NOT NULL,
+                created_at TEXT DEFAULT (strftime('%d.%m.%Y %H:%M:%S', 'now', 'localtime')),
+                update_at TEXT DEFAULT (strftime('%d.%m.%Y %H:%M:%S', 'now', 'localtime'))
+            )
+        ''')
+        
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_budget_ref_updates_table_name ON budget_references_updates(table_name)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_budget_ref_updates_created_at ON budget_references_updates(created_at)')
+        
+        # Таблица для хранения конфигурации приложения
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS app_config (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                config_key TEXT NOT NULL UNIQUE,
+                config_value TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now', 'localtime'))
+            )
+        ''')
+        
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_app_config_key ON app_config(config_key)')
+        
+        # Создание VIEW для объединения данных ФУ и МО
+        self._create_budget_references_views(cursor)
+    
+    def _create_budget_references_views(self, cursor: sqlite3.Cursor) -> None:
+        """
+        Создание VIEW для объединения данных из пар таблиц (ФУ + МО).
+        """
+        # VIEW: объединенные данные BUDGETCLASTYPEINC и BUDGETCLASSUBTYPINCMO
+        cursor.execute('''
+            CREATE VIEW IF NOT EXISTS v_budgetclastypeinc_merged AS
+            SELECT 
+                id,
+                name,
+                startdate,
+                enddate,
+                level,
+                stagename,
+                budgetname,
+                pponame,
+                ppocode,
+                year,
+                inctypecode,
+                incsubtypecode,
+                analyticalgroupcode,
+                (COALESCE(inctypecode, '') || COALESCE(incsubtypecode, '') || COALESCE(analyticalgroupcode, '')) AS concatenated_code,
+                npa_id,
+                created_at
+            FROM (
+                SELECT * FROM budgetclastypeinc
+                UNION ALL
+                SELECT * FROM budgetclassubtypincmo
+            )
+            ORDER BY ppocode, inctypecode, incsubtypecode, analyticalgroupcode, startdate, enddate, year
+        ''')
+        
+        # VIEW: объединенные данные BUDGETCLASCOSTS и BUDGETCLASCOSTSMO
+        # Удаляем старое представление, если оно существует (для обновления структуры)
+        cursor.execute('DROP VIEW IF EXISTS v_budgetclascosts_merged')
+        cursor.execute('''
+            CREATE VIEW v_budgetclascosts_merged AS
+            SELECT 
+                id,
+                name,
+                startdate,
+                enddate,
+                stagename,
+                budgetname,
+                pponame,
+                ppocode,
+                year,
+                rzpr,
+                kcsr,
+                kvr,
+                grbscode,
+                id_code,
+                loaddate,
+                (COALESCE(rzpr, '') || COALESCE(kcsr, '') || COALESCE(kvr, '') || COALESCE(grbscode, '') || COALESCE(id_code, '')) AS concatenated_code,
+                npa_id,
+                created_at
+            FROM (
+                SELECT * FROM budgetclascosts
+                UNION ALL
+                SELECT * FROM budgetclascostsmo
+            )
+            ORDER BY ppocode, grbscode, rzpr, kcsr, kvr, startdate, enddate, year
+        ''')
+        
+        # VIEW: объединенные данные BUDGETCLASGRBS и BUDGETCLASGRBSMO
+        cursor.execute('''
+            CREATE VIEW IF NOT EXISTS v_budgetclasgrbs_merged AS
+            SELECT 
+                id,
+                name,
+                startdate,
+                enddate,
+                stagename,
+                budgetname,
+                pponame,
+                ppocode,
+                year,
+                code,
+                codereestr,
+                npa_id,
+                created_at
+            FROM (
+                SELECT 
+                    id,
+                    name,
+                    startdate,
+                    enddate,
+                    stagename,
+                    budgetname,
+                    pponame,
+                    ppocode,
+                    year,
+                    code,
+                    NULL AS codereestr,
+                    npa_id,
+                    created_at
+                FROM budgetclasgrbs
+                UNION ALL
+                SELECT 
+                    id,
+                    name,
+                    startdate,
+                    enddate,
+                    stagename,
+                    budgetname,
+                    pponame,
+                    ppocode,
+                    year,
+                    code,
+                    codereestr,
+                    npa_id,
+                    created_at
+                FROM budgetclasgrbsmo
+            )
+            ORDER BY ppocode, code, startdate, enddate, year
+        ''')
+        
+        # VIEW: объединенные данные BUDGETCLASGABS и BUDGETCLASGABSMO
+        cursor.execute('''
+            CREATE VIEW IF NOT EXISTS v_budgetclasgabs_merged AS
+            SELECT 
+                id,
+                name,
+                startdate,
+                enddate,
+                stagename,
+                budgetname,
+                pponame,
+                ppocode,
+                year,
+                code,
+                npa_id,
+                created_at
+            FROM (
+                SELECT * FROM budgetclasgabs
+                UNION ALL
+                SELECT * FROM budgetclasgabsmo
+            )
+            ORDER BY ppocode, code, startdate, enddate, year
+        ''')
+        
+        # VIEW: объединенные данные BUDGETCLASGAIFFB и BUDGETCLASGAIFMO
+        cursor.execute('''
+            CREATE VIEW IF NOT EXISTS v_budgetclasgaiffb_merged AS
+            SELECT 
+                id,
+                name,
+                startdate,
+                enddate,
+                stagename,
+                budgetname,
+                pponame,
+                ppocode,
+                year,
+                code,
+                npa_id,
+                created_at
+            FROM (
+                SELECT * FROM budgetclasgaiffb
+                UNION ALL
+                SELECT * FROM budgetclasgaifmo
+            )
+            ORDER BY ppocode, code, startdate, enddate, year
+        ''')
+        
+        # VIEW: объединенные данные BUDGETCLASSOURCES и BUDGETCLASSOURCESMO
+        cursor.execute('''
+            CREATE VIEW IF NOT EXISTS v_budgetclassources_merged AS
+            SELECT 
+                id,
+                code,
+                name,
+                startdate,
+                enddate,
+                level,
+                stagename,
+                budgetname,
+                pponame,
+                ppocode,
+                year,
+                gaifcode,
+                npa_id,
+                created_at
+            FROM (
+                SELECT * FROM budgetclassources
+                UNION ALL
+                SELECT * FROM budgetclassourcesmo
+            )
+            ORDER BY ppocode, code, startdate, enddate, year
+        ''')
+        
+        # VIEW: актуальные записи budgetclastypeinc
+        cursor.execute('''
+            CREATE VIEW IF NOT EXISTS v_actual_budgetclastypeinc AS
+            SELECT * FROM budgetclastypeinc
+            WHERE (enddate IS NULL OR enddate = '' OR enddate >= date('now'))
+              AND startdate <= date('now')
+        ''')
+        
+        # VIEW: актуальные записи budgetclascosts
+        cursor.execute('''
+            CREATE VIEW IF NOT EXISTS v_actual_budgetclascosts AS
+            SELECT * FROM budgetclascosts
+            WHERE (enddate IS NULL OR enddate = '' OR enddate >= date('now'))
+              AND startdate <= date('now')
+        ''')
+        
+        # VIEW: статистика по непустым NPA по таблицам
+        cursor.execute('''
+            CREATE VIEW IF NOT EXISTS v_npa_statistics_by_table AS
+            SELECT 
+                'budgetclastypeinc' AS table_name,
+                COUNT(*) AS total_records,
+                COUNT(npa_id) AS records_with_npa
+            FROM budgetclastypeinc
+            UNION ALL
+            SELECT 
+                'budgetclassubtypincmo' AS table_name,
+                COUNT(*) AS total_records,
+                COUNT(npa_id) AS records_with_npa
+            FROM budgetclassubtypincmo
+            UNION ALL
+            SELECT 
+                'budgetclascosts' AS table_name,
+                COUNT(*) AS total_records,
+                COUNT(npa_id) AS records_with_npa
+            FROM budgetclascosts
+            UNION ALL
+            SELECT 
+                'budgetclascostsmo' AS table_name,
+                COUNT(*) AS total_records,
+                COUNT(npa_id) AS records_with_npa
+            FROM budgetclascostsmo
+            UNION ALL
+            SELECT 
+                'budgetclasgrbs' AS table_name,
+                COUNT(*) AS total_records,
+                COUNT(npa_id) AS records_with_npa
+            FROM budgetclasgrbs
+            UNION ALL
+            SELECT 
+                'budgetclasgrbsmo' AS table_name,
+                COUNT(*) AS total_records,
+                COUNT(npa_id) AS records_with_npa
+            FROM budgetclasgrbsmo
+            UNION ALL
+            SELECT 
+                'budgetclasgabs' AS table_name,
+                COUNT(*) AS total_records,
+                COUNT(npa_id) AS records_with_npa
+            FROM budgetclasgabs
+            UNION ALL
+            SELECT 
+                'budgetclasgabsmo' AS table_name,
+                COUNT(*) AS total_records,
+                COUNT(npa_id) AS records_with_npa
+            FROM budgetclasgabsmo
+            UNION ALL
+            SELECT 
+                'budgetclasgaiffb' AS table_name,
+                COUNT(*) AS total_records,
+                COUNT(npa_id) AS records_with_npa
+            FROM budgetclasgaiffb
+            UNION ALL
+            SELECT 
+                'budgetclasgaifmo' AS table_name,
+                COUNT(*) AS total_records,
+                COUNT(npa_id) AS records_with_npa
+            FROM budgetclasgaifmo
+            UNION ALL
+            SELECT 
+                'budgetclassources' AS table_name,
+                COUNT(*) AS total_records,
+                COUNT(npa_id) AS records_with_npa
+            FROM budgetclassources
+            UNION ALL
+            SELECT 
+                'budgetclassourcesmo' AS table_name,
+                COUNT(*) AS total_records,
+                COUNT(npa_id) AS records_with_npa
+            FROM budgetclassourcesmo
+        ''')
     
     def save_project(self, project: Project) -> int:
         """Сохранение проекта в БД (новая архитектура).
@@ -1432,12 +1842,12 @@ class DatabaseManager:
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT id, code, name, код_вида_МО, код_МО, родительный_падеж,
-                       адрес_совет, адрес_администрация, совет_почта, администрация_почта,
-                       должность_совет, фамилия_совет, имя_совет, отчество_совет,
-                       должность_администрация, фамилия_администрация, имя_администрация, отчество_администрация,
-                       дата_соглашения, дата_решения, номер_решения,
-                       начальная_доходы, начальная_расходы, начальная_дефицит, is_active
+                SELECT id, code, name, municipality_type_code, municipality_code, genitive_case,
+                       council_address, administration_address, council_email, administration_email,
+                       council_position, council_surname, council_first_name, council_patronymic,
+                       administration_position, administration_surname, administration_first_name, administration_patronymic,
+                       agreement_date, decision_date, decision_number,
+                       initial_income, initial_expense, initial_deficit, is_active
                 FROM ref_municipalities WHERE id=?
             ''', (municipality_id,))
             row = cursor.fetchone()
@@ -1446,27 +1856,27 @@ class DatabaseManager:
                     'id': row[0],
                     'code': row[1],
                     'name': row[2],
-                    'код_вида_МО': row[3],
-                    'код_МО': row[4],
-                    'родительный_падеж': row[5],
-                    'адрес_совет': row[6],
-                    'адрес_администрация': row[7],
-                    'совет_почта': row[8],
-                    'администрация_почта': row[9],
-                    'должность_совет': row[10],
-                    'фамилия_совет': row[11],
-                    'имя_совет': row[12],
-                    'отчество_совет': row[13],
-                    'должность_администрация': row[14],
-                    'фамилия_администрация': row[15],
-                    'имя_администрация': row[16],
-                    'отчество_администрация': row[17],
-                    'дата_соглашения': row[18],
-                    'дата_решения': row[19],
-                    'номер_решения': row[20],
-                    'начальная_доходы': row[21],
-                    'начальная_расходы': row[22],
-                    'начальная_дефицит': row[23],
+                    'municipality_type_code': row[3],
+                    'municipality_code': row[4],
+                    'genitive_case': row[5],
+                    'council_address': row[6],
+                    'administration_address': row[7],
+                    'council_email': row[8],
+                    'administration_email': row[9],
+                    'council_position': row[10],
+                    'council_surname': row[11],
+                    'council_first_name': row[12],
+                    'council_patronymic': row[13],
+                    'administration_position': row[14],
+                    'administration_surname': row[15],
+                    'administration_first_name': row[16],
+                    'administration_patronymic': row[17],
+                    'agreement_date': row[18],
+                    'decision_date': row[19],
+                    'decision_number': row[20],
+                    'initial_income': row[21],
+                    'initial_expense': row[22],
+                    'initial_deficit': row[23],
                     'is_active': row[24]
                 })
         return None
@@ -1562,13 +1972,13 @@ class DatabaseManager:
             cursor = conn.cursor()
             if form_type_code:
                 cursor.execute(
-                    'SELECT id, code, наименование, sort_order, form_type_code, is_active '
+                    'SELECT id, code, name, sort_order, form_type_code, is_active '
                     'FROM ref_periods WHERE form_type_code=? ORDER BY sort_order, code',
                     (form_type_code,)
                 )
             else:
                 cursor.execute(
-                    'SELECT id, code, наименование, sort_order, form_type_code, is_active '
+                    'SELECT id, code, name, sort_order, form_type_code, is_active '
                     'FROM ref_periods ORDER BY sort_order, code'
                 )
             for row in cursor.fetchall():
@@ -1592,20 +2002,20 @@ class DatabaseManager:
             # 1) Пытаемся найти период, привязанный к конкретному типу формы
             if form_type_code:
                 cursor.execute(
-                    'SELECT id, code, наименование, sort_order, form_type_code, is_active '
+                    'SELECT id, code, name, sort_order, form_type_code, is_active '
                     'FROM ref_periods WHERE code=? AND form_type_code=?',
                     (code, form_type_code)
                 )
                 row = cursor.fetchone()
                 if row:
                     return PeriodRef.from_row(
-                        {'id': row[0], 'code': row[1], 'name': row[2],  # маппинг: наименование -> name
+                        {'id': row[0], 'code': row[1], 'name': row[2],
                          'sort_order': row[3], 'form_type_code': row[4], 'is_active': row[5]}
                     )
 
             # 2) Если не нашли — пробуем общий период (form_type_code IS NULL)
             cursor.execute(
-                'SELECT id, code, наименование, sort_order, form_type_code, is_active '
+                'SELECT id, code, name, sort_order, form_type_code, is_active '
                 'FROM ref_periods WHERE code=? AND form_type_code IS NULL',
                 (code,)
             )
@@ -1613,7 +2023,7 @@ class DatabaseManager:
             if not row:
                 return None
             return PeriodRef.from_row(
-                {'id': row[0], 'code': row[1], 'name': row[2],  # маппинг: наименование -> name
+                {'id': row[0], 'code': row[1], 'name': row[2],
                  'sort_order': row[3], 'form_type_code': row[4], 'is_active': row[5]}
             )
 
@@ -1628,12 +2038,12 @@ class DatabaseManager:
                     period_id = getattr(p, "id", None)
                     if period_id:
                         cursor.execute(
-                            'INSERT INTO ref_periods (id, code, наименование, sort_order, form_type_code, is_active) '
+                            'INSERT INTO ref_periods (id, code, name, sort_order, form_type_code, is_active) '
                             'VALUES (?, ?, ?, ?, ?, ?)',
                             (
                                 period_id,
                                 p.code,
-                                p.name,  # маппинг: name -> наименование
+                                p.name,
                                 p.sort_order,
                                 p.form_type_code or None,
                                 1 if p.is_active else 0,
@@ -1641,11 +2051,11 @@ class DatabaseManager:
                         )
                     else:
                         cursor.execute(
-                            'INSERT INTO ref_periods (code, наименование, sort_order, form_type_code, is_active) '
+                            'INSERT INTO ref_periods (code, name, sort_order, form_type_code, is_active) '
                             'VALUES (?, ?, ?, ?, ?)',
                             (
                                 p.code,
-                                p.name,  # маппинг: name -> наименование
+                                p.name,
                                 p.sort_order,
                                 p.form_type_code or None,
                                 1 if p.is_active else 0,
@@ -1740,7 +2150,7 @@ class DatabaseManager:
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute(
-                'SELECT id, code, наименование, sort_order, form_type_code, is_active FROM ref_periods WHERE id=?',
+                'SELECT id, code, name, sort_order, form_type_code, is_active FROM ref_periods WHERE id=?',
                 (period_id,),
             )
             row = cursor.fetchone()
@@ -1749,7 +2159,7 @@ class DatabaseManager:
                     {
                         'id': row[0],
                         'code': row[1],
-                        'name': row[2],  # маппинг: наименование -> name
+                        'name': row[2],
                         'sort_order': row[3],
                         'form_type_code': row[4],
                         'is_active': row[5],
@@ -2055,61 +2465,6 @@ class DatabaseManager:
             df = pd.read_sql_query(query, conn)
         return df
 
-    def load_expense_reference_df(self) -> pd.DataFrame:
-        """
-        Загрузка справочника расходов как DataFrame.
-        
-        Использует таблицу ref_expense_codes, если она существует.
-        Возвращает пустой DataFrame, если таблица не найдена.
-        """
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='ref_expense_codes'"
-            )
-            if not cursor.fetchone():
-                # Справочник расходов ещё не загружен/не создан
-                return pd.DataFrame()
-
-            query = '''
-                SELECT
-                    код       AS код,
-                    название  AS наименование,
-                    уровень   AS уровень,
-                    код_Р     AS код_Р,
-                    код_ПР    AS код_ПР,
-                    код_ЦС    AS код_ЦС,
-                    код_ВР    AS код_ВР
-                FROM ref_expense_codes
-            '''
-            df = pd.read_sql_query(query, conn)
-        return df
-    
-    def load_income_levels_df(self) -> pd.DataFrame:
-        """
-        Загрузка справочника уровней доходов как DataFrame.
-        
-        Использует таблицу ref_income_levels, если она существует.
-        Возвращает пустой DataFrame, если таблица не найдена.
-        """
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='ref_income_levels'"
-            )
-            if not cursor.fetchone():
-                # Справочник уровней доходов ещё не загружен/не создан
-                return pd.DataFrame()
-
-            query = '''
-                SELECT
-                    код_уровня AS код_уровня,
-                    наименование AS наименование,
-                    цвет AS цвет
-                FROM ref_income_levels
-            '''
-            df = pd.read_sql_query(query, conn)
-        return df
 
     # ----- Нормализованные данные форм (values) -----
 
@@ -2850,167 +3205,246 @@ class DatabaseManager:
             logger.error(f"Ошибка загрузки справочника из {file_path}: {e}", exc_info=True)
             raise
     
-    def load_grbs_from_excel(self, file_path: str) -> int:
-        """Загрузка справочника ГРБС из Excel"""
-        return self.load_reference_from_excel(
-            file_path=file_path,
-            table_name='ref_grbs',
-            column_mapping={'код_ГРБС': 'код_ГРБС', 'наименование': 'наименование'},
-            primary_key_column='код_ГРБС'
-        )
-    
-    def load_expense_sections_from_excel(self, file_path: str) -> int:
-        """Загрузка справочника разделов/подразделов расходов из Excel"""
-        return self.load_reference_from_excel(
-            file_path=file_path,
-            table_name='ref_expense_sections',
-            column_mapping={
-                'код_РП': 'код_РП',
-                'наименование': 'наименование',
-                'утверждающий_документ': 'утверждающий_документ'
-            },
-            primary_key_column='код_РП'
-        )
-    
-    def load_target_articles_from_excel(self, file_path: str) -> int:
-        """Загрузка справочника целевых статей расходов из Excel"""
-        return self.load_reference_from_excel(
-            file_path=file_path,
-            table_name='ref_target_articles',
-            column_mapping={'код_ЦСР': 'код_ЦСР', 'наименование': 'наименование'},
-            primary_key_column='код_ЦСР'
-        )
-    
-    def load_expense_types_from_excel(self, file_path: str) -> int:
-        """Загрузка справочника видов статей расходов из Excel"""
-        return self.load_reference_from_excel(
-            file_path=file_path,
-            table_name='ref_expense_types',
-            column_mapping={'код_вида_СР': 'код_вида_СР', 'наименование': 'наименование'},
-            primary_key_column='код_вида_СР'
-        )
-    
-    def load_program_nonprogram_from_excel(self, file_path: str) -> int:
-        """Загрузка справочника программных/непрограммных статей из Excel"""
-        return self.load_reference_from_excel(
-            file_path=file_path,
-            table_name='ref_program_nonprogram',
-            column_mapping={'код_ПНС': 'код_ПНС', 'наименование': 'наименование'},
-            primary_key_column='код_ПНС'
-        )
-    
-    def load_expense_kinds_from_excel(self, file_path: str) -> int:
-        """Загрузка справочника видов расходов из Excel"""
-        return self.load_reference_from_excel(
-            file_path=file_path,
-            table_name='ref_expense_kinds',
-            column_mapping={
-                'код_ВР': 'код_ВР',
-                'наименование': 'наименование',
-                'утверждающий_документ': 'утверждающий_документ'
-            },
-            primary_key_column='код_ВР'
-        )
-    
-    def load_national_projects_from_excel(self, file_path: str) -> int:
-        """Загрузка справочника национальных проектов из Excel"""
-        return self.load_reference_from_excel(
-            file_path=file_path,
-            table_name='ref_national_projects',
-            column_mapping={
-                'код_НПЦСР': 'код_НПЦСР',
-                'наименование': 'наименование',
-                'утверждающий_документ': 'утверждающий_документ'
-            },
-            primary_key_column='код_НПЦСР'
-        )
-    
-    def load_gadb_from_excel(self, file_path: str) -> int:
-        """Загрузка справочника ГАДБ из Excel"""
-        return self.load_reference_from_excel(
-            file_path=file_path,
-            table_name='ref_gadb',
-            column_mapping={'код_ГАДБ': 'код_ГАДБ', 'наименование': 'наименование'},
-            primary_key_column='код_ГАДБ'
-        )
-    
-    def load_income_groups_from_excel(self, file_path: str) -> int:
-        """Загрузка справочника групп доходов из Excel"""
-        return self.load_reference_from_excel(
-            file_path=file_path,
-            table_name='ref_income_groups',
-            column_mapping={'код_группы_ДБ': 'код_группы_ДБ', 'наименование': 'наименование'},
-            primary_key_column='код_группы_ДБ'
-        )
-    
-    def load_income_subgroups_from_excel(self, file_path: str) -> int:
-        """Загрузка справочника подгрупп доходов из Excel"""
-        return self.load_reference_from_excel(
-            file_path=file_path,
-            table_name='ref_income_subgroups',
-            column_mapping={'код_подгруппы_ДБ': 'код_подгруппы_ДБ', 'наименование': 'наименование'},
-            primary_key_column='код_подгруппы_ДБ'
-        )
-    
-    def load_income_articles_from_excel(self, file_path: str) -> int:
-        """Загрузка справочника статей/подстатей доходов из Excel"""
-        return self.load_reference_from_excel(
-            file_path=file_path,
-            table_name='ref_income_articles',
-            column_mapping={'код_статьи_подстатьи_ДБ': 'код_статьи_подстатьи_ДБ', 'наименование': 'наименование'},
-            primary_key_column='код_статьи_подстатьи_ДБ'
-        )
-    
-    def load_income_elements_from_excel(self, file_path: str) -> int:
-        """Загрузка справочника элементов доходов из Excel"""
-        return self.load_reference_from_excel(
-            file_path=file_path,
-            table_name='ref_income_elements',
-            column_mapping={'код_элемента_ДБ': 'код_элемента_ДБ', 'наименование': 'наименование'},
-            primary_key_column='код_элемента_ДБ'
-        )
-    
-    def load_income_subkind_groups_from_excel(self, file_path: str) -> int:
-        """Загрузка справочника групп подвидов доходов из Excel"""
-        return self.load_reference_from_excel(
-            file_path=file_path,
-            table_name='ref_income_subkind_groups',
-            column_mapping={'код_группы_ПДБ': 'код_группы_ПДБ', 'наименование': 'наименование'},
-            primary_key_column='код_группы_ПДБ'
-        )
-    
-    def load_income_analytical_groups_from_excel(self, file_path: str) -> int:
-        """Загрузка справочника аналитических групп подвидов доходов из Excel"""
-        return self.load_reference_from_excel(
-            file_path=file_path,
-            table_name='ref_income_analytical_groups',
-            column_mapping={'код_группы_АПДБ': 'код_группы_АПДБ', 'наименование': 'наименование'},
-            primary_key_column='код_группы_АПДБ'
-        )
-    
-    def load_income_levels_from_excel(self, file_path: str) -> int:
-        """Загрузка справочника уровней доходов из Excel"""
-        return self.load_reference_from_excel(
-            file_path=file_path,
-            table_name='ref_income_levels',
-            column_mapping={
-                'код_уровня': 'код_уровня',
-                'наименование': 'наименование',
-                'цвет': 'цвет'
-            },
-            primary_key_column='код_уровня'
-        )
-    
     def load_municipality_types_from_excel(self, file_path: str) -> int:
         """Загрузка справочника видов муниципальных образований из Excel"""
         return self.load_reference_from_excel(
             file_path=file_path,
             table_name='ref_municipality_types',
-            column_mapping={'код_вида_МО': 'код_вида_МО', 'наименование': 'наименование'},
-            primary_key_column='код_вида_МО'
+            column_mapping={'код_вида_МО': 'municipality_type_code', 'наименование': 'name'},
+            primary_key_column='municipality_type_code'
         )
     
     # Примечание: Методы load_income_codes_from_excel и load_expense_codes_from_excel удалены,
     # так как справочники кодов доходов и расходов уже загружаются через существующий механизм:
     # - income_reference_records загружается через ReferenceController.load_reference_file('доходы', ...)
-    # - ref_expense_codes используется через load_expense_reference_df() и загружается отдельно
+    
+    def get_budget_reference_update_date(self, table_name: str) -> Optional[str]:
+        """
+        Получает дату последнего обновления справочника (update_at последней записи).
+        
+        Args:
+            table_name: Имя таблицы справочника
+            
+        Returns:
+            Дата последнего обновления в формате 'DD.MM.YYYY HH:MM:SS' или None
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT update_at FROM budget_references_updates 
+                WHERE table_name = ? 
+                ORDER BY created_at DESC 
+                LIMIT 1
+            """, (table_name,))
+            result = cursor.fetchone()
+            return result[0] if result else None
+    
+    def get_budget_reference_last_info(self, table_name: str) -> Optional[Dict[str, Any]]:
+        """
+        Получает информацию о последней записи обновления справочника.
+        
+        Args:
+            table_name: Имя таблицы справочника
+            
+        Returns:
+            Словарь с информацией или None
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT records_count, created_at, update_at 
+                FROM budget_references_updates 
+                WHERE table_name = ? 
+                ORDER BY created_at DESC 
+                LIMIT 1
+            """, (table_name,))
+            result = cursor.fetchone()
+            if result:
+                return {
+                    'records_count': result[0],
+                    'created_at': result[1],
+                    'update_at': result[2]
+                }
+            return None
+    
+    def update_budget_reference_date(self, table_name: str, records_count: int = 0) -> None:
+        """
+        Обновляет дату последнего обновления справочника.
+        Записывает новую запись только если количество записей изменилось.
+        
+        Args:
+            table_name: Имя таблицы справочника
+            records_count: Количество записей в таблице
+        """
+        current_time = datetime.now().strftime('%d.%m.%Y %H:%M:%S')
+        
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            
+            # Проверяем последнюю запись для этой таблицы
+            cursor.execute("""
+                SELECT records_count FROM budget_references_updates 
+                WHERE table_name = ? 
+                ORDER BY created_at DESC 
+                LIMIT 1
+            """, (table_name,))
+            last_record = cursor.fetchone()
+            
+            # Записываем только если количество изменилось
+            if last_record is None or last_record[0] != records_count:
+                cursor.execute("""
+                    INSERT INTO budget_references_updates 
+                    (table_name, records_count, created_at, update_at)
+                    VALUES (?, ?, ?, ?)
+                """, (table_name, records_count, current_time, current_time))
+            else:
+                # Если количество не изменилось, обновляем только update_at последней записи
+                cursor.execute("""
+                    UPDATE budget_references_updates 
+                    SET update_at = ?
+                    WHERE table_name = ? 
+                    AND id = (
+                        SELECT id FROM budget_references_updates 
+                        WHERE table_name = ? 
+                        ORDER BY created_at DESC 
+                        LIMIT 1
+                    )
+                """, (current_time, table_name, table_name))
+            
+            conn.commit()
+    
+    def get_all_budget_references_info(self) -> List[Dict[str, Any]]:
+        """
+        Получает информацию о всех бюджетных справочниках.
+        Возвращает последнюю запись для каждого справочника.
+        
+        Returns:
+            Список словарей с информацией о справочниках
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            # Получаем последнюю запись для каждого справочника
+            cursor.execute("""
+                SELECT DISTINCT table_name FROM budget_references_updates
+            """)
+            table_names = [row[0] for row in cursor.fetchall()]
+            
+            info_list = []
+            for table_name in table_names:
+                last_info = self.get_budget_reference_last_info(table_name)
+                if last_info:
+                    info_list.append({
+                        'table_name': table_name,
+                        'last_update_date': last_info['update_at'],  # Используем update_at как дату последнего обновления
+                        'records_count': last_info['records_count'],
+                        'created_at': last_info['created_at'],
+                        'update_at': last_info['update_at']
+                    })
+                else:
+                    info_list.append({
+                        'table_name': table_name,
+                        'last_update_date': None,
+                        'records_count': 0,
+                        'created_at': None,
+                        'update_at': None
+                    })
+            
+            return sorted(info_list, key=lambda x: x['table_name'])
+    
+    # --- Методы для работы с конфигурацией ---
+    
+    def save_config(self, config_key: str, config_value: Any) -> None:
+        """
+        Сохраняет значение конфигурации.
+        
+        Args:
+            config_key: Ключ конфигурации (например, 'references_table_columns:oktmo')
+            config_value: Значение конфигурации (будет сериализовано в JSON)
+        """
+        try:
+            import json
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                # Сериализуем значение в JSON
+                if isinstance(config_value, (dict, list)):
+                    value_json = json.dumps(config_value, ensure_ascii=False)
+                else:
+                    value_json = json.dumps(config_value, ensure_ascii=False)
+                
+                cursor.execute('''
+                    INSERT OR REPLACE INTO app_config (config_key, config_value, updated_at)
+                    VALUES (?, ?, strftime('%Y-%m-%d %H:%M:%S', 'now', 'localtime'))
+                ''', (config_key, value_json))
+                conn.commit()
+                logger.debug(f"Конфигурация сохранена: {config_key}")
+        except Exception as e:
+            logger.error(f"Ошибка сохранения конфигурации {config_key}: {e}", exc_info=True)
+            raise
+    
+    def load_config(self, config_key: str, default: Any = None) -> Any:
+        """
+        Загружает значение конфигурации.
+        
+        Args:
+            config_key: Ключ конфигурации
+            default: Значение по умолчанию, если конфигурация не найдена
+            
+        Returns:
+            Значение конфигурации (десериализованное из JSON) или default
+        """
+        try:
+            import json
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT config_value FROM app_config WHERE config_key = ?', (config_key,))
+                result = cursor.fetchone()
+                
+                if result:
+                    value_json = result[0]
+                    return json.loads(value_json)
+                else:
+                    return default
+        except Exception as e:
+            logger.error(f"Ошибка загрузки конфигурации {config_key}: {e}", exc_info=True)
+            return default
+    
+    def delete_config(self, config_key: str) -> None:
+        """
+        Удаляет конфигурацию.
+        
+        Args:
+            config_key: Ключ конфигурации для удаления
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('DELETE FROM app_config WHERE config_key = ?', (config_key,))
+                conn.commit()
+                logger.debug(f"Конфигурация удалена: {config_key}")
+        except Exception as e:
+            logger.error(f"Ошибка удаления конфигурации {config_key}: {e}", exc_info=True)
+            raise
+    
+    def delete_all_column_visibility_configs(self) -> int:
+        """
+        Удаляет все настройки видимости столбцов для всех таблиц справочников и деревьев.
+        
+        Returns:
+            Количество удаленных настроек
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                # Удаляем настройки для таблиц справочников
+                cursor.execute('DELETE FROM app_config WHERE config_key LIKE ?', ('references_table_columns:%',))
+                refs_count = cursor.rowcount
+                # Удаляем настройки для деревьев
+                cursor.execute('DELETE FROM app_config WHERE config_key LIKE ?', ('tree_columns:%',))
+                tree_count = cursor.rowcount
+                deleted_count = refs_count + tree_count
+                conn.commit()
+                logger.info(f"Удалено настроек видимости столбцов: таблиц справочников - {refs_count}, деревьев - {tree_count}, всего - {deleted_count}")
+                return deleted_count
+        except Exception as e:
+            logger.error(f"Ошибка удаления настроек видимости столбцов: {e}", exc_info=True)
+            raise

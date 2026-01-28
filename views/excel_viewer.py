@@ -1,12 +1,43 @@
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, 
                              QTableWidgetItem, QHeaderView, QComboBox, QLabel,
                              QPushButton, QSplitter, QTabWidget, QMessageBox,
-                             QMenu)
+                             QMenu, QStyledItemDelegate, QStyle)
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QColor, QBrush
+from PyQt5.QtGui import QColor, QBrush, QPalette
 import pandas as pd
 import openpyxl
 from openpyxl.utils import get_column_letter
+from models.constants.form_0503317_constants import StyleConstants
+
+
+class ExcelItemDelegate(QStyledItemDelegate):
+    """Делегат для ячеек Excel, сохраняющий оригинальные цвета текста при выделении"""
+    
+    def initStyleOption(self, option, index):
+        """Инициализация опций стиля с сохранением оригинального цвета текста"""
+        super().initStyleOption(option, index)
+        
+        # Обрабатываем только выделенные ячейки
+        if option.state & QStyle.State_Selected:
+            # Получаем оригинальный цвет текста из элемента
+            text_color = index.data(Qt.ForegroundRole)
+            
+            # Если у элемента есть свой цвет (установленный явно), используем его даже при выделении
+            if text_color:
+                if isinstance(text_color, QBrush):
+                    color = text_color.color()
+                else:
+                    color = text_color
+                
+                # Проверяем, что цвет валидный
+                if isinstance(color, QColor) and color.isValid():
+                    # Устанавливаем цвет текста в опции, переопределяя стандартный цвет выделения
+                    option.palette.setColor(QPalette.HighlightedText, color)
+            
+            # Устанавливаем полупрозрачный цвет фона выделения
+            highlight_color = option.palette.highlight().color()
+            highlight_color.setAlpha(50)  # Полупрозрачный фон
+            option.palette.setColor(QPalette.Highlight, highlight_color)
 
 class ExcelViewer(QWidget):
     """Виджет для просмотра Excel файлов в табличном виде"""
@@ -63,6 +94,10 @@ class ExcelViewer(QWidget):
         self.data_table.verticalHeader().setSectionResizeMode(QHeaderView.Interactive)
         self.data_table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.data_table.customContextMenuRequested.connect(self.show_context_menu)
+        
+        # Устанавливаем делегат для сохранения оригинальных цветов текста при выделении
+        self.data_table.setItemDelegate(ExcelItemDelegate())
+        
         layout.addWidget(self.data_table)
     
     def load_excel_file(self, file_path: str):
@@ -119,10 +154,20 @@ class ExcelViewer(QWidget):
                     else:
                         display_value = str(value)
                     
+                    # Проверяем, установлен ли цвет явно (не автоматический)
+                    font_color = cell.font.color
+                    has_explicit_color = False
+                    if font_color:
+                        color_type = getattr(font_color, 'type', None)
+                        # Цвет считается явно установленным только если тип 'rgb'
+                        has_explicit_color = (color_type == 'rgb' and 
+                                             hasattr(font_color, 'rgb') and 
+                                             font_color.rgb is not None)
+                    
                     row_data.append({
                         'value': value,
                         'display_value': display_value,
-                        'font_color': cell.font.color,
+                        'font_color': font_color if has_explicit_color else None,
                         'fill_color': cell.fill.start_color if cell.fill.patternType else None,
                         'is_bold': cell.font.bold,
                         'is_italic': cell.font.italic
@@ -162,33 +207,100 @@ class ExcelViewer(QWidget):
         
         # Заполняем данные
         for row_idx, row_data in enumerate(data):
+            # Определяем уровень строки по цвету фона первой ячейки
+            row_level = None
+            if row_data:
+                first_cell = row_data[0]
+                if first_cell.get('fill_color'):
+                    row_level = self._get_level_from_fill_color(first_cell['fill_color'])
+            
             for col_idx, cell_data in enumerate(row_data):
                 item = QTableWidgetItem(cell_data['display_value'])
                 
-                # Применяем стили
-                self.apply_cell_styles(item, cell_data)
+                # Применяем стили с учетом уровня строки
+                self.apply_cell_styles(item, cell_data, row_level=row_level)
                 
                 self.data_table.setItem(row_idx, col_idx, item)
         
         # Настраиваем размеры столбцов
         self.adjust_columns_width()
     
-    def apply_cell_styles(self, item, cell_data):
-        """Применение стилей ячейки"""
+    def _get_level_from_fill_color(self, fill_color) -> int:
+        """Определение уровня по цвету фона
+        
+        Args:
+            fill_color: Объект цвета из openpyxl
+            
+        Returns:
+            Уровень (0-6) или None, если цвет не соответствует ни одному уровню
+        """
+        if not fill_color or not hasattr(fill_color, 'rgb'):
+            return None
+        
+        try:
+            rgb_value = fill_color.rgb
+            if not rgb_value:
+                return None
+            
+            # Убираем альфа-канал из цвета (первые 2 символа)
+            color_hex = rgb_value[2:] if len(rgb_value) == 8 else rgb_value
+            color_hex = color_hex.upper()
+            
+            # Проверяем, соответствует ли цвет одному из цветов уровней
+            for level, level_color in StyleConstants.LEVEL_COLORS.items():
+                if color_hex == level_color.upper():
+                    return level
+        except Exception:
+            pass
+        
+        return None
+    
+    def apply_cell_styles(self, item, cell_data, row_level=None):
+        """Применение стилей ячейки
+        
+        Args:
+            item: Элемент таблицы
+            cell_data: Данные ячейки из Excel
+            row_level: Уровень строки (если известен)
+        """
         # Цвет текста
-        if cell_data['font_color'] and hasattr(cell_data['font_color'], 'rgb'):
+        # Устанавливаем цвет только если он был явно установлен в Excel (не автоматический)
+        if cell_data['font_color']:
             try:
-                color = QColor(cell_data['font_color'].rgb)
-                item.setForeground(QBrush(color))
-            except:
+                rgb_value = cell_data['font_color'].rgb
+                if rgb_value:
+                    color = QColor(rgb_value)
+                    if color.isValid():
+                        item.setForeground(QBrush(color))
+            except Exception:
+                # Если не удалось установить цвет, Qt использует цвет по умолчанию из палитры
                 pass
         
         # Цвет фона
-        if cell_data['fill_color'] and hasattr(cell_data['fill_color'], 'rgb'):
+        # Сначала пытаемся определить уровень по цвету фона из Excel
+        level = row_level
+        if level is None and cell_data['fill_color']:
+            level = self._get_level_from_fill_color(cell_data['fill_color'])
+        
+        # Если уровень определен, используем цвет уровня
+        if level is not None and level in StyleConstants.LEVEL_COLORS:
             try:
-                color = QColor(cell_data['fill_color'].rgb)
-                item.setBackground(QBrush(color))
-            except:
+                level_color_hex = StyleConstants.LEVEL_COLORS[level]
+                # Добавляем альфа-канал (FF для непрозрачности)
+                color = QColor(f"#{level_color_hex}")
+                if color.isValid():
+                    item.setBackground(QBrush(color))
+            except Exception:
+                pass
+        # Если уровень не определен, но есть цвет фона в Excel, используем его
+        elif cell_data['fill_color'] and hasattr(cell_data['fill_color'], 'rgb'):
+            try:
+                rgb_value = cell_data['fill_color'].rgb
+                if rgb_value:
+                    color = QColor(rgb_value)
+                    if color.isValid():
+                        item.setBackground(QBrush(color))
+            except Exception:
                 pass
         
         # Жирный шрифт

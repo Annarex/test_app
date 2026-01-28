@@ -6,8 +6,9 @@ from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QComboBox, QTreeWidget, QTreeWidgetItem, QMenu, 
                              QInputDialog, QDialog, QDialogButtonBox, QFormLayout,
                              QLineEdit, QCheckBox, QApplication, QStyle, QToolButton,
-                             QSpinBox, QWidgetAction)
+                             QSpinBox, QWidgetAction, QDesktopWidget)
 from PyQt5.QtCore import Qt, QTimer, QSize, QRect
+from PyQt5.QtGui import QGuiApplication
 from PyQt5.QtGui import (QFont, QColor, QBrush, QTextDocument, QTextOption, 
                         QTextCharFormat, QTextCursor, QPainter)
 import os
@@ -21,13 +22,10 @@ from controllers.main_controller import MainController
 from logger import logger
 from models.constants.form_0503317_constants import Form0503317Constants
 from views.project_dialog import ProjectDialog
-from views.reference_dialog import ReferenceDialog
 from views.excel_viewer import ExcelViewer
-from views.reference_viewer import ReferenceViewer
-from views.dictionaries_dialog import DictionariesDialog
+# Импорты ReferenceViewer и DictionariesDialog удалены - функционал интегрирован в ReferencesManagementDialog
 from views.references_management_dialog import ReferencesManagementDialog
 from views.form_load_dialog import FormLoadDialog
-from views.document_dialog import DocumentDialog
 from views.widgets import WrapHeaderView, WordWrapItemDelegate, DetachedTabWindow
 from views.menu import MenuBar, ToolBar
 from views.panels import ProjectsPanel, TabsPanel
@@ -49,7 +47,6 @@ class MainWindow(QMainWindow):
         self.projects_inner_panel = None
         self.projects_toggle_button = None
         self.projects_panel_last_size = 260
-        self.reference_window = None
         self.tree_headers = []
         self.tree_header_tooltips = []
         self.tree_column_mapping = {}
@@ -76,9 +73,7 @@ class MainWindow(QMainWindow):
         
         # Инициализируем менеджеры и контроллеры
         from views.managers.tab_manager import TabManager
-        from views.controllers.documents_ui_controller import DocumentsUIController
         self.tab_manager = TabManager(self)
-        self.documents_ui = DocumentsUIController(self)
         
         self.init_ui()
         self.connect_signals()
@@ -87,7 +82,11 @@ class MainWindow(QMainWindow):
     def init_ui(self):
         """Инициализация интерфейса"""
         self.setWindowTitle("Система обработки бюджетных форм")
-        self.setGeometry(100, 100, 1600, 900)
+        
+        # Устанавливаем размер окна
+        window_width = 1400
+        window_height = 900
+        self.resize(window_width, window_height)
         
         # Создаем меню-бар
         self.create_menu_bar()
@@ -229,35 +228,12 @@ class MainWindow(QMainWindow):
         # ========== Меню "Справочники" ==========
         reference_menu = menubar.addMenu("&Справочники")
         
-        load_income_ref_action = QAction("&Загрузить справочник доходов...", self)
-        load_income_ref_action.setIcon(self.style().standardIcon(QStyle.SP_DialogOpenButton))
-        load_income_ref_action.setStatusTip("Загрузить справочник доходов")
-        load_income_ref_action.triggered.connect(lambda: self.show_reference_dialog("доходы"))
-        reference_menu.addAction(load_income_ref_action)
-        
-        load_sources_ref_action = QAction("&Загрузить справочник источников...", self)
-        load_sources_ref_action.setIcon(self.style().standardIcon(QStyle.SP_DialogOpenButton))
-        load_sources_ref_action.setStatusTip("Загрузить справочник источников финансирования")
-        load_sources_ref_action.triggered.connect(lambda: self.show_reference_dialog("источники"))
-        reference_menu.addAction(load_sources_ref_action)
-        
-        reference_menu.addSeparator()
-        
-        show_references_action = QAction("&Просмотр справочников", self)
-        show_references_action.setIcon(self.style().standardIcon(QStyle.SP_FileDialogInfoView))
-        show_references_action.setShortcut("Ctrl+R")
-        show_references_action.setStatusTip("Открыть окно просмотра справочников")
-        show_references_action.triggered.connect(self.show_reference_viewer)
-        reference_menu.addAction(show_references_action)
-        
-        reference_menu.addSeparator()
-        
-        config_dicts_action = QAction("&Справочники конфигурации...", self)
-        config_dicts_action.setIcon(self.style().standardIcon(QStyle.SP_FileDialogListView))
-        config_dicts_action.setShortcut("Ctrl+D")
-        config_dicts_action.setStatusTip("Редактировать справочники конфигурации (годы, МО, типы форм, периоды)")
-        config_dicts_action.triggered.connect(self.show_config_dictionaries)
-        reference_menu.addAction(config_dicts_action)
+        manage_refs_action = QAction("&Управление справочниками...", self)
+        manage_refs_action.setIcon(self.style().standardIcon(QStyle.SP_FileDialogListView))
+        manage_refs_action.setShortcut("Ctrl+R")
+        manage_refs_action.setStatusTip("Управление справочниками (коды доходов, расходов, ГРБС, конфигурация и т.д.)")
+        manage_refs_action.triggered.connect(self.show_reference_viewer)
+        reference_menu.addAction(manage_refs_action)
         
         # ========== Меню "Вид" ==========
         view_menu = menubar.addMenu("&Вид")
@@ -350,31 +326,14 @@ class MainWindow(QMainWindow):
         
         toolbar.addSeparator()
         
-        # Отдельные действия для справочников доходов и источников
-        load_income_ref_action = QAction("Справочник доходов", self)
-        load_income_ref_action.setIcon(self.style().standardIcon(QStyle.SP_DialogOpenButton))
-        load_income_ref_action.triggered.connect(lambda: self.show_reference_dialog("доходы"))
-        toolbar.addAction(load_income_ref_action)
-
-        load_sources_ref_action = QAction("Справочник источников", self)
-        load_sources_ref_action.setIcon(self.style().standardIcon(QStyle.SP_DialogOpenButton))
-        load_sources_ref_action.triggered.connect(lambda: self.show_reference_dialog("источники"))
-        toolbar.addAction(load_sources_ref_action)
-
         # Кнопка для сворачивания нулевых столбцов (таблица + дерево)
         # Действие "Скрыть нулевые столбцы" перенесено в интерфейс формы (чекбокс)
         # Удалено из тулбара, т.к. теперь доступно в интерфейсе формы
         
-        show_references_action = QAction("Просмотр справочников", self)
-        show_references_action.setIcon(self.style().standardIcon(QStyle.SP_FileDialogInfoView))
-        show_references_action.triggered.connect(self.show_reference_viewer)
-        toolbar.addAction(show_references_action)
-
-        # Редактор конфигурационных справочников (годы, МО, типы форм, периоды)
-        config_dicts_action = QAction("Справочники конфигурации", self)
-        config_dicts_action.setIcon(self.style().standardIcon(QStyle.SP_FileDialogListView))
-        config_dicts_action.triggered.connect(self.show_config_dictionaries)
-        toolbar.addAction(config_dicts_action)
+        manage_refs_action = QAction("Управление справочниками", self)
+        manage_refs_action.setIcon(self.style().standardIcon(QStyle.SP_FileDialogListView))
+        manage_refs_action.triggered.connect(self.show_reference_viewer)
+        toolbar.addAction(manage_refs_action)
 
         # Кнопки управления панелью проектов размещены непосредственно на самой панели
     
@@ -635,10 +594,6 @@ class MainWindow(QMainWindow):
         """Обновляет высоту заголовка дерева (делегирует к tree_config)"""
         self.tree_config._update_tree_header_height(tree_widget)
 
-    def hide_zero_columns_in_tree(self, section_key: str, data):
-        """Скрытие столбцов дерева (делегирует к tree_config)"""
-        self.tree_config.hide_zero_columns_in_tree(section_key, data)
-
     def apply_tree_data_type_visibility(self):
         """Скрывает столбцы дерева в зависимости от выбранного типа данных (делегирует к tree_config)"""
         self.tree_config.apply_tree_data_type_visibility()
@@ -662,59 +617,12 @@ class MainWindow(QMainWindow):
         self.selection_start_column = None
         if self.controller.current_project:
             self.tree_builder.load_project_data_to_tree(self.controller.current_project)
-            # Применяем скрытие нулевых столбцов, если чекбокс включен
-            if hasattr(self, 'hide_zero_columns_checkbox') and self.hide_zero_columns_checkbox.isChecked():
-                QTimer.singleShot(200, lambda: self.apply_hide_zero_columns())
-    
     def on_data_type_changed(self, data_type):
         """Обработка смены типа данных"""
         self.current_data_type = data_type
         self.tree_config.apply_tree_data_type_visibility()
-        # Применяем скрытие нулевых столбцов, если чекбокс включен
-        if hasattr(self, 'hide_zero_columns_checkbox') and self.hide_zero_columns_checkbox.isChecked():
-            self.apply_hide_zero_columns()
         if self.controller.current_project:
             self.tree_builder.load_project_data_to_tree(self.controller.current_project)
-    
-    def on_hide_zero_columns_changed(self, state):
-        """Обработка изменения состояния чекбокса 'Скрыть нулевые столбцы'"""
-        if state == Qt.Checked:
-            self.apply_hide_zero_columns()
-        else:
-            self.show_all_columns()
-    
-    def apply_hide_zero_columns(self):
-        """Применить скрытие нулевых столбцов"""
-        if not (self.controller.current_project and self.controller.current_project.data):
-            logger.debug("apply_hide_zero_columns: нет проекта или данных")
-            return
-
-        section_map = {
-            "Доходы": "доходы_data",
-            "Расходы": "расходы_data",
-            "Источники финансирования": "источники_финансирования_data",
-            "Консолидируемые расчеты": "консолидируемые_расчеты_data"
-        }
-        section_key = section_map.get(self.current_section)
-        if not section_key or section_key not in self.controller.current_project.data:
-            logger.debug(f"apply_hide_zero_columns: раздел {self.current_section} не найден")
-            return
-
-        data = self.controller.current_project.data[section_key]
-        if not data:
-            logger.debug(f"apply_hide_zero_columns: нет данных для раздела {section_key}")
-            return
-
-        logger.debug(f"apply_hide_zero_columns: применяю скрытие для раздела {section_key}, записей: {len(data)}")
-
-        # Сначала показываем все столбцы
-        self.tree_handlers.show_all_columns()
-        
-        # Применяем отображение колонок в зависимости от выбранного типа данных
-        self.tree_config.apply_tree_data_type_visibility()
-
-        # Затем применяем скрытие нулевых столбцов (после применения видимости по типу данных)
-        self.tree_config.hide_zero_columns_in_tree(section_key, data)
     
     def expand_all_tree(self):
         """Развернуть все узлы дерева"""
@@ -742,10 +650,6 @@ class MainWindow(QMainWindow):
         """Контекстное меню для заголовков дерева (делегирует к tree_handlers)"""
         self.tree_handlers.show_tree_header_context_menu(position)
     
-    def show_all_columns(self):
-        """Показать все столбцы в дереве и вернуть им нормальные ширины/заголовки"""
-        self.tree_handlers.show_all_columns()
-
     def copy_tree_item_value(self, item):
         """Копировать значение из дерева (делегирует к tree_handlers)"""
         self.tree_handlers.copy_tree_item_value(item)
@@ -760,81 +664,46 @@ class MainWindow(QMainWindow):
             if project:
                 QMessageBox.information(self, "Успех", f"Проект '{project.name}' создан")
     
-    def show_reference_dialog(self, ref_type: str = None):
-        """Показать диалог загрузки справочника"""
-        dialog = ReferenceDialog(self, ref_type)
-        if dialog.exec_():
-            ref_data = dialog.get_reference_data()
-            success = self.controller.load_reference_file(
-                ref_data['file_path'],
-                ref_data['reference_type'],
-                ref_data['name']
-            )
-            if success:
-                QMessageBox.information(self, "Успех", "Справочник загружен")
-    
     def show_reference_viewer(self):
-        """Показать просмотрщик справочников в отдельном окне"""
-        from PyQt5.QtWidgets import QMainWindow, QToolBar
-
-        if self.reference_window is None:
-            self.reference_window = QMainWindow(self)
-            self.reference_window.setWindowTitle("Справочники")
-            self.reference_window.resize(900, 600)
-            # Включаем стандартные кнопки окна (включая максимизацию)
-            self.reference_window.setWindowFlags(self.reference_window.windowFlags() | Qt.WindowMaximizeButtonHint)
-            self.reference_window.is_fullscreen = False
-
-            self.reference_viewer = ReferenceViewer()
-            self.reference_window.setCentralWidget(self.reference_viewer)
-            
-            # Обработка F11 для полноэкранного режима
-            # Создаем обработчик событий для окна справочников
-            def key_press_handler(event):
-                if event.key() == Qt.Key_F11:
-                    self._toggle_reference_fullscreen()
-                else:
-                    QMainWindow.keyPressEvent(self.reference_window, event)
-            
-            self.reference_window.keyPressEvent = key_press_handler
-
-        # Устанавливаем callback для обновления данных из контроллера
-        def refresh_callback():
-            # Обновляем справочники в контроллере
-            self.controller.refresh_references()
-            # Обновляем данные в окне справочников
-            self.reference_viewer.load_references(self.controller.references)
-        
-        self.reference_viewer.refresh_callback = refresh_callback
-        
-        # Загружаем актуальные справочники и показываем окно
-        self.reference_viewer.load_references(self.controller.references)
-        self.reference_window.show()
-        self.reference_window.raise_()
-        self.reference_window.activateWindow()
-    
-    def _toggle_reference_fullscreen(self):
-        """Переключение полноэкранного режима для окна справочников"""
-        if self.reference_window is None:
-            return
-        
-        if self.reference_window.is_fullscreen:
-            self.reference_window.showNormal()
-            self.reference_window.is_fullscreen = False
-        else:
-            self.reference_window.showFullScreen()
-            self.reference_window.is_fullscreen = True
-    
-
-    def show_config_dictionaries(self):
-        """Показать диалог редактирования справочников конфигурации"""
-        dlg = DictionariesDialog(self.controller.db_manager, self)
-        dlg.exec_()
-    
-    def show_references_management(self):
-        """Показать диалог управления справочниками (коды доходов, расходов и т.д.)"""
+        """Показать диалог управления справочниками"""
+        from views.references_management_dialog import ReferencesManagementDialog
         dlg = ReferencesManagementDialog(self.controller.db_manager, self)
         dlg.exec_()
+    
+    def show_budget_references_update_dialog(self):
+        """Показать диалог обновления онлайн справочников"""
+        from views.budget_references_update_dialog import BudgetReferencesUpdateDialog
+        dlg = BudgetReferencesUpdateDialog(self.controller.db_manager, self)
+        dlg.exec_()
+    
+    def reset_column_visibility_settings(self):
+        """Сбросить все настройки видимости столбцов в таблицах справочников и деревьях"""
+        reply = QMessageBox.question(
+            self,
+            "Сброс настроек столбцов",
+            "Вы уверены, что хотите сбросить все настройки видимости столбцов для всех таблиц справочников и деревьев?\n\n"
+            "Это действие нельзя отменить.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            try:
+                deleted_count = self.controller.db_manager.delete_all_column_visibility_configs()
+                QMessageBox.information(
+                    self,
+                    "Настройки сброшены",
+                    f"Успешно сброшено настроек видимости столбцов: {deleted_count}.\n\n"
+                    "При следующем открытии справочников и деревьев будут использованы настройки по умолчанию."
+                )
+                logger.info(f"Пользователь сбросил настройки видимости столбцов. Удалено: {deleted_count}")
+            except Exception as e:
+                logger.error(f"Ошибка при сбросе настроек столбцов: {e}", exc_info=True)
+                QMessageBox.critical(
+                    self,
+                    "Ошибка",
+                    f"Не удалось сбросить настройки столбцов:\n{str(e)}"
+                )
 
     def on_projects_side_button_clicked(self):
         """Обработчик клика по боковой кнопке панели проектов"""
@@ -959,10 +828,6 @@ class MainWindow(QMainWindow):
             self.recalculate_btn.setEnabled(has_revision)
         if hasattr(self, 'export_calculated_btn'):
             self.export_calculated_btn.setEnabled(has_revision)
-        if hasattr(self, 'show_errors_btn'):
-            self.show_errors_btn.setEnabled(has_revision)
-        if hasattr(self, 'documents_menu_btn'):
-            self.documents_menu_btn.setEnabled(has_revision)
     
     def calculate_sums(self):
         """Расчет агрегированных сумм"""
@@ -1194,6 +1059,10 @@ class MainWindow(QMainWindow):
         # Также обновляем сумму сразу после клика
         QTimer.singleShot(10, self.on_tree_selection_changed)
     
+    def on_tree_item_double_clicked(self, item, column):
+        """Обработчик двойного клика по элементу дерева (делегирует к tree_handlers)"""
+        self.tree_handlers.on_tree_item_double_clicked(item, column)
+    
     def on_tree_selection_changed(self):
         """Обработчик изменения выделения (делегирует к tree_handlers)"""
         self.tree_handlers.on_tree_selection_changed()
@@ -1266,14 +1135,6 @@ class MainWindow(QMainWindow):
         msg.setTextFormat(Qt.RichText)
         msg.exec_()
     
-    def show_document_dialog(self):
-        """Показать диалог формирования документов (делегирует к documents_ui)"""
-        self.documents_ui.show_document_dialog()
-    
-    def parse_solution_document(self):
-        """Обработка решения о бюджете (делегирует к documents_ui)"""
-        self.documents_ui.parse_solution_document()
-    
     def open_file(self, file_path: str):
         """Открыть файл в системе"""
         if not file_path or not os.path.exists(file_path):
@@ -1342,6 +1203,38 @@ class MainWindow(QMainWindow):
             "Не удалось найти экспортированный файл.\n"
             "Убедитесь, что для выбранной ревизии выполнен экспорт с проверкой."
         )
+    
+    def _center_window(self):
+        """Центрирует окно на экране"""
+        try:
+            # Используем современный подход через QGuiApplication
+            screen = QGuiApplication.primaryScreen()
+            if screen:
+                screen_geometry = screen.availableGeometry()
+                window_geometry = self.frameGeometry()
+                # Вычисляем центр экрана
+                center_point = screen_geometry.center()
+                # Перемещаем центр окна в центр экрана
+                window_geometry.moveCenter(center_point)
+                # Устанавливаем позицию окна
+                self.move(window_geometry.topLeft())
+            else:
+                # Fallback на QDesktopWidget если primaryScreen не доступен
+                screen = QDesktopWidget().screenGeometry()
+                window = self.frameGeometry()
+                center_point = screen.center()
+                window.moveCenter(center_point)
+                self.move(window.topLeft())
+        except Exception as e:
+            logger.warning(f"Не удалось центрировать окно: {e}")
+    
+    def showEvent(self, event):
+        """Переопределяем showEvent для центрирования окна при первом показе"""
+        super().showEvent(event)
+        # Центрируем окно только при первом показе
+        if not hasattr(self, '_centered'):
+            self._center_window()
+            self._centered = True
     
     def show_tab_context_menu(self, position):
         """Контекстное меню для вкладок (делегирует к tab_manager)"""
