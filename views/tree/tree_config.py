@@ -46,36 +46,25 @@ class TreeConfig:
         self.tree_headers = display_headers
         self.tree_header_tooltips = tooltip_headers
         self.tree_column_mapping = mapping
-
-        # Видимые столбцы: из конфига + фильтр по разделу + по типу данных (дерево без скрытых — только видимые колонки)
-        config_key = f"tree_columns:{section_name}"
-        saved_column_visibility = self.main_window.controller.db_manager.load_config(config_key, {})
-        tree_visible_columns = [i for i in range(len(display_headers)) if saved_column_visibility.get(display_headers[i], True)]
-        if section_name == "Консолидируемые расчеты" and len(display_headers) > 2 and 2 in tree_visible_columns:
-            tree_visible_columns.remove(2)
-        current_data_type = getattr(self.main_window, 'current_data_type', 'Оба')
-        type_visible = self.visibility_manager.get_visible_indices_for_data_type(len(display_headers), mapping, current_data_type)
-        tree_visible_columns = [i for i in tree_visible_columns if i in type_visible]
-        if not tree_visible_columns:
-            tree_visible_columns = list(range(len(display_headers)))
-        self.main_window.tree_visible_columns = tree_visible_columns
-
-        visible_headers = [display_headers[i] for i in tree_visible_columns]
+        
+        # Настраиваем заголовки для всех деревьев (показываем полный набор столбцов,
+        # а видимость/скрытие управляется через setColumnHidden)
         for tree_widget in self._get_tree_widgets():
-            self._configure_tree_headers_for_widget(tree_widget, section_name, visible_headers, mapping, tree_visible_columns)
+            self._configure_tree_headers_for_widget(tree_widget, section_name, display_headers, mapping)
 
         # Вычисляем высоту заголовка с учетом автоматического переноса текста
         self._update_tree_header_height_for_all()
         QTimer.singleShot(100, lambda: self._update_tree_header_height_for_all())
+        
+        # Восстанавливаем сохранённые настройки видимости столбцов (через setColumnHidden)
+        QTimer.singleShot(150, lambda: self._restore_tree_column_visibility_for_all(section_name, display_headers))
     
     def _configure_tree_headers_for_widget(self, tree_widget, section_name, display_headers=None, mapping=None, tree_visible_columns=None):
-        """Настройка заголовков для конкретного виджета дерева. display_headers — список видимых заголовков (подмножество полного)."""
+        """Настройка заголовков для конкретного виджета дерева."""
         if display_headers is None:
             display_headers = self.tree_headers or getattr(self.main_window, 'tree_headers', [])
         if mapping is None:
             mapping = self.tree_column_mapping or getattr(self.main_window, 'tree_column_mapping', {})
-        if tree_visible_columns is None:
-            tree_visible_columns = getattr(self.main_window, 'tree_visible_columns', list(range(len(display_headers))))
         
         # Устанавливаем делегат для переноса текста в ячейках
         tree_widget.setItemDelegate(WordWrapItemDelegate())
@@ -138,21 +127,20 @@ class TreeConfig:
         for idx in range(len(display_headers)):
             header.setMinimumSectionSize(50)
         
-        # Режимы и ширина по исходному индексу столбца (source_col)
+        # Устанавливаем режимы и ширину столбцов по их индексу
         for idx in range(len(display_headers)):
-            source_col = tree_visible_columns[idx] if idx < len(tree_visible_columns) else idx
-            if source_col == 0:
+            if idx == 0:
                 header.setSectionResizeMode(idx, QHeaderView.Interactive)
                 indentation = tree_widget.indentation()
                 indent_reserve = indentation * 6 + 50
                 header.resizeSection(idx, 400 + indent_reserve)
-            elif source_col == 1:
+            elif idx == 1:
                 header.setSectionResizeMode(idx, QHeaderView.Fixed)
                 header.resizeSection(idx, 80)
-            elif source_col == 2:
+            elif idx == 2:
                 header.setSectionResizeMode(idx, QHeaderView.Interactive)
                 header.resizeSection(idx, 200)
-            elif source_col == 3:
+            elif idx == 3:
                 header.setSectionResizeMode(idx, QHeaderView.Fixed)
                 header.resizeSection(idx, 50)
             else:
@@ -160,18 +148,23 @@ class TreeConfig:
                 header.resizeSection(idx, 150)
         
         def on_section_resized(logical_index, old_size, new_size):
-            source_col = tree_visible_columns[logical_index] if logical_index < len(tree_visible_columns) else logical_index
-            if source_col == 0:
+            # Если столбец программно сворачивается до ширины 0 (скрытие),
+            # не вмешиваемся в его ширину, чтобы избежать зацикливания resizeSection.
+            if new_size == 0:
+                return
+            if logical_index == 0:
                 indentation = tree_widget.indentation()
                 indent_reserve = indentation * 6 + 50
                 max_width = 400 + indent_reserve
                 if new_size > max_width:
                     header.resizeSection(logical_index, max_width)
-            elif source_col == 1 and header.sectionResizeMode(logical_index) == QHeaderView.Fixed and new_size != 80:
+            elif logical_index == 1 and header.sectionResizeMode(logical_index) == QHeaderView.Fixed and new_size != 80:
                 header.resizeSection(logical_index, 80)
-            elif source_col == 3 and header.sectionResizeMode(logical_index) == QHeaderView.Fixed and new_size != 50:
+            elif logical_index == 3 and header.sectionResizeMode(logical_index) == QHeaderView.Fixed and new_size != 50:
                 header.resizeSection(logical_index, 50)
-            elif source_col not in (0, 2) and header.sectionResizeMode(logical_index) == QHeaderView.Fixed and new_size != 150:
+            # Для остальных фиксированных столбцов, кроме 0,1,2,3, удерживаем ширину 150,
+            # чтобы не вмешиваться в поведение специальных колонок (0,1,2,3).
+            elif logical_index not in (0, 1, 2, 3) and header.sectionResizeMode(logical_index) == QHeaderView.Fixed and new_size != 150:
                 header.resizeSection(logical_index, 150)
             QTimer.singleShot(50, lambda tw=tree_widget: self._update_tree_header_height(tw))
         
@@ -182,8 +175,7 @@ class TreeConfig:
             header.update()
         
         # Обновляем высоту заголовка сразу после настройки
-        # Это предотвращает наезд заголовка на данные при смене раздела
-        QApplication.processEvents()  # Обрабатываем события, чтобы заголовки были установлены
+        QApplication.processEvents()
         self._update_tree_header_height(tree_widget)
 
     def _update_tree_header_height_for_all(self):
@@ -216,12 +208,36 @@ class TreeConfig:
         
         return widgets if widgets else []
     
+    def _restore_tree_column_visibility(self, tree_widget, section_name: str, display_headers: list):
+        """Восстанавливает сохраненные настройки видимости столбцов для дерева."""
+        try:
+            config_key = f"tree_columns:{section_name}"
+            saved_column_visibility = self.main_window.controller.db_manager.load_config(config_key, {})
+            
+            if saved_column_visibility:
+                header = tree_widget.header()
+                for col in range(tree_widget.columnCount()):
+                    if col < len(display_headers):
+                        column_name = display_headers[col]
+                        if column_name in saved_column_visibility:
+                            is_visible = saved_column_visibility[column_name]
+                            tree_widget.setColumnHidden(col, not is_visible)
+                            if not is_visible:
+                                header.setSectionResizeMode(col, QHeaderView.Fixed)
+                                header.resizeSection(col, 0)
+                                tree_widget.setColumnWidth(col, 0)
+                                header.updateGeometries()
+                                tree_widget.viewport().update()
+        except Exception as e:
+            logger.error(f"Ошибка при восстановлении настроек видимости столбцов дерева: {e}", exc_info=True)
+    
+    def _restore_tree_column_visibility_for_all(self, section_name: str, display_headers: list):
+        """Восстанавливает сохраненные настройки видимости столбцов для всех деревьев."""
+        for tree_widget in self._get_tree_widgets():
+            self._restore_tree_column_visibility(tree_widget, section_name, display_headers)
+    
     def apply_tree_data_type_visibility(self):
-        """Актуализирует видимость столбцов при смене типа данных.
-        
-        Фактическая видимость теперь задаётся через tree_visible_columns в configure_tree_headers,
-        поэтому здесь достаточно при необходимости перенастроить заголовки для текущего раздела.
-        Реальная перестройка дерева выполняется в load_project_data_to_tree.
-        """
-        # Ничего не делаем: configure_tree_headers будет вызван из load_project_data_to_tree
-        return
+        """Скрывает столбцы дерева в зависимости от выбранного типа данных."""
+        current_data_type = getattr(self.main_window, 'current_data_type', 'Оба')
+        for tree_widget in self._get_tree_widgets():
+            self.visibility_manager.apply_data_type_visibility(current_data_type, tree_widget)

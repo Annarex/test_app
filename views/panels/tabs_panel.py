@@ -128,7 +128,7 @@ class TabsPanel:
         self.data_tree.setSelectionMode(QTreeWidget.ExtendedSelection)
         # Устанавливаем делегат для переноса текста в ячейках
         self.data_tree.setItemDelegate(WordWrapItemDelegate())
-        # Конфигурация заголовков будет выполнена позже (в main_window.configure_tree_headers)
+        # Конфигурация заголовков будет выполнена позже
         self.data_tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.data_tree.customContextMenuRequested.connect(self.main_window.show_tree_context_menu)
         self.data_tree.itemExpanded.connect(self.main_window.on_tree_item_expanded)

@@ -72,19 +72,27 @@ class ColumnVisibilityDialog(QDialog):
         content_layout.setSpacing(8)
         content_layout.setContentsMargins(10, 10, 10, 10)
         
+        # Получаем заголовки столбцов
+        column_count = self.widget.columnCount()
         headers = []
         
         if self.is_tree:
-            # Для QTreeWidget используем полный список заголовков и сохранённые видимые колонки
+            # Для QTreeWidget
             main_window = self.widget.window()
             tree_headers = getattr(main_window, 'tree_headers', [])
-            headers = tree_headers or []
-            column_count = len(headers)
-        else:
-            # Для QTableWidget работаем с фактическими колонками виджета
-            column_count = self.widget.columnCount()
-        
-        if self.is_table:
+            
+            if tree_headers:
+                headers = tree_headers
+            elif column_count > 0:
+                header_item = self.widget.headerItem()
+                if header_item:
+                    for col in range(column_count):
+                        header_text = header_item.text(col) if header_item.text(col) else f"Столбец {col}"
+                        headers.append(header_text)
+                else:
+                    for col in range(column_count):
+                        headers.append(f"Столбец {col}")
+        elif self.is_table:
             # Для QTableWidget
             for col in range(column_count):
                 header_item = self.widget.horizontalHeaderItem(col)
@@ -102,29 +110,19 @@ class ColumnVisibilityDialog(QDialog):
                 headers.append(header_text if header_text else f"Столбец {col}")
         
         # Создаем чекбоксы для каждого столбца
-        if self.is_tree:
-            main_window = self.widget.window()
-            visible_columns = getattr(main_window, 'tree_visible_columns', list(range(len(headers))))
-            for col in range(column_count):
-                header_text = headers[col] if col < len(headers) else f"Столбец {col}"
-                checkbox = QCheckBox(header_text)
-                checkbox.setChecked(col in visible_columns)
-                self.checkboxes[col] = checkbox
-                content_layout.addWidget(checkbox)
-        else:
-            # Табличные виджеты: привязываемся к текущей видимости столбцов
-            column_count = self.widget.columnCount()
-            for col in range(column_count):
-                if col < len(headers):
-                    header_text = headers[col]
-                else:
-                    header_text = f"Столбец {col}"
-                
-                checkbox = QCheckBox(header_text)
-                checkbox.setChecked(not self.widget.isColumnHidden(col))
-                
-                self.checkboxes[col] = checkbox
-                content_layout.addWidget(checkbox)
+        for col in range(column_count):
+            # Получаем название столбца
+            if col < len(headers):
+                header_text = headers[col]
+            else:
+                header_text = f"Столбец {col}"
+            
+            checkbox = QCheckBox(header_text)
+            checkbox.setChecked(not self.widget.isColumnHidden(col))
+            
+            # Сохраняем связь между индексом столбца и чекбоксом
+            self.checkboxes[col] = checkbox
+            content_layout.addWidget(checkbox)
         
         # Добавляем растягивающий элемент в конец
         content_layout.addStretch()
@@ -162,9 +160,6 @@ class ColumnVisibilityDialog(QDialog):
     
     def load_current_state(self):
         """Загружает текущее состояние видимости столбцов"""
-        if self.is_tree:
-            # Для дерева состояние уже инициализировано из tree_visible_columns
-            return
         for col, checkbox in self.checkboxes.items():
             checkbox.setChecked(not self.widget.isColumnHidden(col))
     
@@ -186,35 +181,93 @@ class ColumnVisibilityDialog(QDialog):
         """Применить изменения видимости столбцов"""
         try:
             if self.is_tree:
-                # Для дерева сохраняем конфиг и пересобираем дерево через TreeConfig/TreeBuilder
+                # Для дерева нужно сохранять и восстанавливать ширины столбцов
+                from PyQt5.QtWidgets import QHeaderView
                 main_window = self.widget.window()
-                tree_headers = getattr(main_window, 'tree_headers', [])
-                current_section = getattr(main_window, 'current_section', 'Доходы')
-
-                # Флаги видимости по исходным индексам
-                visibility_flags = {}
-                visible_indices = []
+                header = self.widget.header()
+                saved_widths = {}
+                saved_resize_modes = {}
+                
+                def get_default_column_width_and_mode(col_idx, tree_widget, header):
+                    """Получить дефолтную ширину и режим изменения размера для столбца"""
+                    if col_idx == 0:
+                        indentation = tree_widget.indentation()
+                        indent_reserve = indentation * 6 + 50
+                        return (400 + indent_reserve, QHeaderView.Interactive)
+                    elif col_idx == 1:
+                        return (80, QHeaderView.Fixed)
+                    elif col_idx == 2:
+                        return (200, QHeaderView.Interactive)
+                    elif col_idx == 3:
+                        return (50, QHeaderView.Fixed)
+                    else:
+                        return (150, QHeaderView.Fixed)
+                
+                for col, checkbox in self.checkboxes.items():
+                    if col not in saved_widths:
+                        was_hidden = self.widget.isColumnHidden(col)
+                        section_size = header.sectionSize(col)
+                        # Если столбец скрыт или его ширина равна 0, используем дефолтные значения
+                        if was_hidden or section_size == 0:
+                            default_width, default_mode = get_default_column_width_and_mode(col, self.widget, header)
+                            saved_widths[col] = default_width
+                            saved_resize_modes[col] = default_mode
+                        else:
+                            saved_widths[col] = section_size
+                            saved_resize_modes[col] = header.sectionResizeMode(col)
+                
+                # Применяем видимость визуально
                 for col, checkbox in self.checkboxes.items():
                     is_visible = checkbox.isChecked()
-                    visibility_flags[col] = is_visible
-                    if is_visible:
-                        visible_indices.append(col)
 
-                # Обновляем список видимых колонок в главном окне
-                main_window.tree_visible_columns = visible_indices
+                    if not is_visible:
+                        header.setSectionResizeMode(col, QHeaderView.Fixed)
+                        header.resizeSection(col, 0)
+                        self.widget.setColumnWidth(col, 0)
+                        self.widget.setColumnHidden(col, True)
+                    else:
+                        self.widget.setColumnHidden(col, False)
+                        # Восстанавливаем режим изменения размера и ширину столбца
+                        if col in saved_resize_modes:
+                            header.setSectionResizeMode(col, saved_resize_modes[col])
+                        # Всегда восстанавливаем ширину, даже если она была 0 (используем дефолтную)
+                        if col in saved_widths:
+                            target_width = saved_widths[col]
+                            if target_width > 0:
+                                header.resizeSection(col, target_width)
+                                self.widget.setColumnWidth(col, target_width)
+                            else:
+                                # Если ширина все еще 0, используем дефолтную
+                                default_width, default_mode = get_default_column_width_and_mode(col, self.widget, header)
+                                header.setSectionResizeMode(col, default_mode)
+                                header.resizeSection(col, default_width)
+                                self.widget.setColumnWidth(col, default_width)
+                
+                header.updateGeometries()
+                self.widget.updateGeometry()
+                self.widget.viewport().update()
 
-                # Сохраняем настройки в конфигурацию
-                if tree_headers:
+                # Сохраняем настройки видимости столбцов дерева в конфигурацию
+                try:
+                    current_section = getattr(main_window, 'current_section', 'Доходы')
+                    tree_headers = getattr(main_window, 'tree_headers', [])
                     column_visibility = {}
-                    for idx, name in enumerate(tree_headers):
-                        is_visible = visibility_flags.get(idx, True)
-                        column_visibility[name] = is_visible
-                    config_key = f"tree_columns:{current_section}"
-                    main_window.controller.db_manager.save_config(config_key, column_visibility)
-
-                # Перестраиваем дерево с учётом новых настроек
-                if main_window.controller.current_project:
-                    main_window.tree_builder.load_project_data_to_tree(main_window.controller.current_project)
+                    for col, checkbox in self.checkboxes.items():
+                        # Определяем имя столбца
+                        if tree_headers and col < len(tree_headers):
+                            column_name = tree_headers[col]
+                        else:
+                            header_item = self.widget.headerItem()
+                            if header_item and col < self.widget.columnCount():
+                                column_name = header_item.text(col) or f"Колонка {col}"
+                            else:
+                                column_name = f"Колонка {col}"
+                        column_visibility[column_name] = checkbox.isChecked()
+                    if column_visibility:
+                        config_key = f"tree_columns:{current_section}"
+                        main_window.controller.db_manager.save_config(config_key, column_visibility)
+                except Exception as e:
+                    logger.error(f"Ошибка сохранения настроек видимости столбцов дерева: {e}", exc_info=True)
             else:
                 # Для таблиц просто скрываем/показываем столбцы
                 for col, checkbox in self.checkboxes.items():
