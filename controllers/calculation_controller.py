@@ -38,15 +38,23 @@ class CalculationController(QObject):
             self.error_occurred.emit("Проект не выбран")
             return None
 
-        # Справочник доходов — из v_budgetclastypeinc_merged с фильтром по дате
-        reference_data_доходы = self.db_manager.load_income_reference_df()
-        reference_data_источники = self.references.get('источники')
+        # Используем одни и те же справочники из кэша; при отсутствии — загружаем и кладём в кэш
+        reference_data_income = self.references.get('доходы')
+        if reference_data_income is None:
+            reference_data_income = self.db_manager.load_income_reference_df()
+            if reference_data_income is not None:
+                self.references['доходы'] = reference_data_income
+        reference_data_sources = self.references.get('источники')
+        if reference_data_sources is None:
+            reference_data_sources = self.db_manager.load_sources_reference_df()
+            if reference_data_sources is not None:
+                self.references['источники'] = reference_data_sources
 
         if isinstance(self.current_form, Form0503317):
             missing_refs = []
-            if reference_data_доходы is None or reference_data_доходы.empty:
+            if reference_data_income is None or reference_data_income.empty:
                 missing_refs.append("доходов")
-            if reference_data_источники is None or reference_data_источники.empty:
+            if reference_data_sources is None or reference_data_sources.empty:
                 missing_refs.append("источников финансирования")
             if missing_refs:
                 self.error_occurred.emit(
@@ -63,8 +71,8 @@ class CalculationController(QObject):
                 calculation_results = self.db_manager.calculate_sums_from_values(
                     project_id=self.current_project.id,
                     revision_id=self.current_revision_id,
-                    reference_data_доходы=reference_data_доходы,
-                    reference_data_источники=reference_data_источники,
+                    reference_data_income=reference_data_income,
+                    reference_data_sources=reference_data_sources,
                 )
             else:
                 # Fallback на старый метод, если ревизия не загружена
@@ -123,7 +131,6 @@ class CalculationController(QObject):
                     )
                     if revision_data:
                         # Подставляем уровни из результата расчёта, чтобы отображение не слетало
-                        # (в БД при перезагрузке уровень берётся из первой строки группы, может быть NULL/устаревшим)
                         self._merge_levels_from_calculation(revision_data, calculation_results)
                         self.current_project.data = revision_data
                         # Обновляем форму с перезагруженными данными (включая расчетные значения)
@@ -258,14 +265,22 @@ class CalculationController(QObject):
                 return None
 
             # Выполняем расчет сумм из нормализованных данных, чтобы получить расчетные значения
-            # для подсветки ошибок в Excel (аналогично calculate_sums).
-            reference_data_доходы = self.db_manager.load_income_reference_df()
-            reference_data_источники = self.references.get('источники')
+            # для подсветки ошибок в Excel (аналогично calculate_sums). Справочники — из общего кэша.
+            reference_data_income = self.references.get('доходы')
+            if reference_data_income is None:
+                reference_data_income = self.db_manager.load_income_reference_df()
+                if reference_data_income is not None:
+                    self.references['доходы'] = reference_data_income
+            reference_data_sources = self.references.get('источники')
+            if reference_data_sources is None:
+                reference_data_sources = self.db_manager.load_sources_reference_df()
+                if reference_data_sources is not None:
+                    self.references['источники'] = reference_data_sources
             calculation_results = self.db_manager.calculate_sums_from_values(
                 project_id=self.current_project.id,
                 revision_id=self.current_revision_id,
-                reference_data_доходы=reference_data_доходы,
-                reference_data_источники=reference_data_источники,
+                reference_data_income=reference_data_income,
+                reference_data_sources=reference_data_sources,
             )
 
             # Обновляем данные формы расчетными значениями

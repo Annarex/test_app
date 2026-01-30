@@ -22,6 +22,7 @@ from .base_models import (
 from .form_0503317 import Form0503317Constants
 from utils.db_utils import get_filtered_view
 
+
 class DatabaseManager:
     """Менеджер базы данных"""
     
@@ -64,17 +65,6 @@ class DatabaseManager:
                     file_path TEXT NOT NULL,
                     loaded_at TEXT NOT NULL,
                     data TEXT
-                )
-            ''')
-
-            # Таблица записей справочника доходов
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS income_reference_records (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    code TEXT NOT NULL UNIQUE,
-                    name TEXT,
-                    level INTEGER,
-                    doc TEXT
                 )
             ''')
 
@@ -1516,6 +1506,37 @@ class DatabaseManager:
             )
             batch = list(islice(value_rows_iter, batch_size))
 
+        # При сохранении только вычисленных — обновляем уровень у связанных оригинальных строк
+        if only_calculated and section_rows:
+            self._update_level_for_original_budget_rows(
+                cursor, project_id, revision_id, section_rows, table_name
+            )
+
+    def _update_level_for_original_budget_rows(
+        self,
+        cursor: sqlite3.Cursor,
+        project_id: int,
+        revision_id: Optional[int],
+        section_rows: List[Dict[str, Any]],
+        table_name: str,
+    ) -> None:
+        """Обновляет уровень у записей с data_type='оригинальные' по тем же ключам, что и в section_rows."""
+        rev_clause = 'revision_id IS ?' if revision_id is None else 'revision_id = ?'
+        sql = f'''
+                UPDATE {table_name}
+                SET level = ?
+                WHERE project_id = ? AND {rev_clause} AND classification_code = ?
+                  AND indicator_name = ? AND line_code = ? AND data_type = 'оригинальные'
+                '''
+        for row in section_rows:
+            level = row.get('уровень')
+            if level is None:
+                continue
+            code = row.get('код_классификации') or ''
+            name = row.get('наименование_показателя') or ''
+            line_code = row.get('код_строки') or ''
+            cursor.execute(sql, (level, project_id, revision_id, code, name, line_code))
+
     def _save_consolidated_values(
         self,
         cursor: sqlite3.Cursor,
@@ -1574,6 +1595,36 @@ class DatabaseManager:
                 batch,
             )
             batch = list(islice(value_rows_iter, batch_size))
+
+        # При сохранении только вычисленных — обновляем уровень у связанных оригинальных строк
+        if only_calculated and section_rows:
+            self._update_level_for_original_consolidated_rows(
+                cursor, project_id, revision_id, section_rows, table_name
+            )
+
+    def _update_level_for_original_consolidated_rows(
+        self,
+        cursor: sqlite3.Cursor,
+        project_id: int,
+        revision_id: Optional[int],
+        section_rows: List[Dict[str, Any]],
+        table_name: str,
+    ) -> None:
+        """Обновляет уровень у записей с data_type='оригинальные' в consolidated_values."""
+        rev_clause = 'revision_id IS ?' if revision_id is None else 'revision_id = ?'
+        sql = f'''
+                UPDATE {table_name}
+                SET level = ?
+                WHERE project_id = ? AND {rev_clause} AND indicator_name = ?
+                  AND line_code = ? AND data_type = 'оригинальные'
+                '''
+        for row in section_rows:
+            level = row.get('уровень')
+            if level is None:
+                continue
+            name = row.get('наименование_показателя') or ''
+            line_code = row.get('код_строки') or ''
+            cursor.execute(sql, (level, project_id, revision_id, name, line_code))
 
     # Легаси-миграция удалена: старые таблицы *_rows больше не поддерживаются.
     
@@ -2716,8 +2767,8 @@ class DatabaseManager:
         self,
         project_id: int,
         revision_id: int,
-        reference_data_доходы: Optional[pd.DataFrame] = None,
-        reference_data_источники: Optional[pd.DataFrame] = None,
+        reference_data_income: Optional[pd.DataFrame] = None,
+        reference_data_sources: Optional[pd.DataFrame] = None,
     ) -> Dict[str, List[Dict[str, Any]]]:
         """
         Расчет сумм напрямую из нормализованных данных *_values без преобразования в старый формат.
@@ -2739,10 +2790,10 @@ class DatabaseManager:
         source_df = self.load_source_values_df(project_id, revision_id)
         consolidated_df = self.load_consolidated_values_df(project_id, revision_id)
         
-        # Создаем временную форму для расчетов
+        # Создаем временную форму для расчетов (справочники на форме автоматически синхронизируются в парсер)
         form = Form0503317()
-        form.reference_data_доходы = reference_data_доходы
-        form.reference_data_источники = reference_data_источники
+        form.reference_data_income = reference_data_income
+        form.reference_data_sources = reference_data_sources
         
         result = {}
         
@@ -2846,23 +2897,32 @@ class DatabaseManager:
                 'исполненный': {},
             }
             
-            # Используем кэшированный уровень из БД, если есть
-            # Иначе определяем заново
-            level = None
+            # Уровень: для доходов и источников всегда из справочника; для расходов — кэш из БД или _determine_expenditure_level
             source_row = None
             for _, r in group.iterrows():
-                if pd.notna(r.get('level')):
-                    level = int(r['level'])
                 if pd.notna(r.get('source_row')):
                     source_row = int(r['source_row'])
-                break  # Берем из первой строки группы
-            
-            if level is None:
+                break
+            section_for_level = section_name.replace('_data', '')
+            section_type_for_form = {'income': 'доходы', 'outcome': 'расходы', 'source_financing_deficit': 'источники_финансирования'}.get(section_for_level, section_for_level)
+            if section_name in ('income_data', 'source_financing_deficit_data'):
                 level = form._determine_level(
                     row_data['код_классификации'],
-                    row_data['раздел'],
+                    section_type_for_form,
                     row_data['наименование_показателя']
                 )
+            else:
+                level = None
+                for _, r in group.iterrows():
+                    if pd.notna(r.get('level')):
+                        level = int(r['level'])
+                        break
+                if level is None:
+                    level = form._determine_level(
+                        row_data['код_классификации'],
+                        section_type_for_form,
+                        row_data['наименование_показателя']
+                    )
             row_data['уровень'] = level
             if source_row is not None:
                 row_data['исходная_строка'] = source_row

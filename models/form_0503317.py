@@ -37,8 +37,8 @@ class Form0503317(BaseFormModel):
         self.outcome_data = []
         self.source_financing_deficit_data = []
         self.consolidated_calc_data = []
-        self.reference_data_доходы = None
-        self.reference_data_источники = None
+        self._reference_data_income = None
+        self._reference_data_sources = None
         self.zero_columns = {}
         self.show_error_values = True
         self.доходы_всего = None
@@ -47,8 +47,26 @@ class Form0503317(BaseFormModel):
     
     def get_form_constants(self):
         return self.constants
-    
-    def parse_excel(self, file_path: str, reference_data_доходы: pd.DataFrame = None, reference_data_источники: pd.DataFrame = None) -> Dict[str, Any]:
+
+    @property
+    def reference_data_income(self):
+        return self._reference_data_income
+
+    @reference_data_income.setter
+    def reference_data_income(self, value):
+        self._reference_data_income = value
+        self.parser.reference_data_income = value
+
+    @property
+    def reference_data_sources(self):
+        return self._reference_data_sources
+
+    @reference_data_sources.setter
+    def reference_data_sources(self, value):
+        self._reference_data_sources = value
+        self.parser.reference_data_sources = value
+
+    def parse_excel(self, file_path: str, reference_data_income: pd.DataFrame = None, reference_data_sources: pd.DataFrame = None) -> Dict[str, Any]:
         """Парсинг Excel файла формы 0503317"""
         # Сбрасываем предыдущее состояние, чтобы при повторной загрузке формы
         # данные не дублировались
@@ -62,11 +80,11 @@ class Form0503317(BaseFormModel):
         self.расходы_всего = None
         self.calculated_deficit_proficit = None
 
-        self.reference_data_доходы = reference_data_доходы
-        self.reference_data_источники = reference_data_источники
+        self.reference_data_income = reference_data_income
+        self.reference_data_sources = reference_data_sources
         
         # Используем парсер для извлечения данных
-        parsed_data = self.parser.parse_excel(file_path, reference_data_доходы, reference_data_источники)
+        parsed_data = self.parser.parse_excel(file_path, reference_data_income, reference_data_sources)
         
         # Обновляем внутреннее состояние
         self.meta_info = parsed_data.get('meta_info', {})
@@ -124,19 +142,15 @@ class Form0503317(BaseFormModel):
     def recalculate_levels_with_references(
         self,
         form_data: Dict[str, Any],
-        reference_data_доходы: Optional[pd.DataFrame] = None,
-        reference_data_источники: Optional[pd.DataFrame] = None
+        reference_data_income: Optional[pd.DataFrame] = None,
+        reference_data_sources: Optional[pd.DataFrame] = None
     ) -> Dict[str, Any]:
         """
         Пересчет уровней строк на основе актуальных справочников.
         Используется при повторной загрузке уже сохраненного проекта.
         """
-        self.reference_data_доходы = reference_data_доходы
-        self.reference_data_источники = reference_data_источники
-        
-        # Обновляем справочники в парсере
-        self.parser.reference_data_доходы = reference_data_доходы
-        self.parser.reference_data_источники = reference_data_источники
+        self.reference_data_income = reference_data_income
+        self.reference_data_sources = reference_data_sources
 
         # Доходы
         income_data = form_data.get('income_data', [])

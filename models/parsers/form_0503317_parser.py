@@ -19,21 +19,21 @@ class Form0503317Parser:
             constants: Константы формы 0503317
         """
         self.constants = constants
-        self.reference_data_доходы = None
-        self.reference_data_источники = None
+        self.reference_data_income = None
+        self.reference_data_sources = None
     
     def parse_excel(
         self, 
         file_path: str, 
-        reference_data_доходы: Optional[pd.DataFrame] = None, 
-        reference_data_источники: Optional[pd.DataFrame] = None
+        reference_data_income: Optional[pd.DataFrame] = None, 
+        reference_data_sources: Optional[pd.DataFrame] = None
     ) -> Dict[str, Any]:
         """Парсинг Excel файла формы 0503317
         
         Args:
             file_path: Путь к Excel файлу
-            reference_data_доходы: DataFrame со справочником доходов
-            reference_data_источники: DataFrame со справочником источников
+            reference_data_income: DataFrame со справочником доходов
+            reference_data_sources: DataFrame со справочником источников
         
         Returns:
             Словарь с распарсенными данными:
@@ -43,8 +43,8 @@ class Form0503317Parser:
             - источники_финансирования_data: данные источников
             - консолидируемые_расчеты_data: данные консолидированных расчетов
         """
-        self.reference_data_доходы = reference_data_доходы
-        self.reference_data_источники = reference_data_источники
+        self.reference_data_income = reference_data_income
+        self.reference_data_sources = reference_data_sources
         
         # Инициализация результатов
         meta_info = {}
@@ -353,18 +353,18 @@ class Form0503317Parser:
             Уровень из справочника или 0
         """
         try:
-            if section_type == 'доходы' and self.reference_data_доходы is not None:
-                match = self.reference_data_доходы[
-                    self.reference_data_доходы['concatenated_code'] == (classification_code[3:] if len(classification_code)==20 else classification_code )
+            if section_type == 'доходы' and self.reference_data_income is not None:
+                match = self.reference_data_income[
+                    self.reference_data_income['concatenated_code'] == (classification_code[3:] if len(classification_code)==20 else classification_code )
                 ]
                 
                 if not match.empty:
                     level = match.iloc[0]['level']
                     return int(level) if pd.notna(level) else 0
             
-            elif section_type == 'источники_финансирования' and self.reference_data_источники is not None:
-                match = self.reference_data_источники[
-                    self.reference_data_источники['код_классификации_ИФДБ'] == classification_code
+            elif section_type == 'источники_финансирования' and self.reference_data_sources is not None:
+                match = self.reference_data_sources[
+                    self.reference_data_sources['код_классификации_ИФДБ'] == classification_code
                 ]
                 if not match.empty:
                     level = match.iloc[0]['уровень_кода']

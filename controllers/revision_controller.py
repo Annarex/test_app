@@ -273,15 +273,23 @@ class RevisionController(QObject):
             # Пересчитываем уровни и значения на основе справочников, если файл есть
             if revision_record.file_path and os.path.exists(revision_record.file_path):
                 try:
-                    # Справочник доходов — из v_budgetclastypeinc_merged с фильтром по дате
-                    reference_data_доходы = self.db_manager.load_income_reference_df()
-                    reference_data_источники = self.references.get('источники')
+                    # Используем одни и те же справочники из кэша; при отсутствии — загружаем и кладём в кэш
+                    reference_data_income = self.references.get('доходы')
+                    if reference_data_income is None:
+                        reference_data_income = self.db_manager.load_income_reference_df()
+                        if reference_data_income is not None:
+                            self.references['доходы'] = reference_data_income
+                    reference_data_sources = self.references.get('источники')
+                    if reference_data_sources is None:
+                        reference_data_sources = self.db_manager.load_sources_reference_df()
+                        if reference_data_sources is not None:
+                            self.references['источники'] = reference_data_sources
 
                     if isinstance(form_controller.current_form, Form0503317):
                         updated_data = form_controller.current_form.recalculate_levels_with_references(
                             revision_data,
-                            reference_data_доходы,
-                            reference_data_источники
+                            reference_data_income,
+                            reference_data_sources
                         )
                         if updated_data:
                             project.data = updated_data

@@ -25,7 +25,7 @@ class BaseFormModel(ABC):
         self.sections = {}
         
     @abstractmethod
-    def parse_excel(self, file_path: str, reference_data_доходы: pd.DataFrame = None, reference_data_источники: pd.DataFrame = None) -> Dict[str, Any]:
+    def parse_excel(self, file_path: str, reference_data_income: pd.DataFrame = None, reference_data_sources: pd.DataFrame = None) -> Dict[str, Any]:
         """Парсинг Excel файла формы"""
         pass
     

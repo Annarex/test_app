@@ -130,19 +130,23 @@ class FormController(QObject):
             # Копируем файл в папку проекта с префиксом даты/времени
             copied_file_path = self.copy_form_file_to_project(file_path, self.current_project.id)
             
-            # Справочник доходов — всегда из v_budgetclastypeinc_merged с фильтром по дате (конфиг/метаданные)
-            reference_data_доходы = self.db_manager.load_income_reference_df()
-            reference_data_источники = self.references.get('источники')
-
-            # Обновляем кэш, чтобы остальной код видел актуальный справочник доходов
-            if reference_data_доходы is not None:
-                self.references['доходы'] = reference_data_доходы
+            # Используем одни и те же справочники из кэша; при отсутствии — загружаем и кладём в кэш
+            reference_data_income = self.references.get('доходы')
+            if reference_data_income is None:
+                reference_data_income = self.db_manager.load_income_reference_df()
+                if reference_data_income is not None:
+                    self.references['доходы'] = reference_data_income
+            reference_data_sources = self.references.get('источники')
+            if reference_data_sources is None:
+                reference_data_sources = self.db_manager.load_sources_reference_df()
+                if reference_data_sources is not None:
+                    self.references['источники'] = reference_data_sources
 
             # Явно предупреждаем, если справочники не загружены
             missing_refs = []
-            if reference_data_доходы is None or reference_data_доходы.empty:
+            if reference_data_income is None or reference_data_income.empty:
                 missing_refs.append("доходов")
-            if reference_data_источники is None:
+            if reference_data_sources is None:
                 missing_refs.append("источников финансирования")
             if missing_refs:
                 msg = (
@@ -153,15 +157,15 @@ class FormController(QObject):
                 self.error_occurred.emit(msg)
             
             logger.debug(
-                f"Загрузка справочников: доходы={reference_data_доходы is not None}, "
-                f"источники={reference_data_источники is not None}"
+                f"Загрузка справочников: доходы={reference_data_income is not None}, "
+                f"источники={reference_data_sources is not None}"
             )
             
             # Парсим форму из скопированного файла
             form_data = self.current_form.parse_excel(
                 copied_file_path, 
-                reference_data_доходы,  # DataFrame
-                reference_data_источники  # DataFrame
+                reference_data_income,  # DataFrame
+                reference_data_sources  # DataFrame
             )
 
             # Определяем тип формы из текущей формы
@@ -281,15 +285,23 @@ class FormController(QObject):
             return project_data
         
         try:
-            # Справочник доходов — из v_budgetclastypeinc_merged с фильтром по дате
-            reference_data_доходы = self.db_manager.load_income_reference_df()
-            reference_data_источники = self.references.get('источники')
+            # Используем одни и те же справочники из кэша; при отсутствии — загружаем и кладём в кэш
+            reference_data_income = self.references.get('доходы')
+            if reference_data_income is None:
+                reference_data_income = self.db_manager.load_income_reference_df()
+                if reference_data_income is not None:
+                    self.references['доходы'] = reference_data_income
+            reference_data_sources = self.references.get('источники')
+            if reference_data_sources is None:
+                reference_data_sources = self.db_manager.load_sources_reference_df()
+                if reference_data_sources is not None:
+                    self.references['источники'] = reference_data_sources
 
             # Если справочники отсутствуют, явно предупреждаем пользователя
             missing_refs = []
-            if reference_data_доходы is None or reference_data_доходы.empty:
+            if reference_data_income is None or reference_data_income.empty:
                 missing_refs.append("доходов")
-            if reference_data_источники is None:
+            if reference_data_sources is None:
                 missing_refs.append("источников финансирования")
             if missing_refs:
                 msg = (
@@ -300,11 +312,11 @@ class FormController(QObject):
                 # Предупреждение уже будет показано через error_occurred в MainController
 
             # Пересчитываем уровни, если справочники доступны
-            if (reference_data_доходы is not None and not reference_data_доходы.empty) or reference_data_источники is not None:
+            if (reference_data_income is not None and not reference_data_income.empty) or reference_data_sources is not None:
                 updated_data = self.current_form.recalculate_levels_with_references(
                     project_data,
-                    reference_data_доходы,
-                    reference_data_источники
+                    reference_data_income,
+                    reference_data_sources
                 )
                 if updated_data:
                     return updated_data
