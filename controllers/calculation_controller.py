@@ -38,9 +38,10 @@ class CalculationController(QObject):
             self.error_occurred.emit("Проект не выбран")
             return None
 
-        # Для формы 0503317 расчет для доходов и источников невозможен без справочников
-        reference_data_доходы = self.references.get('доходы')
+        # Справочник доходов — из v_budgetclastypeinc_merged с фильтром по дате
+        reference_data_доходы = self.db_manager.load_income_reference_df()
         reference_data_источники = self.references.get('источники')
+
         if isinstance(self.current_form, Form0503317):
             missing_refs = []
             if reference_data_доходы is None or reference_data_доходы.empty:
@@ -121,6 +122,9 @@ class CalculationController(QObject):
                         self.current_revision_id,
                     )
                     if revision_data:
+                        # Подставляем уровни из результата расчёта, чтобы отображение не слетало
+                        # (в БД при перезагрузке уровень берётся из первой строки группы, может быть NULL/устаревшим)
+                        self._merge_levels_from_calculation(revision_data, calculation_results)
                         self.current_project.data = revision_data
                         # Обновляем форму с перезагруженными данными (включая расчетные значения)
                         if self.current_form:
@@ -140,7 +144,7 @@ class CalculationController(QObject):
                                 )
                         
                         # Отладочный вывод: проверяем наличие расчетных значений для консолидированных расчетов
-                        cons_data = revision_data.get('консолидируемые_расчеты_data', [])
+                        cons_data = revision_data.get('consolidated_calc_data', [])
                         if cons_data:
                             sample_item = cons_data[0] if len(cons_data) > 0 else None
                             if sample_item:
@@ -160,6 +164,51 @@ class CalculationController(QObject):
             self.error_occurred.emit(f"Ошибка расчета: {str(e)}")
             logger.error(f"Ошибка расчета: {e}", exc_info=True)
             return None
+
+    def _merge_levels_from_calculation(
+        self,
+        revision_data: Dict[str, Any],
+        calculation_results: Dict[str, Any],
+    ) -> None:
+        """Подставляет уровни из результата расчёта в перезагруженные данные ревизии для корректного отображения."""
+        section_keys = (
+            'income_data',
+            'outcome_data',
+            'source_financing_deficit_data',
+            'consolidated_calc_data',
+        )
+        for section_key in section_keys:
+            rev_items = revision_data.get(section_key)
+            calc_items = calculation_results.get(section_key)
+            if not rev_items or not calc_items:
+                continue
+            # Ключ для бюджетных разделов: (код, наименование, код_строки); для консолидированных: (наименование, код_строки)
+            if section_key == 'consolidated_calc_data':
+                calc_level_by_key = {
+                    (str(item.get('наименование_показателя') or ''), str(item.get('код_строки') or '')): item.get('уровень')
+                    for item in calc_items
+                }
+                for item in rev_items:
+                    key = (str(item.get('наименование_показателя') or ''), str(item.get('код_строки') or ''))
+                    if key in calc_level_by_key and calc_level_by_key[key] is not None:
+                        item['уровень'] = calc_level_by_key[key]
+            else:
+                calc_level_by_key = {
+                    (
+                        str(item.get('код_классификации') or ''),
+                        str(item.get('наименование_показателя') or ''),
+                        str(item.get('код_строки') or ''),
+                    ): item.get('уровень')
+                    for item in calc_items
+                }
+                for item in rev_items:
+                    key = (
+                        str(item.get('код_классификации') or ''),
+                        str(item.get('наименование_показателя') or ''),
+                        str(item.get('код_строки') or ''),
+                    )
+                    if key in calc_level_by_key and calc_level_by_key[key] is not None:
+                        item['уровень'] = calc_level_by_key[key]
 
     def export_validation(self, output_path: str) -> Optional[str]:
         """Экспорт формы с проверкой"""
@@ -203,14 +252,14 @@ class CalculationController(QObject):
                 self.current_revision_id,
             )
             if not any(values_data.get(k) for k in (
-                'доходы_data', 'расходы_data', 'источники_финансирования_data', 'консолидируемые_расчеты_data'
+                'income_data', 'outcome_data', 'source_financing_deficit_data', 'consolidated_calc_data'
             )):
                 self.error_occurred.emit("Нет данных в *_values для экспорта")
                 return None
 
             # Выполняем расчет сумм из нормализованных данных, чтобы получить расчетные значения
             # для подсветки ошибок в Excel (аналогично calculate_sums).
-            reference_data_доходы = self.references.get('доходы')
+            reference_data_доходы = self.db_manager.load_income_reference_df()
             reference_data_источники = self.references.get('источники')
             calculation_results = self.db_manager.calculate_sums_from_values(
                 project_id=self.current_project.id,
@@ -220,10 +269,10 @@ class CalculationController(QObject):
             )
 
             # Обновляем данные формы расчетными значениями
-            self.current_form.доходы_data = calculation_results.get('доходы_data', [])
-            self.current_form.расходы_data = calculation_results.get('расходы_data', [])
-            self.current_form.источники_финансирования_data = calculation_results.get('источники_финансирования_data', [])
-            self.current_form.консолидируемые_расчеты_data = calculation_results.get('консолидируемые_расчеты_data', [])
+            self.current_form.income_data = calculation_results.get('income_data', [])
+            self.current_form.outcome_data = calculation_results.get('outcome_data', [])
+            self.current_form.source_financing_deficit_data = calculation_results.get('source_financing_deficit_data', [])
+            self.current_form.consolidated_calc_data = calculation_results.get('consolidated_calc_data', [])
             self.current_form.calculated_deficit_proficit = calculation_results.get('calculated_deficit_proficit')
 
             # Обновляем кэш проекта (оригинальные + расчетные данные)
@@ -256,10 +305,10 @@ class CalculationController(QObject):
                     # Формируем полные данные ревизии, сохраняя meta_info
                     revision_data = {
                         'meta_info': self.current_project.data.get('meta_info', {}),
-                        'доходы_data': self.current_project.data.get('доходы_data', []),
-                        'расходы_data': self.current_project.data.get('расходы_data', []),
-                        'источники_финансирования_data': self.current_project.data.get('источники_финансирования_data', []),
-                        'консолидируемые_расчеты_data': self.current_project.data.get('консолидируемые_расчеты_data', [])
+                        'income_data': self.current_project.data.get('income_data', []),
+                        'outcome_data': self.current_project.data.get('outcome_data', []),
+                        'source_financing_deficit_data': self.current_project.data.get('source_financing_deficit_data', []),
+                        'consolidated_calc_data': self.current_project.data.get('consolidated_calc_data', [])
                     }
                     self.db_manager.save_revision_data(
                         self.current_project.id,

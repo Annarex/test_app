@@ -20,6 +20,7 @@ from .base_models import (
     FormRevisionRecord,
 )
 from .form_0503317 import Form0503317Constants
+from utils.db_utils import get_filtered_view
 
 class DatabaseManager:
     """Менеджер базы данных"""
@@ -1249,7 +1250,7 @@ class DatabaseManager:
             cursor=cursor,
             project_id=project_id,
             revision_id=revision_id,
-            section_rows=data.get('доходы_data') or [],
+            section_rows=data.get('income_data') or [],
             table_name='income_values',
             budget_columns=budget_cols,
         )
@@ -1257,7 +1258,7 @@ class DatabaseManager:
             cursor=cursor,
             project_id=project_id,
             revision_id=revision_id,
-            section_rows=data.get('расходы_data') or [],
+            section_rows=data.get('outcome_data') or [],
             table_name='expense_values',
             budget_columns=budget_cols,
         )
@@ -1265,7 +1266,7 @@ class DatabaseManager:
             cursor=cursor,
             project_id=project_id,
             revision_id=revision_id,
-            section_rows=data.get('источники_финансирования_data') or [],
+            section_rows=data.get('source_financing_deficit_data') or [],
             table_name='source_values',
             budget_columns=budget_cols,
         )
@@ -1273,7 +1274,7 @@ class DatabaseManager:
             cursor=cursor,
             project_id=project_id,
             revision_id=revision_id,
-            section_rows=data.get('консолидируемые_расчеты_data') or [],
+            section_rows=data.get('consolidated_calc_data') or [],
             table_name='consolidated_values',
             consolidated_columns=consolidated_cols,
         )
@@ -1629,10 +1630,10 @@ class DatabaseManager:
         Загрузка данных проекта из нормализованных таблиц *_values.
 
         Восстанавливает структуру:
-        - доходы_data / расходы_data / источники_финансирования_data
+        - income_data / outcome_data / source_financing_deficit_data
           с полями 'утвержденный' / 'исполненный' и, при наличии, 'расчетный_*';
           Уникальность: (classification_code, indicator_name, line_code)
-        - консолидируемые_расчеты_data с полями 'поступления' и 'расчетный_поступления_*'.
+        - consolidated_calc_data с полями 'поступления' и 'расчетный_поступления_*'.
           Уникальность: (indicator_name, line_code) - только наименование и код строки
 
         Служебные поля (mapping, исходная_строка и т.п.) здесь не восстанавливаются
@@ -1696,11 +1697,11 @@ class DatabaseManager:
         источники = load_budget_section_values('source_values', 'источники_финансирования')
 
         if доходы:
-            data['доходы_data'] = доходы
+            data['income_data'] = доходы
         if расходы:
-            data['расходы_data'] = расходы
+            data['outcome_data'] = расходы
         if источники:
-            data['источники_финансирования_data'] = источники
+            data['source_financing_deficit_data'] = источники
 
         # Консолидируемые расчёты
         where_clause = 'project_id=? AND revision_id IS ?' if revision_id is None else 'project_id=? AND revision_id=?'
@@ -1746,7 +1747,7 @@ class DatabaseManager:
                     for idx, col_name in enumerate(cols_cons):
                         target[f'расчетный_поступления_{col_name}'] = values[idx]
 
-            data['консолидируемые_расчеты_data'] = list(grouped_cons.values())
+            data['consolidated_calc_data'] = list(grouped_cons.values())
         
         return data
 
@@ -2365,19 +2366,20 @@ class DatabaseManager:
         """
         Сохранение строк справочника в отдельные SQL-таблицы.
         Ожидается список словарей с ключами:
-        - для доходов: 'код_классификации_ДБ', 'наименование', 'уровень_кода', 'Утверждающий документ'
+        - для доходов: не сохраняем в таблицу — справочник доходов берётся из v_budgetclastypeinc_merged (фильтр по дате).
         - для источников: 'код_классификации_ИФДБ', 'наименование', 'уровень_кода', 'Утверждающий документ'
         """
         if not records:
             return
 
+        # Справочник доходов полностью переведён на v_budgetclastypeinc_merged (get_filtered_view по дате).
+        if reference_type == 'доходы':
+            return
+
         table_name = None
         code_field = None
 
-        if reference_type == 'доходы':
-            table_name = 'income_reference_records'
-            code_field = 'код_классификации_ДБ'
-        elif reference_type == 'источники':
+        if reference_type == 'источники':
             table_name = 'source_reference_records'
             code_field = 'код_классификации_ИФДБ'
 
@@ -2440,17 +2442,27 @@ class DatabaseManager:
         return references
     
     def load_income_reference_df(self) -> pd.DataFrame:
-        """Загрузка справочника доходов как DataFrame из SQL-таблицы income_reference_records"""
+        """Загрузка справочника доходов из v_budgetclastypeinc_merged с фильтром по дате и по ppocode (ОКТМО).
+        Выборка: ФУ (00000000) всегда + при наличии ревизии — ОКТМО из метаданных (код ОКТМО). Используется для пересчёта уровней.
+        Возвращает DataFrame с колонками view: concatenated_code, name, level.
+        """
+        filter_date = self.load_config("reference_filter_date") or datetime.now().strftime("%Y-%m-%d")
+        ppocode_from_meta = (self.load_config("reference_filter_ppocode") or "").strip()
+        if ppocode_from_meta and ppocode_from_meta != "00000000":
+            filter_ppocode = ["00000000", ppocode_from_meta]  # ФУ + ОКТМО из ревизии
+        else:
+            filter_ppocode = "00000000"  # только ФУ
         with sqlite3.connect(self.db_path) as conn:
-            query = '''
-                SELECT code AS код_классификации_ДБ,
-                       name AS наименование,
-                       level AS уровень_кода,
-                       doc AS Утверждающий_документ
-                FROM income_reference_records
-            '''
-            df = pd.read_sql_query(query, conn)
-        return df
+            df = get_filtered_view(
+                conn,
+                "v_budgetclastypeinc_merged",
+                filter_date=filter_date,
+                filter_ppocode=filter_ppocode,
+                join_npa=False,
+            )
+        if df.empty:
+            return pd.DataFrame(columns=["concatenated_code", "name", "level"])
+        return df[["concatenated_code", "name", "level"]].copy()
 
     def load_sources_reference_df(self) -> pd.DataFrame:
         """Загрузка справочника источников финансирования как DataFrame из SQL-таблицы source_reference_records"""
@@ -2711,7 +2723,7 @@ class DatabaseManager:
         Расчет сумм напрямую из нормализованных данных *_values без преобразования в старый формат.
         
         Возвращает словарь с ключами:
-        - 'доходы_data', 'расходы_data', 'источники_финансирования_data', 'консолидируемые_расчеты_data'
+        - 'income_data', 'outcome_data', 'source_financing_deficit_data', 'consolidated_calc_data'
         
         Каждый раздел содержит список словарей с полями:
         - 'код_классификации', 'наименование_показателя', 'код_строки', 'раздел'
@@ -2736,10 +2748,10 @@ class DatabaseManager:
         
         # Обрабатываем каждый раздел
         for section_name, df, table_type in [
-            ('доходы_data', income_df, 'budget'),
-            ('расходы_data', expense_df, 'budget'),
-            ('источники_финансирования_data', source_df, 'budget'),
-            ('консолидируемые_расчеты_data', consolidated_df, 'consolidated'),
+            ('income_data', income_df, 'budget'),
+            ('outcome_data', expense_df, 'budget'),
+            ('source_financing_deficit_data', source_df, 'budget'),
+            ('consolidated_calc_data', consolidated_df, 'consolidated'),
         ]:
             if df.empty:
                 result[section_name] = []
@@ -2758,7 +2770,7 @@ class DatabaseManager:
             # Выполняем расчеты
             if table_type == 'budget':
                 df_calc = form._prepare_dataframe_for_calculation(section_data, form.constants.BUDGET_COLUMNS)
-                if section_name == 'источники_финансирования_data':
+                if section_name == 'source_financing_deficit_data':
                     df_with_sums = form._calculate_sources_sums(df_calc, form.constants.BUDGET_COLUMNS)
                 else:
                     df_with_sums = form._calculate_standard_sums(df_calc, form.constants.BUDGET_COLUMNS)
@@ -2798,8 +2810,8 @@ class DatabaseManager:
         
         # Рассчитываем дефицит/профицит из исходных данных (до пересчета)
         # Берем исходные данные из нормализованных таблиц
-        original_income_data = self._convert_budget_df_to_calculation_format(income_df, 'доходы_data', form) if not income_df.empty else []
-        original_expense_data = self._convert_budget_df_to_calculation_format(expense_df, 'расходы_data', form) if not expense_df.empty else []
+        original_income_data = self._convert_budget_df_to_calculation_format(income_df, 'income_data', form) if not income_df.empty else []
+        original_expense_data = self._convert_budget_df_to_calculation_format(expense_df, 'outcome_data', form) if not expense_df.empty else []
         
         if original_income_data and original_expense_data:
             calculated_deficit_proficit = form._calculate_deficit_proficit_from_original(original_income_data, original_expense_data)
@@ -3009,10 +3021,10 @@ class DatabaseManager:
             has_sections = any(
                 key in data
                 for key in (
-                    'доходы_data',
-                    'расходы_data',
-                    'источники_финансирования_data',
-                    'консолидируемые_расчеты_data',
+                    'income_data',
+                    'outcome_data',
+                    'source_financing_deficit_data',
+                    'consolidated_calc_data',
                 )
             )
             if has_sections:
@@ -3056,8 +3068,8 @@ class DatabaseManager:
     def update_calculated_values(self, project_id: int, revision_id: int, calculated_data: Dict[str, List[Dict[str, Any]]]):
         """
         Обновление только вычисленных значений в таблицах *_values.
-        calculated_data должен содержать ключи: 'доходы_data', 'расходы_data', 
-        'источники_финансирования_data', 'консолидируемые_расчеты_data'
+        calculated_data должен содержать ключи: 'income_data', 'outcome_data', 
+        'source_financing_deficit_data', 'consolidated_calc_data'
         с данными, содержащими поля вида 'расчетный_утвержденный_...', 'расчетный_исполненный_...'
         """
         with sqlite3.connect(self.db_path) as conn:
@@ -3067,9 +3079,9 @@ class DatabaseManager:
             
             # Обновляем вычисленные значения для бюджетных разделов
             for section_key, table_name in [
-                ('доходы_data', 'income_values'),
-                ('расходы_data', 'expense_values'),
-                ('источники_финансирования_data', 'source_values'),
+                ('income_data', 'income_values'),
+                ('outcome_data', 'expense_values'),
+                ('source_financing_deficit_data', 'source_values'),
             ]:
                 if section_key not in calculated_data:
                     continue
@@ -3096,8 +3108,8 @@ class DatabaseManager:
                 )
             
             # Обновляем вычисленные значения для консолидируемых расчетов
-            if 'консолидируемые_расчеты_data' in calculated_data:
-                consolidated_rows = calculated_data['консолидируемые_расчеты_data']
+            if 'consolidated_calc_data' in calculated_data:
+                consolidated_rows = calculated_data['consolidated_calc_data']
                 if consolidated_rows:
                     # Отладочный вывод: проверяем наличие расчетных полей
                     sample_row = consolidated_rows[0] if consolidated_rows else None
@@ -3216,7 +3228,7 @@ class DatabaseManager:
     
     # Примечание: Методы load_income_codes_from_excel и load_expense_codes_from_excel удалены,
     # так как справочники кодов доходов и расходов уже загружаются через существующий механизм:
-    # - income_reference_records загружается через ReferenceController.load_reference_file('доходы', ...)
+    # - справочник доходов берётся из v_budgetclastypeinc_merged (get_filtered_view по дате, load_income_reference_df).
     
     def get_budget_reference_update_date(self, table_name: str) -> Optional[str]:
         """

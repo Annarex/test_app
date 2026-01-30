@@ -154,10 +154,10 @@ class RevisionController(QObject):
             # Загружаем данные ревизии
             revision_data = self.db_manager.load_revision_data(project_id, revision_id)
             need_sections = [
-                "доходы_data",
-                "расходы_data",
-                "источники_финансирования_data",
-                "консолидируемые_расчеты_data",
+                "income_data",
+                "outcome_data",
+                "source_financing_deficit_data",
+                "consolidated_calc_data",
             ]
             has_sections = revision_data and any(revision_data.get(k) for k in need_sections)
 
@@ -238,7 +238,7 @@ class RevisionController(QObject):
             
             # Загружаем данные ревизии
             revision_data = self.db_manager.load_revision_data(project_id, revision_id)
-            need_sections = ['доходы_data', 'расходы_data', 'источники_финансирования_data', 'консолидируемые_расчеты_data']
+            need_sections = ['income_data', 'outcome_data', 'source_financing_deficit_data', 'consolidated_calc_data']
             has_sections = revision_data and any(revision_data.get(k) for k in need_sections)
 
             if not has_sections:
@@ -273,9 +273,10 @@ class RevisionController(QObject):
             # Пересчитываем уровни и значения на основе справочников, если файл есть
             if revision_record.file_path and os.path.exists(revision_record.file_path):
                 try:
-                    reference_data_доходы = self.references.get('доходы')
+                    # Справочник доходов — из v_budgetclastypeinc_merged с фильтром по дате
+                    reference_data_доходы = self.db_manager.load_income_reference_df()
                     reference_data_источники = self.references.get('источники')
-                    
+
                     if isinstance(form_controller.current_form, Form0503317):
                         updated_data = form_controller.current_form.recalculate_levels_with_references(
                             revision_data,

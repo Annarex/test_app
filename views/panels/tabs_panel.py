@@ -1,7 +1,7 @@
 """Панель вкладок"""
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
                              QComboBox, QLabel, QCheckBox, QPushButton, QToolButton,
-                             QTextEdit, QTableWidget, QHeaderView, QMenu, QAction)
+                             QTextEdit, QTableWidget, QHeaderView, QMenu, QAction, QLineEdit)
 from PyQt5.QtCore import Qt, QSize
 from PyQt5.QtGui import QFont, QFontMetrics
 from PyQt5.QtWidgets import QStyle
@@ -62,6 +62,17 @@ class TabsPanel:
         tree_control_layout.addWidget(self.collapse_all_btn)
         
         tree_control_layout.addStretch()
+        
+        # Дата актуальности справочников (из метаданных ревизии или текущая)
+        tree_control_layout.addWidget(QLabel("Дата актуальности:"))
+        self.reference_date_edit = QLineEdit()
+        self.reference_date_edit.setReadOnly(True)
+        self.reference_date_edit.setPlaceholderText("—")
+        self.reference_date_edit.setMinimumWidth(100)
+        self.reference_date_edit.setMaximumWidth(110)
+        from datetime import datetime
+        self.reference_date_edit.setText(datetime.now().strftime("%Y-%m-%d"))
+        tree_control_layout.addWidget(self.reference_date_edit)
         
         # Выбор раздела
         tree_control_layout.addWidget(QLabel("Раздел:"))
@@ -153,6 +164,7 @@ class TabsPanel:
         self.main_window.data_type_combo = self.data_type_combo
         self.main_window.expand_all_btn = self.expand_all_btn
         self.main_window.collapse_all_btn = self.collapse_all_btn
+        self.main_window.reference_date_edit = self.reference_date_edit
         self.main_window.revision_toolbar = self.revision_toolbar
         self.main_window.recalculate_btn = self.recalculate_btn
         self.main_window.export_calculated_btn = self.export_calculated_btn

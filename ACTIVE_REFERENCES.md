@@ -3,11 +3,11 @@
 ## ✅ Активно используются в расчетах и логике
 
 ### Основные справочники (обязательные для расчетов):
-1. **Коды доходов** (`income_reference_records`)
+1. **Коды доходов** (`v_budgetclastypeinc_merged`)
    - Используется в: `CalculationController`, `Form0503317`, `DatabaseManager.calculate_sums_from_values()`
    - Назначение: Определение уровней кодов доходов для расчетов и агрегации
    - Статус: **КРИТИЧЕСКИ ВАЖЕН** - без него невозможны расчеты доходов
-   - Загрузка: через `ReferenceController.load_reference_file()` из Excel
+   - Загрузка: из VIEW с фильтром по дате (`get_filtered_view`, `load_income_reference_df()`), дата из конфига/метаданных ревизии
 
 2. **Коды источников** (`source_reference_records`)
    - Используется в: `CalculationController`, `Form0503317`, `DatabaseManager.calculate_sums_from_values()`
@@ -69,7 +69,7 @@
 ## Итог
 
 **Реально используются в логике приложения:**
-- ✅ `income_reference_records` (Коды доходов) - **КРИТИЧЕСКИ ВАЖЕН**
+- ✅ `v_budgetclastypeinc_merged` (Коды доходов) - **КРИТИЧЕСКИ ВАЖЕН**
 - ✅ `source_reference_records` (Коды источников) - **КРИТИЧЕСКИ ВАЖЕН**
 - ✅ `ref_years` (Годы)
 - ✅ `ref_municipalities` (Муниципальные образования)

@@ -83,10 +83,10 @@ class Form0503317Exporter:
         
         # Обработка всех разделов
         sections_data = [
-            ('доходы', form_data.get('доходы_data', [])),
-            ('расходы', form_data.get('расходы_data', [])),
-            ('источники_финансирования', form_data.get('источники_финансирования_data', [])),
-            ('консолидируемые_расчеты', form_data.get('консолидируемые_расчеты_data', []))
+            ('доходы', form_data.get('income_data', [])),
+            ('расходы', form_data.get('outcome_data', [])),
+            ('источники_финансирования', form_data.get('source_financing_deficit_data', [])),
+            ('консолидируемые_расчеты', form_data.get('consolidated_calc_data', []))
         ]
         
         for section_type, data in sections_data:

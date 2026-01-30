@@ -54,6 +54,8 @@ class BudgetReferencesUpdateDialog(QDialog):
         self.update_status = {}  # table_name -> 'none', 'success', 'error', 'cancelled'
         self.updated_tables = set()  # Множество обновленных таблиц в текущей сессии
         self._is_cancelled = {}  # table_name -> bool (для отмены обновления)
+        self.update_stats = {}  # table_name -> {'success': bool, 'api_count': int, 'db_count': int, 'diff': int}
+        self.is_mass_update = False  # Флаг массового обновления
         
         self.setWindowTitle("Обновление онлайн справочников")
         self.setMinimumWidth(800)
@@ -327,6 +329,22 @@ class BudgetReferencesUpdateDialog(QDialog):
         """Обработчик завершения обновления"""
         self._update_button_ui(table_name, 'success' if success else 'cancelled')
         
+        # Обновляем статистику
+        if table_name in self.update_stats:
+            self.update_stats[table_name]['success'] = success
+            if success:
+                # Вычисляем разницу для успешных обновлений
+                api_count = self.update_stats[table_name].get('api_count', 0)
+                db_count = self.update_stats[table_name].get('db_count', 0)
+                self.update_stats[table_name]['diff'] = api_count - db_count
+                
+                # Сохраняем количество реально загруженных записей
+                try:
+                    loaded_count = int(message.split(": ")[-1])
+                except:
+                    loaded_count = 0
+                self.update_stats[table_name]['loaded_count'] = loaded_count
+        
         if success:
             row = self._find_table_row(table_name)
             if row is not None:
@@ -352,13 +370,23 @@ class BudgetReferencesUpdateDialog(QDialog):
         logger.info(f"Обновление справочника '{REFERENCE_NAMES.get(table_name, table_name)}' завершено: {message}")
         # При одиночном обновлении проверяем сразу, но не очищаем множество
         self._check_all_updates_completed(is_mass_update=False)
+        # Показываем статистику для одиночного обновления
+        if not self.is_mass_update:
+            self._show_update_summary(table_name)
     
     def on_update_error(self, table_name: str, error_message: str):
         """Обработчик ошибки обновления"""
         self._update_button_ui(table_name, 'error')
         
+        # Обновляем статистику для неудачных обновлений
+        if table_name in self.update_stats:
+            self.update_stats[table_name]['success'] = False
+        
         logger.error(f"Ошибка при обновлении справочника '{REFERENCE_NAMES.get(table_name, table_name)}': {error_message}")
         self._check_all_updates_completed(is_mass_update=False)
+        # Показываем статистику для одиночного обновления
+        if not self.is_mass_update:
+            self._show_update_summary(table_name)
     
     def update_all_references(self):
         """Обновление всех справочников последовательно (синхронно)"""
@@ -373,8 +401,10 @@ class BudgetReferencesUpdateDialog(QDialog):
         if reply != QMessageBox.Yes:
             return
         
-        # Очищаем множество обновленных таблиц для новой сессии
+        # Очищаем множество обновленных таблиц и статистику для новой сессии
         self.updated_tables.clear()
+        self.update_stats.clear()
+        self.is_mass_update = True
         
         # Отключаем кнопку обновления всех
         self.update_all_btn.setEnabled(False)
@@ -387,6 +417,26 @@ class BudgetReferencesUpdateDialog(QDialog):
         for table_name in REFERENCE_NAMES.keys():
             url = TABLE_TO_URL.get(table_name)
             if url:
+                # Получаем количество записей из API и БД перед обновлением
+                try:
+                    api_count = self.service.get_record_count(url, default_filters.get(table_name))
+                    db_count = self._get_db_count(table_name)
+                    # Сохраняем статистику перед обновлением
+                    self.update_stats[table_name] = {
+                        'success': False,
+                        'api_count': api_count,
+                        'db_count': db_count,
+                        'diff': 0
+                    }
+                except Exception as e:
+                    logger.warning(f"Не удалось получить количество записей для {table_name}: {e}")
+                    self.update_stats[table_name] = {
+                        'success': False,
+                        'api_count': 0,
+                        'db_count': 0,
+                        'diff': 0
+                    }
+                
                 self._check_and_start_update(table_name, url, default_filters.get(table_name), skip_confirmation=True)
                 QApplication.processEvents()
         
@@ -405,14 +455,33 @@ class BudgetReferencesUpdateDialog(QDialog):
                     if update_btn:
                         update_btn.setEnabled(True)
         
-        # Проверяем завершение всех обновлений и очищаем множество
+        # Проверяем завершение всех обновлений и показываем итоговое сообщение
         self._check_all_updates_completed(is_mass_update=True)
+        self._show_update_summary()
+        self.is_mass_update = False
     
     def _update_reference(self, table_name: str, url: str, filters: Optional[Dict], api_count: Optional[int] = None, db_count: Optional[int] = None):
         """Синхронное обновление справочника"""
         row = self._find_table_row(table_name)
         if row is None:
             return
+        
+        # Сохраняем статистику перед обновлением, если еще не сохранена
+        # При массовом обновлении значения уже сохранены в update_all_references
+        if table_name not in self.update_stats:
+            self.update_stats[table_name] = {
+                'success': False,
+                'api_count': api_count or 0,
+                'db_count': db_count or 0,
+                'diff': 0
+            }
+        # При массовом обновлении не перезаписываем значения, чтобы использовать те, что были получены до обновления
+        # Для одиночного обновления обновляем значения, если они переданы
+        elif not self.is_mass_update:
+            if api_count is not None:
+                self.update_stats[table_name]['api_count'] = api_count
+            if db_count is not None:
+                self.update_stats[table_name]['db_count'] = db_count
         
         self._is_cancelled[table_name] = False
         
@@ -456,7 +525,9 @@ class BudgetReferencesUpdateDialog(QDialog):
                 self.on_update_finished(table_name, False, "Загрузка прервана пользователем")
             else:
                 self.on_update_finished(table_name, True, f"Обновлено записей: {count}")
-                self.updated_tables.add(table_name)
+                # Добавляем в updated_tables только если данные были реально перезаписаны (count > 0)
+                if count > 0:
+                    self.updated_tables.add(table_name)
                 
         except Exception as e:
             error_msg = str(e)
@@ -470,12 +541,25 @@ class BudgetReferencesUpdateDialog(QDialog):
     
     def _check_all_updates_completed(self, is_mass_update: bool = False):
         """Проверка завершения всех обновлений"""
-        related_tables = {'budgetclastypeinc', 'budgetclassubtypincmo'}
-        
-        # Обновляем уровни только если были обновлены связанные таблицы
-        if self.updated_tables & related_tables:
-            logger.info(f"Обновлены связанные таблицы: {self.updated_tables & related_tables}. Запускаем обновление уровней.")
-            self._update_levels_after_all_updates()
+        # Обновляем уровни только если была реально перезаписана таблица budgetclassubtypincmo
+        # Проверяем, что таблица была обновлена И данные были перезаписаны (loaded_count > 0)
+        if 'budgetclassubtypincmo' in self.updated_tables:
+            # Проверяем статистику, чтобы убедиться, что данные были реально перезаписаны
+            stats = self.update_stats.get('budgetclassubtypincmo', {})
+            was_replaced = False
+            
+            # Проверяем, была ли перезапись данных
+            if stats.get('success', False):
+                # Если loaded_count > 0, значит данные были реально загружены и перезаписаны
+                loaded_count = stats.get('loaded_count', 0)
+                if loaded_count > 0:
+                    was_replaced = True
+            
+            if was_replaced:
+                logger.info(f"Таблица budgetclassubtypincmo была перезаписана (загружено {stats.get('loaded_count', 0)} записей). Запускаем обновление уровней.")
+                self._update_levels_after_all_updates()
+            else:
+                logger.info("Таблица budgetclassubtypincmo не была перезаписана (данные не были загружены). Пропускаем обновление уровней.")
         
         # Очищаем множество только после массового обновления всех справочников
         if is_mass_update:
@@ -495,3 +579,81 @@ class BudgetReferencesUpdateDialog(QDialog):
             logger.info("Пересчет уровней в budgetclassubtypincmo завершен")
         except Exception as e:
             logger.error(f"Ошибка при обновлении уровней в budgetclassubtypincmo: {e}", exc_info=True)
+    
+    def _show_update_summary(self, single_table_name: Optional[str] = None):
+        """Показывает итоговое сообщение после обновления справочников (одиночного или массового)
+        
+        Args:
+            single_table_name: Имя таблицы для одиночного обновления (если None, то массовое обновление)
+        """
+        if not self.update_stats:
+            return
+        
+        # Для одиночного обновления показываем статистику только для одной таблицы
+        if single_table_name and not self.is_mass_update:
+            stats_to_process = {single_table_name: self.update_stats.get(single_table_name, {})}
+        else:
+            stats_to_process = self.update_stats
+        
+        # Подсчитываем статистику
+        total_success_diff = 0  # Сумма разниц для успешных обновлений
+        total_success_api_count = 0  # Сумма api_count для успешных обновлений
+        total_failed_api_count = 0  # Сумма api_count для неудачных обновлений
+        success_count = 0  # Количество успешных обновлений
+        
+        for table_name, stats in stats_to_process.items():
+            if not stats:
+                continue
+            if stats.get('success', False):
+                # Для успешных: добавляем разницу (api_count - db_count) и api_count
+                diff = stats.get('diff', 0)
+                api_count = stats.get('api_count', 0)
+                total_success_diff += diff
+                total_success_api_count += api_count
+                success_count += 1
+            else:
+                # Для неудачных: добавляем api_count
+                api_count = stats.get('api_count', 0)
+                total_failed_api_count += api_count
+        
+        # Формируем сообщение
+        message_parts = []
+        
+        # Если разница равна 0, значит обновление не требовалось
+        if total_success_diff == 0:
+            if total_failed_api_count == 0:
+                # Нет изменений и нет ошибок
+                message = "Обновление таблиц не требуется."
+            else:
+                # Нет изменений, но есть ошибки
+                message_parts.append("Обновление таблиц не требуется.")
+                message_parts.append(f"Неудачно обновлено: {total_failed_api_count}")
+                message = "\n".join(message_parts)
+        else:
+            # Есть изменения - показываем успешные обновления
+            if success_count > 0:
+                message_parts.append(f"Успешно обновлено записей: {total_success_api_count} ({total_success_diff:+d})")
+            
+            # Показываем неудачные обновления, если они были
+            if total_failed_api_count > 0:
+                message_parts.append(f"Неудачно обновлено: {total_failed_api_count}")
+            
+            if not message_parts:
+                message = "Обновление завершено. Нет изменений."
+            else:
+                message = "\n".join(message_parts)
+        
+        QMessageBox.information(
+            self,
+            "Результаты обновления",
+            message
+        )
+        
+        # Очищаем статистику после показа сообщения
+        if self.is_mass_update:
+            # При массовом обновлении очищаем всю статистику
+            self.update_stats.clear()
+        elif single_table_name:
+            # При одиночном обновлении очищаем статистику только для текущей таблицы
+            if single_table_name in self.update_stats:
+                del self.update_stats[single_table_name]

@@ -33,10 +33,10 @@ class Form0503317(BaseFormModel):
         self.exporter = Form0503317Exporter(self.constants, self.calculator)
         
         self.meta_info = {}
-        self.доходы_data = []
-        self.расходы_data = []
-        self.источники_финансирования_data = []
-        self.консолидируемые_расчеты_data = []
+        self.income_data = []
+        self.outcome_data = []
+        self.source_financing_deficit_data = []
+        self.consolidated_calc_data = []
         self.reference_data_доходы = None
         self.reference_data_источники = None
         self.zero_columns = {}
@@ -53,10 +53,10 @@ class Form0503317(BaseFormModel):
         # Сбрасываем предыдущее состояние, чтобы при повторной загрузке формы
         # данные не дублировались
         self.meta_info = {}
-        self.доходы_data = []
-        self.расходы_data = []
-        self.источники_финансирования_data = []
-        self.консолидируемые_расчеты_data = []
+        self.income_data = []
+        self.outcome_data = []
+        self.source_financing_deficit_data = []
+        self.consolidated_calc_data = []
         self.zero_columns = {}
         self.доходы_всего = None
         self.расходы_всего = None
@@ -70,24 +70,24 @@ class Form0503317(BaseFormModel):
         
         # Обновляем внутреннее состояние
         self.meta_info = parsed_data.get('meta_info', {})
-        self.доходы_data = parsed_data.get('доходы_data', [])
-        self.расходы_data = parsed_data.get('расходы_data', [])
-        self.источники_финансирования_data = parsed_data.get('источники_финансирования_data', [])
-        self.консолидируемые_расчеты_data = parsed_data.get('консолидируемые_расчеты_data', [])
+        self.income_data = parsed_data.get('income_data', [])
+        self.outcome_data = parsed_data.get('outcome_data', [])
+        self.source_financing_deficit_data = parsed_data.get('source_financing_deficit_data', [])
+        self.consolidated_calc_data = parsed_data.get('consolidated_calc_data', [])
         self.zero_columns = parsed_data.get('zero_columns', {})
         
         # Рассчитываем дефицит/профицит
         self.calculated_deficit_proficit = self.calculator.calculate_deficit_proficit(
-            self.доходы_data,
-            self.расходы_data
+            self.income_data,
+            self.outcome_data
         )
         
         return {
             'meta_info': self.meta_info,
-            'доходы_data': self.доходы_data,
-            'расходы_data': self.расходы_data,
-            'источники_финансирования_data': self.источники_финансирования_data,
-            'консолидируемые_расчеты_data': self.консолидируемые_расчеты_data,
+            'income_data': self.income_data,
+            'outcome_data': self.outcome_data,
+            'source_financing_deficit_data': self.source_financing_deficit_data,
+            'consolidated_calc_data': self.consolidated_calc_data,
             'calculated_deficit_proficit': self.calculated_deficit_proficit
         }
     
@@ -95,25 +95,25 @@ class Form0503317(BaseFormModel):
         """Расчет агрегированных сумм"""
         # Формируем данные для калькулятора
         form_data = {
-            'доходы_data': self.доходы_data,
-            'расходы_data': self.расходы_data,
-            'источники_финансирования_data': self.источники_финансирования_data,
-            'консолидируемые_расчеты_data': self.консолидируемые_расчеты_data
+            'income_data': self.income_data,
+            'outcome_data': self.outcome_data,
+            'source_financing_deficit_data': self.source_financing_deficit_data,
+            'consolidated_calc_data': self.consolidated_calc_data
         }
         
         # Используем калькулятор для расчета
         calculated_data = self.calculator.calculate_sums(form_data)
         
         # Обновляем внутреннее состояние
-        self.доходы_data = calculated_data.get('доходы_data', self.доходы_data)
-        self.расходы_data = calculated_data.get('расходы_data', self.расходы_data)
-        self.источники_финансирования_data = calculated_data.get('источники_финансирования_data', self.источники_финансирования_data)
-        self.консолидируемые_расчеты_data = calculated_data.get('консолидируемые_расчеты_data', self.консолидируемые_расчеты_data)
+        self.income_data = calculated_data.get('income_data', self.income_data)
+        self.outcome_data = calculated_data.get('outcome_data', self.outcome_data)
+        self.source_financing_deficit_data = calculated_data.get('source_financing_deficit_data', self.source_financing_deficit_data)
+        self.consolidated_calc_data = calculated_data.get('consolidated_calc_data', self.consolidated_calc_data)
         
         # Пересчитываем дефицит/профицит
         self.calculated_deficit_proficit = self.calculator.calculate_deficit_proficit(
-            self.доходы_data,
-            self.расходы_data
+            self.income_data,
+            self.outcome_data
         )
         
         # calculate_sums возвращает только данные разделов для пересчета
@@ -139,28 +139,28 @@ class Form0503317(BaseFormModel):
         self.parser.reference_data_источники = reference_data_источники
 
         # Доходы
-        доходы_data = form_data.get('доходы_data', [])
-        for item in доходы_data:
+        income_data = form_data.get('income_data', [])
+        for item in income_data:
             code = item.get('код_классификации', '')
             name = item.get('наименование_показателя', '')
             item['уровень'] = self.parser._determine_level(code, 'доходы', name)
 
         # Источники финансирования
-        источники_data = form_data.get('источники_финансирования_data', [])
+        источники_data = form_data.get('source_financing_deficit_data', [])
         for item in источники_data:
             code = item.get('код_классификации', '')
             name = item.get('наименование_показателя', '')
             item['уровень'] = self.parser._determine_level(code, 'источники_финансирования', name)
 
         # Расходы зависят только от кода, справочники не нужны
-        расходы_data = form_data.get('расходы_data', [])
-        for item in расходы_data:
+        outcome_data = form_data.get('outcome_data', [])
+        for item in outcome_data:
             code = item.get('код_классификации', '')
             item['уровень'] = self.parser._determine_expenditure_level(code)
 
-        form_data['доходы_data'] = доходы_data
-        form_data['расходы_data'] = расходы_data
-        form_data['источники_финансирования_data'] = источники_data
+        form_data['income_data'] = income_data
+        form_data['outcome_data'] = outcome_data
+        form_data['source_financing_deficit_data'] = источники_data
         return form_data
 
     def load_saved_data(self, form_data: Dict[str, Any]):
@@ -169,36 +169,36 @@ class Form0503317(BaseFormModel):
         Требуется при повторной загрузке проекта, чтобы экспорт/проверка работали корректно.
         """
         self.meta_info = form_data.get('meta_info', {})
-        self.доходы_data = form_data.get('доходы_data', []) or []
-        self.расходы_data = form_data.get('расходы_data', []) or []
-        self.источники_финансирования_data = form_data.get('источники_финансирования_data', []) or []
-        self.консолидируемые_расчеты_data = form_data.get('консолидируемые_расчеты_data', []) or []
+        self.income_data = form_data.get('income_data', []) or []
+        self.outcome_data = form_data.get('outcome_data', []) or []
+        self.source_financing_deficit_data = form_data.get('source_financing_deficit_data', []) or []
+        self.consolidated_calc_data = form_data.get('consolidated_calc_data', []) or []
 
         # Восстанавливаем вспомогательные структуры
         self.zero_columns = {}
-        if self.доходы_data:
-            total_row = next((item for item in self.доходы_data if 'всего' in item.get('наименование_показателя', '').lower()), None)
+        if self.income_data:
+            total_row = next((item for item in self.income_data if 'всего' in item.get('наименование_показателя', '').lower()), None)
             if total_row:
                 self.zero_columns['доходы'] = self.parser._get_zero_columns(total_row, self.constants.BUDGET_COLUMNS)
 
-        if self.расходы_data:
-            total_row = next((item for item in self.расходы_data if 'всего' in item.get('наименование_показателя', '').lower()), None)
+        if self.outcome_data:
+            total_row = next((item for item in self.outcome_data if 'всего' in item.get('наименование_показателя', '').lower()), None)
             if total_row:
                 self.zero_columns['расходы'] = self.parser._get_zero_columns(total_row, self.constants.BUDGET_COLUMNS)
 
-        if self.источники_финансирования_data:
-            total_row = next((item for item in self.источники_финансирования_data if 'всего' in item.get('наименование_показателя', '').lower()), None)
+        if self.source_financing_deficit_data:
+            total_row = next((item for item in self.source_financing_deficit_data if 'всего' in item.get('наименование_показателя', '').lower()), None)
             if total_row:
                 self.zero_columns['источники_финансирования'] = self.parser._get_zero_columns(total_row, self.constants.BUDGET_COLUMNS)
 
         # Источники требуют корректировки уровней
-        self.parser._recalculate_sources_levels(self.источники_финансирования_data)
+        self.parser._recalculate_sources_levels(self.source_financing_deficit_data)
 
         # Пересчитываем итоговые значения для дефицита/профицита, если их нет
         if not self.calculated_deficit_proficit:
             self.calculated_deficit_proficit = self.calculator.calculate_deficit_proficit(
-                self.доходы_data,
-                self.расходы_data
+                self.income_data,
+                self.outcome_data
             )
     
     def validate_data(self) -> List[Dict[str, Any]]:
@@ -207,10 +207,10 @@ class Form0503317(BaseFormModel):
         
         # Проверка агрегации сумм
         for section, data in [
-            ('Доходы', self.доходы_data),
-            ('Расходы', self.расходы_data),
-            ('Источники финансирования', self.источники_финансирования_data),
-            ('Консолидируемые расчеты', self.консолидируемые_расчеты_data)
+            ('Доходы', self.income_data),
+            ('Расходы', self.outcome_data),
+            ('Источники финансирования', self.source_financing_deficit_data),
+            ('Консолидируемые расчеты', self.consolidated_calc_data)
         ]:
             if data:
                 section_errors = self._validate_section_aggregation(section, data)
@@ -223,16 +223,16 @@ class Form0503317(BaseFormModel):
         # Пересчитываем дефицит/профицит по текущим данным формы перед проверкой
         if not self.calculated_deficit_proficit:
             self.calculated_deficit_proficit = self.calculator.calculate_deficit_proficit(
-                self.доходы_data,
-                self.расходы_data
+                self.income_data,
+                self.outcome_data
             )
         
         # Формируем данные для экспортёра
         form_data = {
-            'доходы_data': self.доходы_data,
-            'расходы_data': self.расходы_data,
-            'источники_финансирования_data': self.источники_финансирования_data,
-            'консолидируемые_расчеты_data': self.консолидируемые_расчеты_data
+            'income_data': self.income_data,
+            'outcome_data': self.outcome_data,
+            'source_financing_deficit_data': self.source_financing_deficit_data,
+            'consolidated_calc_data': self.consolidated_calc_data
         }
         
         # Устанавливаем настройку отображения ошибок
@@ -331,18 +331,18 @@ class Form0503317(BaseFormModel):
     
     def _recalculate_sources_levels(self):
         """Пересчет уровней для источников финансирования (deprecated - используйте parser._recalculate_sources_levels)"""
-        self.parser._recalculate_sources_levels(self.источники_финансирования_data)
+        self.parser._recalculate_sources_levels(self.source_financing_deficit_data)
     
     def _find_total_row(self, data: list, pattern: str) -> dict:
         """Поиск итоговой строки по паттерну (deprecated - используйте calculator._find_total_row)"""
         return self.calculator._find_total_row(data, pattern)
     
-    def _calculate_deficit_proficit_from_original(self, original_доходы_data: list = None, original_расходы_data: list = None):
+    def _calculate_deficit_proficit_from_original(self, original_income_data: list = None, original_outcome_data: list = None):
         """Расчет дефицита/профицита из исходных данных (deprecated - используйте calculator.calculate_deficit_proficit)"""
-        доходы_data = original_доходы_data if original_доходы_data is not None else self.доходы_data
-        расходы_data = original_расходы_data if original_расходы_data is not None else self.расходы_data
+        income_data = original_income_data if original_income_data is not None else self.income_data
+        outcome_data = original_outcome_data if original_outcome_data is not None else self.outcome_data
         
-        result = self.calculator.calculate_deficit_proficit(доходы_data, расходы_data)
+        result = self.calculator.calculate_deficit_proficit(income_data, outcome_data)
         if result:
             self.calculated_deficit_proficit = result
         return result
@@ -353,8 +353,8 @@ class Form0503317(BaseFormModel):
         Deprecated: используйте calculator.calculate_deficit_proficit() напрямую
         """
         self.calculated_deficit_proficit = self.calculator.calculate_deficit_proficit(
-            self.доходы_data,
-            self.расходы_data
+            self.income_data,
+            self.outcome_data
         )
         return self.calculated_deficit_proficit
     

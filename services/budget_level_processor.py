@@ -5,11 +5,9 @@
 import pandas as pd
 import sqlite3
 import json
-from datetime import datetime
 from typing import Optional, Dict, List, Tuple, Set
 from contextlib import contextmanager
 from logger import logger
-from utils.db_utils import get_filtered_view
 from utils.level_utils import (
     recalculate_levels_for_income_codes,
     get_level_updates_from_dataframe

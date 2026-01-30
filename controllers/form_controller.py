@@ -130,13 +130,17 @@ class FormController(QObject):
             # Копируем файл в папку проекта с префиксом даты/времени
             copied_file_path = self.copy_form_file_to_project(file_path, self.current_project.id)
             
-            # Получаем данные справочников как DataFrame
-            reference_data_доходы = self.references.get('доходы')
+            # Справочник доходов — всегда из v_budgetclastypeinc_merged с фильтром по дате (конфиг/метаданные)
+            reference_data_доходы = self.db_manager.load_income_reference_df()
             reference_data_источники = self.references.get('источники')
-            
+
+            # Обновляем кэш, чтобы остальной код видел актуальный справочник доходов
+            if reference_data_доходы is not None:
+                self.references['доходы'] = reference_data_доходы
+
             # Явно предупреждаем, если справочники не загружены
             missing_refs = []
-            if reference_data_доходы is None:
+            if reference_data_доходы is None or reference_data_доходы.empty:
                 missing_refs.append("доходов")
             if reference_data_источники is None:
                 missing_refs.append("источников финансирования")
@@ -247,10 +251,10 @@ class FormController(QObject):
             try:
                 revision_data = {
                     'meta_info': form_data.get('meta_info', {}),
-                    'доходы_data': form_data.get('доходы_data', []),
-                    'расходы_data': form_data.get('расходы_data', []),
-                    'источники_финансирования_data': form_data.get('источники_финансирования_data', []),
-                    'консолидируемые_расчеты_data': form_data.get('консолидируемые_расчеты_data', [])
+                    'income_data': form_data.get('income_data', []),
+                    'outcome_data': form_data.get('outcome_data', []),
+                    'source_financing_deficit_data': form_data.get('source_financing_deficit_data', []),
+                    'consolidated_calc_data': form_data.get('consolidated_calc_data', [])
                 }
                 db_manager.save_revision_data(
                     self.current_project.id,
@@ -277,12 +281,13 @@ class FormController(QObject):
             return project_data
         
         try:
-            reference_data_доходы = self.references.get('доходы')
+            # Справочник доходов — из v_budgetclastypeinc_merged с фильтром по дате
+            reference_data_доходы = self.db_manager.load_income_reference_df()
             reference_data_источники = self.references.get('источники')
 
             # Если справочники отсутствуют, явно предупреждаем пользователя
             missing_refs = []
-            if reference_data_доходы is None:
+            if reference_data_доходы is None or reference_data_доходы.empty:
                 missing_refs.append("доходов")
             if reference_data_источники is None:
                 missing_refs.append("источников финансирования")
@@ -295,7 +300,7 @@ class FormController(QObject):
                 # Предупреждение уже будет показано через error_occurred в MainController
 
             # Пересчитываем уровни, если справочники доступны
-            if reference_data_доходы is not None or reference_data_источники is not None:
+            if (reference_data_доходы is not None and not reference_data_доходы.empty) or reference_data_источники is not None:
                 updated_data = self.current_form.recalculate_levels_with_references(
                     project_data,
                     reference_data_доходы,

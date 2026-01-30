@@ -297,10 +297,10 @@ class TreeBuilder:
             
             # Загружаем данные текущего раздела
             section_map = {
-                "Доходы": "доходы_data",
-                "Расходы": "расходы_data", 
-                "Источники финансирования": "источники_финансирования_data",
-                "Консолидируемые расчеты": "консолидируемые_расчеты_data"
+                "Доходы": "income_data",
+                "Расходы": "outcome_data", 
+                "Источники финансирования": "source_financing_deficit_data",
+                "Консолидируемые расчеты": "consolidated_calc_data"
             }
 
             # Настраиваем заголовки дерева под выбранный раздел
@@ -320,16 +320,16 @@ class TreeBuilder:
                         self.main_window.current_section == "Расходы"
                         and project.data.get('calculated_deficit_proficit')
                     ):
-                        результат_data = project.data['calculated_deficit_proficit']
+                        result_data = project.data['calculated_deficit_proficit']
                         # Ищем строку с кодом 450
                         for row in data:
                             if str(row.get('код_строки', '')).strip() == '450':
                                 # Добавляем расчетные значения для проверки несоответствий
                                 for col in Form0503317Constants.BUDGET_COLUMNS:
-                                    row[f'расчетный_утвержденный_{col}'] = результат_data.get(
+                                    row[f'расчетный_утвержденный_{col}'] = result_data.get(
                                         'утвержденный', {}
                                     ).get(col, 0)
-                                    row[f'расчетный_исполненный_{col}'] = результат_data.get(
+                                    row[f'расчетный_исполненный_{col}'] = result_data.get(
                                         'исполненный', {}
                                     ).get(col, 0)
                                 break

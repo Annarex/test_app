@@ -141,13 +141,13 @@ class ErrorCheckerService:
             return errors
         
         # Ищем строку 450 в разделе расходов
-        расходы_data = project_data.get('расходы_data', [])
-        if not расходы_data:
+        outcome_data = project_data.get('outcome_data', [])
+        if not outcome_data:
             return errors
         
         # Ищем строку с кодом 450
         строка_450 = None
-        for item in расходы_data:
+        for item in outcome_data:
             if str(item.get('код_строки', '')).strip() == '450':
                 строка_450 = item
                 break

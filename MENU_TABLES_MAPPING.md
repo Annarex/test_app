@@ -6,9 +6,9 @@
 **Диалог:** `ReferencesManagementDialog` (`views/references_management_dialog.py`)  
 **Окно:** "Справочники" (с кнопкой максимизации)
 
-#### Обычные справочники (с загрузкой из Excel):
-- **Коды доходов** → `income_reference_records`
-  - Загрузка: через `ReferenceController.load_reference_file()` (тип: 'доходы')
+#### Обычные справочники:
+- **Коды доходов** → `v_budgetclastypeinc_merged`
+  - Загрузка: из VIEW с фильтром по дате (`load_income_reference_df()`), дата из конфига/метаданных ревизии
   - Использование: КРИТИЧЕСКИ ВАЖЕН для расчетов доходов
   
 - **Коды источников** → `source_reference_records`

@@ -32,11 +32,13 @@ class ReferencesManagementDialog(QDialog):
     # Список справочников с их методами загрузки
     REFERENCE_TYPES = {
         'Коды доходов': {
-            'table': 'income_reference_records',
-            'load_method': 'load_income_sources_reference',  # Специальный метод для доходов/источников
-            'load_type': 'доходы',  # Тип для ReferenceController
-            'columns': ['code', 'name', 'level', 'doc'],
-            'display_columns': ['code AS код', 'name AS наименование', 'level AS уровень', 'doc AS документ']
+            'table': 'v_budgetclastypeinc_merged',
+            'load_method': 'load_income_sources_reference',
+            'load_type': 'доходы',
+            'is_view': True,
+            'columns': ['inctypecode', 'incsubtypecode', 'analyticalgroupcode', 'name', 'level'],
+            'display_columns': ['concatenated_code AS код', 'name AS наименование', 'level AS уровень'],
+            'search_columns': ['inctypecode', 'incsubtypecode', 'analyticalgroupcode', 'name', 'level'],
         },
         'Коды источников': {
             'table': 'source_reference_records',
@@ -252,7 +254,19 @@ class ReferencesManagementDialog(QDialog):
         self.filter_date = None  # По умолчанию фильтрация отключена
         
         self.init_ui()
-        # Обновляем дату из поля выбора после создания UI
+        # Дата по умолчанию из конфига (из метаданных ревизии или текущая)
+        ref_date = self.db_manager.load_config("reference_filter_date")
+        if ref_date and hasattr(self, 'date_filter') and hasattr(self, 'date_filter_checkbox'):
+            try:
+                from PyQt5.QtCore import QDate
+                parts = ref_date.split('-')
+                if len(parts) == 3:
+                    y, m, d = int(parts[0]), int(parts[1]), int(parts[2])
+                    self.date_filter.setDate(QDate(y, m, d))
+                    self.date_filter_checkbox.setChecked(True)
+                    self.date_filter.setEnabled(True)
+            except Exception:
+                pass
         self._update_filter_date()
         self.load_reference_list()
     
@@ -664,6 +678,9 @@ class ReferencesManagementDialog(QDialog):
         if item.flags() == Qt.NoItemFlags:
             return
         
+        # Сохраняем видимость столбцов текущей таблицы до смены справочника (иначе сохранится под ключом новой таблицы)
+        self._save_column_visibility()
+        
         reference_name = item.text()
         self.current_reference_type = self.REFERENCE_TYPES.get(reference_name)
         
@@ -738,7 +755,7 @@ class ReferencesManagementDialog(QDialog):
             self.search_input.clear()
         # Обновляем дату фильтрации из поля выбора
         self._update_filter_date()
-        self.load_current_reference()
+        self.load_current_reference(skip_save_visibility=True)
     
     def _update_filter_date(self):
         """Обновляет filter_date из поля выбора даты"""
@@ -918,8 +935,14 @@ class ReferencesManagementDialog(QDialog):
         query += f" LIMIT {limit} OFFSET {offset}"
         return query, search_params
     
-    def load_current_reference(self, page: int = None):
-        """Загрузка текущего справочника в таблицу с поддержкой пагинации"""
+    def load_current_reference(self, page: int = None, skip_save_visibility: bool = False):
+        """Загрузка текущего справочника в таблицу с поддержкой пагинации.
+        
+        Args:
+            page: Номер страницы (опционально).
+            skip_save_visibility: Если True, не сохранять видимость столбцов перед загрузкой
+                (используется при переключении справочника — сохранение уже сделано в on_reference_item_clicked).
+        """
         if not self.current_reference_type:
             return
         
@@ -927,8 +950,9 @@ class ReferencesManagementDialog(QDialog):
         if page is not None:
             self.current_page = page
         
-        # Сохраняем состояние видимости столбцов перед очисткой
-        column_visibility = self._save_column_visibility()
+        # Сохраняем видимость столбцов текущей таблицы перед очисткой (при обновлении/пагинации; при переключении — уже сохранено)
+        if not skip_save_visibility:
+            self._save_column_visibility()
         
         # Очищаем таблицу перед загрузкой нового справочника
         self.view_table.clear()
@@ -953,41 +977,68 @@ class ReferencesManagementDialog(QDialog):
             table_name = self.current_reference_type['table']
             columns = self.current_reference_type.get('columns', [])
             display_columns = self.current_reference_type.get('display_columns', [])
-            
             conn = sqlite3.connect(self.db_manager.db_path)
             cursor = conn.cursor()
-            
-            # Проверяем существование таблицы или представления
+            # Проверяем существование таблицы или представления (без учёта регистра)
             is_view = self.current_reference_type.get('is_view', False)
             if is_view:
-                # Для представлений проверяем в sqlite_master с type='view'
-                cursor.execute("SELECT name FROM sqlite_master WHERE type='view' AND name=?", (table_name,))
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='view' AND LOWER(name)=LOWER(?)", (table_name,))
             else:
-                # Для таблиц проверяем в sqlite_master с type='table'
-                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table_name,))
-            
-            if not cursor.fetchone():
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND LOWER(name)=LOWER(?)", (table_name,))
+            row = cursor.fetchone()
+            if not row:
                 entity_type = "представление" if is_view else "таблица"
                 self.status_label.setText(f"{entity_type.capitalize()} {table_name} не найдена в БД")
                 conn.close()
                 return
-            
-            # Получаем список колонок таблицы
-            cursor.execute(f"PRAGMA table_info({table_name})")
+            resolved_table_name = row[0]
+            # Получаем список колонок таблицы по точному имени из БД
+            cursor.execute(f"PRAGMA table_info({resolved_table_name})")
             existing_columns = [row[1] for row in cursor.fetchall()]
             
             # Проверяем, есть ли поля startdate и enddate для фильтрации по дате
             has_date_fields = 'startdate' in existing_columns and 'enddate' in existing_columns
+            # Для справочников с датами (в т.ч. v_budgetclastypeinc_merged) обязательно фильтруем по дате: по умолчанию из конфига или текущая
+            if has_date_fields and table_name == 'v_budgetclastypeinc_merged' and self.filter_date is None:
+                self.filter_date = self.db_manager.load_config("reference_filter_date") or datetime.now().strftime('%Y-%m-%d')
+                if hasattr(self, 'date_filter') and hasattr(self, 'date_filter_checkbox'):
+                    try:
+                        parts = self.filter_date.split('-')
+                        if len(parts) == 3:
+                            from PyQt5.QtCore import QDate
+                            self.date_filter.setDate(QDate(int(parts[0]), int(parts[1]), int(parts[2])))
+                            self.date_filter_checkbox.setChecked(True)
+                            self.date_filter.setEnabled(True)
+                    except Exception:
+                        pass
             use_date_filter = has_date_fields and self.filter_date is not None
-            
             # Обновляем дату фильтрации из поля выбора
             self._update_filter_date()
             
-            # Для VIEW с полями дат используем get_filtered_view для фильтрации
-            if is_view and use_date_filter:
-                # Загружаем отфильтрованные данные через get_filtered_view
-                df_filtered = get_filtered_view(conn, table_name, self.filter_date)
+            # Для таблиц и VIEW с полями дат используем get_filtered_view для фильтрации и дедупликации
+            if use_date_filter:
+                # Определяем, нужен ли JOIN к npa
+                has_npa = self.current_reference_type.get('has_npa', False)
+                has_npa_column = 'npa_id' in existing_columns
+                join_npa = has_npa and has_npa_column
                 
+                # Загружаем отфильтрованные данные через get_filtered_view (работает и для таблиц, и для VIEW)
+                df_filtered = get_filtered_view(conn, table_name, self.filter_date, join_npa=join_npa)
+                # Для справочников с display_columns оставляем только нужные столбцы и заголовки (код, наименование, уровень)
+                display_columns = self.current_reference_type.get('display_columns')
+                if display_columns and len(df_filtered) > 0:
+                    col_map = {}
+                    for expr in display_columns:
+                        if ' AS ' in expr:
+                            left, _, right = expr.partition(' AS ')
+                            orig = left.strip()
+                            col_map[orig] = right.strip()
+                    if col_map:
+                        keep = [c for c in col_map if c in df_filtered.columns]
+                        if keep:
+                            df_filtered = df_filtered[keep].copy()
+                            df_filtered.columns = [col_map.get(c, c) for c in keep]
+                available_columns = list(df_filtered.columns)
                 # Применяем поиск к отфильтрованным данным
                 if self.search_text:
                     search_mask = pd.Series([False] * len(df_filtered))
@@ -1011,7 +1062,8 @@ class ReferencesManagementDialog(QDialog):
                 offset = (self.current_page - 1) * self.page_size
                 limit = self.page_size
                 df = df_filtered.iloc[offset:offset + limit].copy()
-                available_columns = list(df.columns)
+                if not available_columns:
+                    available_columns = list(df.columns)
                 
                 conn.close()
                 
@@ -1058,17 +1110,17 @@ class ReferencesManagementDialog(QDialog):
                 return "", []
             
             # Сначала получаем общее количество записей для пагинации (с учетом поиска и фильтрации по дате)
-            # Определяем, нужен ли префикс таблицы (если есть JOIN с npa)
+            # Используем точное имя таблицы из БД для запросов
+            effective_table = resolved_table_name
             has_npa = self.current_reference_type.get('has_npa', False)
             has_npa_column = 'npa_id' in existing_columns
             use_table_prefix = has_npa and has_npa_column
             
             if use_table_prefix:
-                # Если есть JOIN, используем префикс таблицы и добавляем JOIN в count_query
-                count_query = f'SELECT COUNT(*) FROM {table_name} LEFT JOIN npa ON {table_name}.npa_id = npa.id'
-                search_where, search_params = build_search_where(existing_columns, add_date_filter=use_date_filter, table_prefix=table_name)
+                count_query = f'SELECT COUNT(*) FROM {effective_table} LEFT JOIN npa ON {effective_table}.npa_id = npa.id'
+                search_where, search_params = build_search_where(existing_columns, add_date_filter=use_date_filter, table_prefix=effective_table)
             else:
-                count_query = f'SELECT COUNT(*) FROM {table_name}'
+                count_query = f'SELECT COUNT(*) FROM {effective_table}'
                 search_where, search_params = build_search_where(existing_columns, add_date_filter=use_date_filter)
             
             if search_where:
@@ -1090,12 +1142,11 @@ class ReferencesManagementDialog(QDialog):
             offset = (self.current_page - 1) * self.page_size
             limit = self.page_size
             
-            # Формируем запрос с учетом поиска и фильтрации по дате
-            if table_name == 'income_reference_records' and display_columns:
-                # Для income_reference_records используем оригинальные имена колонок для поиска
-                base_cols = ['code', 'name', 'level', 'doc']  # Оригинальные имена
+            # Формируем запрос с учетом поиска и фильтрации по дате (таблица с display_columns и опционально search_columns)
+            if display_columns:
+                base_cols = self.current_reference_type.get('search_columns') or ['code', 'name', 'level', 'doc']
                 search_where, search_params = build_search_where(base_cols, add_date_filter=use_date_filter)
-                query = f'SELECT {", ".join(display_columns)} FROM {table_name}'
+                query = f'SELECT {", ".join(display_columns)} FROM {effective_table}'
                 if search_where:
                     query += f" {search_where}"
                 query += f" LIMIT {limit} OFFSET {offset}"
@@ -1107,44 +1158,39 @@ class ReferencesManagementDialog(QDialog):
                 # has_npa и has_npa_column уже определены выше для count_query
                 
                 if self.current_reference_type.get('is_online', False):
-                    # Для онлайн справочников загружаем все колонки (кроме служебных)
                     excluded_cols = ['id', 'guid', 'created_at', 'loaddate']
                     if has_npa and has_npa_column:
                         excluded_cols.append('npa_id')
                     available_columns = [col for col in existing_columns if col not in excluded_cols]
                     
-                    # Строим WHERE условие
-                    # Если есть связь с npa, используем JOIN - нужен префикс таблицы для WHERE
                     if has_npa and has_npa_column:
-                        search_where, search_params = build_search_where(available_columns, add_date_filter=use_date_filter, table_prefix=table_name)
+                        search_where, search_params = build_search_where(available_columns, add_date_filter=use_date_filter, table_prefix=effective_table)
                         query, params = self._build_query_with_npa_join(
-                            cursor, table_name, available_columns, search_where, search_params, limit, offset
+                            cursor, effective_table, available_columns, search_where, search_params, limit, offset
                         )
                     else:
                         search_where, search_params = build_search_where(available_columns, add_date_filter=use_date_filter)
                         query, params = self._build_select_query(
-                            table_name, available_columns, search_where, search_params, limit, offset
+                            effective_table, available_columns, search_where, search_params, limit, offset
                         )
                     df = self._execute_query(conn, query, params)
                 elif columns:
-                    # Для обычных справочников используем указанные колонки
                     available_columns = [col for col in columns if col in existing_columns]
                     if not available_columns:
                         available_columns = existing_columns[:10]
                     search_where, search_params = build_search_where(available_columns, add_date_filter=use_date_filter)
                     query, params = self._build_select_query(
-                        table_name, available_columns, search_where, search_params, limit, offset
+                        effective_table, available_columns, search_where, search_params, limit, offset
                     )
                     df = self._execute_query(conn, query, params)
                 else:
-                    # Если колонки не указаны, берем все основные колонки
                     available_columns = [col for col in existing_columns 
                                        if col not in ['id', 'guid', 'npa_id', 'created_at', 'loaddate']]
                     if not available_columns:
                         available_columns = existing_columns[:10]
                     search_where, search_params = build_search_where(available_columns)
                     query, params = self._build_select_query(
-                        table_name, available_columns, search_where, search_params, limit, offset
+                        effective_table, available_columns, search_where, search_params, limit, offset
                     )
                     df = self._execute_query(conn, query, params)
                 

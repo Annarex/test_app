@@ -21,10 +21,10 @@ class Form0503317Calculator:
         
         Args:
             form_data: Словарь с данными формы:
-                - доходы_data: список данных доходов
-                - расходы_data: список данных расходов
-                - источники_финансирования_data: список данных источников
-                - консолидируемые_расчеты_data: список данных консолидированных расчетов
+                - income_data: список данных доходов
+                - outcome_data: список данных расходов
+                - source_financing_deficit_data: список данных источников
+                - consolidated_calc_data: список данных консолидированных расчетов
         
         Returns:
             Словарь с пересчитанными данными разделов
@@ -32,53 +32,53 @@ class Form0503317Calculator:
         result = {}
         
         # Расчет для доходов
-        if form_data.get('доходы_data'):
+        if form_data.get('income_data'):
             df_доходы = self._prepare_dataframe_for_calculation(
-                form_data['доходы_data'], 
+                form_data['income_data'], 
                 self.constants.BUDGET_COLUMNS
             )
             df_доходы_with_sums = self._calculate_budget_sums(df_доходы, self.constants.BUDGET_COLUMNS)
-            result['доходы_data'] = df_доходы_with_sums.to_dict('records')
+            result['income_data'] = df_доходы_with_sums.to_dict('records')
         
         # Расчет для расходов
-        if form_data.get('расходы_data'):
+        if form_data.get('outcome_data'):
             df_расходы = self._prepare_dataframe_for_calculation(
-                form_data['расходы_data'], 
+                form_data['outcome_data'], 
                 self.constants.BUDGET_COLUMNS
             )
             df_расходы_with_sums = self._calculate_budget_sums(df_расходы, self.constants.BUDGET_COLUMNS)
-            result['расходы_data'] = df_расходы_with_sums.to_dict('records')
+            result['outcome_data'] = df_расходы_with_sums.to_dict('records')
         
         # Расчет для источников финансирования
-        if form_data.get('источники_финансирования_data'):
+        if form_data.get('source_financing_deficit_data'):
             df_источники = self._prepare_dataframe_for_calculation(
-                form_data['источники_финансирования_data'], 
+                form_data['source_financing_deficit_data'], 
                 self.constants.BUDGET_COLUMNS
             )
             df_источники_with_sums = self._calculate_budget_sums(df_источники, self.constants.BUDGET_COLUMNS)
-            result['источники_финансирования_data'] = df_источники_with_sums.to_dict('records')
+            result['source_financing_deficit_data'] = df_источники_with_sums.to_dict('records')
         
         # Расчет для консолидируемых расчетов
-        if form_data.get('консолидируемые_расчеты_data'):
+        if form_data.get('consolidated_calc_data'):
             df_консолидируемые = self._prepare_consolidated_dataframe_for_calculation(
-                form_data['консолидируемые_расчеты_data'], 
+                form_data['consolidated_calc_data'], 
                 self.constants.CONSOLIDATED_COLUMNS
             )
             df_консолидируемые_with_sums = self._calculate_consolidated_sums(df_консолидируемые)
-            result['консолидируемые_расчеты_data'] = df_консолидируемые_with_sums.to_dict('records')
+            result['consolidated_calc_data'] = df_консолидируемые_with_sums.to_dict('records')
         
         return result
     
     def calculate_deficit_proficit(
         self, 
-        доходы_data: List[dict], 
-        расходы_data: List[dict]
+        income_data: List[dict], 
+        outcome_data: List[dict]
     ) -> Optional[Dict[str, Dict[str, float]]]:
         """Расчет дефицита/профицита
         
         Args:
-            доходы_data: Список данных доходов
-            расходы_data: Список данных расходов
+            income_data: Список данных доходов
+            outcome_data: Список данных расходов
         
         Returns:
             Словарь с дефицитом/профицитом или None
@@ -87,8 +87,8 @@ class Form0503317Calculator:
         pattern_доходы = self.constants.TOTAL_PATTERNS.get('доходы', r'доходы бюджета.*всего')
         pattern_расходы = self.constants.TOTAL_PATTERNS.get('расходы', r'расходы бюджета.*всего')
         
-        доходы_всего = self._find_total_row(доходы_data, pattern_доходы)
-        расходы_всего = self._find_total_row(расходы_data, pattern_расходы)
+        доходы_всего = self._find_total_row(income_data, pattern_доходы)
+        расходы_всего = self._find_total_row(outcome_data, pattern_расходы)
         
         if not доходы_всего or not расходы_всего:
             return None

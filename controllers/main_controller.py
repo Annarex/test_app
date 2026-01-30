@@ -352,10 +352,10 @@ class MainController(QObject):
         if self.current_form:
             form_data = {
                 'meta_info': self.current_form.meta_info,
-                'доходы_data': self.current_form.доходы_data,
-                'расходы_data': self.current_form.расходы_data,
-                'источники_финансирования_data': self.current_form.источники_финансирования_data,
-                'консолидируемые_расчеты_data': self.current_form.консолидируемые_расчеты_data
+                'income_data': self.current_form.income_data,
+                'outcome_data': self.current_form.outcome_data,
+                'source_financing_deficit_data': self.current_form.source_financing_deficit_data,
+                'consolidated_calc_data': self.current_form.consolidated_calc_data
             }
             self.current_project.data = form_data
         
@@ -366,8 +366,8 @@ class MainController(QObject):
         except Exception as e:
             logger.error(f"Ошибка обновления списка проектов после сохранения ревизии: {e}", exc_info=True)
 
-        logger.info(f"Форма успешно загружена. Данные: {len(self.current_form.доходы_data) if self.current_form else 0} доходов, "
-              f"{len(self.current_form.расходы_data) if self.current_form else 0} расходов")
+        logger.info(f"Форма успешно загружена. Данные: {len(self.current_form.income_data) if self.current_form else 0} доходов, "
+              f"{len(self.current_form.outcome_data) if self.current_form else 0} расходов")
         
         self._sync_controller_state()
         return True

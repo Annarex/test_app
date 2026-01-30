@@ -36,10 +36,10 @@ class ErrorsManager:
         
         # Проверяем разделы
         sections = {
-            "Доходы": "доходы_data",
-            "Расходы": "расходы_data",
-            "Источники финансирования": "источники_финансирования_data",
-            "Консолидируемые расчеты": "консолидируемые_расчеты_data"
+            "Доходы": "income_data",
+            "Расходы": "outcome_data",
+            "Источники финансирования": "source_financing_deficit_data",
+            "Консолидируемые расчеты": "consolidated_calc_data"
         }
         
         for section_name, section_key in sections.items():

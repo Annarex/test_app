@@ -115,7 +115,7 @@ class CalculationErrorsDialog(QDialog):
         Загрузка ошибок расчетов из данных проекта
         
         Args:
-            project_data: Словарь с данными проекта (доходы_data, расходы_data, и т.д.)
+            project_data: Словарь с данными проекта (income_data, outcome_data, и т.д.)
         """
         self.errors_data = []
         
@@ -125,10 +125,10 @@ class CalculationErrorsDialog(QDialog):
         
         # Проверяем разделы
         sections = {
-            "Доходы": "доходы_data",
-            "Расходы": "расходы_data",
-            "Источники финансирования": "источники_финансирования_data",
-            "Консолидируемые расчеты": "консолидируемые_расчеты_data"
+            "Доходы": "income_data",
+            "Расходы": "outcome_data",
+            "Источники финансирования": "source_financing_deficit_data",
+            "Консолидируемые расчеты": "consolidated_calc_data"
         }
         
         for section_name, section_key in sections.items():

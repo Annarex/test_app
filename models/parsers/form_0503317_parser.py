@@ -48,10 +48,10 @@ class Form0503317Parser:
         
         # Инициализация результатов
         meta_info = {}
-        доходы_data = []
-        расходы_data = []
-        источники_финансирования_data = []
-        консолидируемые_расчеты_data = []
+        income_data = []
+        outcome_data = []
+        source_financing_deficit_data = []
+        consolidated_calc_data = []
         zero_columns = {}
         
         # Загрузка листов
@@ -73,25 +73,25 @@ class Form0503317Parser:
             if sheet_name in sheets:
                 if section_type == 'консолидируемые_расчеты':
                     section_data, section_zero_cols = self._extract_consolidated_data(sheets[sheet_name])
-                    консолидируемые_расчеты_data = section_data
+                    consolidated_calc_data = section_data
                 else:
                     section_data, section_zero_cols = self._extract_section_data(sheets[sheet_name], section_type)
                     if section_type == 'доходы':
-                        доходы_data = section_data
+                        income_data = section_data
                     elif section_type == 'расходы':
-                        расходы_data = section_data
+                        outcome_data = section_data
                     elif section_type == 'источники_финансирования':
-                        источники_финансирования_data = section_data
+                        source_financing_deficit_data = section_data
                     
                     if section_zero_cols:
                         zero_columns[section_type] = section_zero_cols
         
         return {
             'meta_info': meta_info,
-            'доходы_data': доходы_data,
-            'расходы_data': расходы_data,
-            'источники_финансирования_data': источники_финансирования_data,
-            'консолидируемые_расчеты_data': консолидируемые_расчеты_data,
+            'income_data': income_data,
+            'outcome_data': outcome_data,
+            'source_financing_deficit_data': source_financing_deficit_data,
+            'consolidated_calc_data': consolidated_calc_data,
             'zero_columns': zero_columns
         }
     
@@ -355,10 +355,11 @@ class Form0503317Parser:
         try:
             if section_type == 'доходы' and self.reference_data_доходы is not None:
                 match = self.reference_data_доходы[
-                    self.reference_data_доходы['код_классификации_ДБ'] == classification_code
+                    self.reference_data_доходы['concatenated_code'] == (classification_code[3:] if len(classification_code)==20 else classification_code )
                 ]
+                
                 if not match.empty:
-                    level = match.iloc[0]['уровень_кода']
+                    level = match.iloc[0]['level']
                     return int(level) if pd.notna(level) else 0
             
             elif section_type == 'источники_финансирования' and self.reference_data_источники is not None:
