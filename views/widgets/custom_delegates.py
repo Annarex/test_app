@@ -6,68 +6,41 @@ from PyQt5.QtGui import (QTextDocument, QTextOption, QTextCharFormat,
 
 
 class WordWrapItemDelegate(QStyledItemDelegate):
-    """Делегат для переноса текста в ячейках дерева"""
-    
-    def _calculate_item_level(self, index) -> int:
-        """Вычисление уровня элемента для внутреннего отступа справа
-        
-        Args:
-            index: Индекс элемента
-        
-        Returns:
-            Уровень элемента (0-6)
-        """
-        item_level = 0
+    """Делегат для переноса текста в ячейках дерева. Внутри закрашенной ячейки отступ одинаковый для всех уровней."""
+
+    # Одинаковые отступы внутри ячейки для всех уровней; дерево само рисует ветки/иконки
+    CELL_LEFT_MARGIN = 4
+    CELL_RIGHT_MARGIN = 4
+    # Базовый запас: в paint виджет передаёт option.rect уже, чем header.sectionSize(0). На нижних уровнях ещё уже (ветки дерева).
+    FIRST_COLUMN_WIDTH_RESERVE = 24
+
+    def __init__(self, tree_widget=None, parent=None):
+        super().__init__(parent)
+        self._tree_widget = tree_widget
+
+    def _get_item_level(self, index) -> int:
+        """Уровень элемента (0–6) для расчёта запаса ширины на нижних уровнях."""
         try:
             model = index.model()
             if model:
-                # Пытаемся получить уровень из данных элемента (столбец 3 - "Уровень")
-                level_index = model.index(index.row(), 3, index.parent())
-                if level_index.isValid():
-                    level_text = model.data(level_index, Qt.DisplayRole)
-                    if level_text:
-                        try:
-                            item_level = int(str(level_text))
-                        except (ValueError, TypeError):
-                            item_level = 0
-                
-                # Если не удалось получить из данных, вычисляем по глубине вложенности
-                if item_level == 0:
-                    parent = index.parent()
-                    while parent.isValid():
-                        item_level += 1
-                        parent = parent.parent()
+                li = model.index(index.row(), 3, index.parent())
+                if li.isValid():
+                    t = model.data(li, Qt.DisplayRole)
+                    if t:
+                        return max(0, min(6, int(str(t))))
+                parent = index.parent()
+                level = 0
+                while parent.isValid():
+                    level += 1
+                    parent = parent.parent()
+                return level
         except Exception:
-            item_level = 0
-        
-        return item_level
-    
-    def _calculate_right_padding(self, item_level: int, indentation: int) -> int:
-        """Вычисление внутреннего отступа справа с учетом всех уровней
-        
-        Args:
-            item_level: Уровень элемента
-            indentation: Отступ дерева
-        
-        Returns:
-            Отступ справа в пикселях
-        """
-        if item_level > 0:
-            # Сумма отступов всех уровней: indentation * (0 + 1 + 2 + ... + item_level)
-            # Формула суммы арифметической прогрессии: n * (n + 1) / 2
-            return indentation * item_level * (item_level + 1) // 2
+            pass
         return 0
-    
+
     def _get_column_width(self, column: int, option, widget) -> int:
-        """Получение ширины столбца
-        
-        Args:
-            column: Индекс столбца
-            option: Опции отрисовки
-            widget: Виджет дерева
-        
-        Returns:
-            Ширина столбца в пикселях
+        """Получение ширины столбца. Для столбца 0 (Наименование) всегда берём из заголовка,
+        чтобы при ресайзе высота строки считалась по новой ширине, а не по устаревшему option.rect.
         """
         column_width = 200  # Значение по умолчанию
         
@@ -76,8 +49,9 @@ class WordWrapItemDelegate(QStyledItemDelegate):
             if column >= 0:
                 column_width = max(header.sectionSize(column), 50)
         
-        # Если ширина из option доступна, используем её
-        if option.rect.width() > 0:
+        # Для столбца «Наименование» (0) не подменять шириной из option — при ресайзе rect ещё старый,
+        # из-за этого высота не пересчитывается вовремя и текст «съезжает»
+        if column != 0 and option.rect.width() > 0:
             column_width = option.rect.width()
         
         return column_width
@@ -140,29 +114,17 @@ class WordWrapItemDelegate(QStyledItemDelegate):
         # Восстанавливаем исходный шрифт
         painter.setFont(original_font)
     
-    def _paint_text_column(self, painter, option, index, text: str, right_padding: int = 0):
-        """Отрисовка текстовой колонки с переносом
-        
-        Args:
-            painter: Объект для отрисовки
-            option: Опции отрисовки
-            index: Индекс элемента
-            text: Текст для отрисовки
-            right_padding: Отступ справа в пикселях
-        """
-        # Создаем документ для переноса текста
+    def _paint_text_column(self, painter, option, index, text: str, right_padding: int = 0, left_indent: int = 0):
+        """Отрисовка текстовой колонки с переносом. Одинаковые отступы внутри ячейки."""
         doc = QTextDocument()
         doc.setDefaultFont(option.font)
         doc.setPlainText(str(text))
-        
-        # Настраиваем перенос текста
+        doc.setDocumentMargin(2)
         text_option = QTextOption()
         text_option.setWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
         doc.setDefaultTextOption(text_option)
-        
-        # Устанавливаем ширину документа равной ширине ячейки
-        width = option.rect.width()
-        doc.setTextWidth(width - right_padding)
+        width = max(option.rect.width() - left_indent - right_padding, 20)
+        doc.setTextWidth(width)
         
         # Фон уже нарисован выше, устанавливаем цвет текста (для ошибок) через QTextCharFormat
         text_color = index.data(Qt.ForegroundRole)
@@ -196,10 +158,10 @@ class WordWrapItemDelegate(QStyledItemDelegate):
             cursor.select(QTextCursor.Document)
             cursor.setCharFormat(char_format)
         
-        # Рисуем текст с учетом внутреннего отступа справа
-        text_rect = option.rect.adjusted(0, 0, -right_padding, 0)
+        text_rect = option.rect.adjusted(left_indent, 0, -right_padding, 0)
+        top_pad = 2
         painter.save()
-        painter.translate(text_rect.topLeft())
+        painter.translate(text_rect.left(), text_rect.top() + top_pad)
         doc.drawContents(painter)
         painter.restore()
     
@@ -236,27 +198,9 @@ class WordWrapItemDelegate(QStyledItemDelegate):
             self._paint_code_column(painter, option, index, text)
             return
         
-        # Для остальных столбцов используем документ с переносом
-        # Для столбца "Наименование" используем ширину с учетом отступов дерева
-        width = option.rect.width()
-        right_padding = 0  # Отступ справа для столбца "Наименование"
-        
-        if column == 0:
-            # Получаем отступы дерева из виджета
-            widget = option.widget
-            if widget and hasattr(widget, 'indentation'):
-                indentation = widget.indentation()
-                indent_reserve = indentation * 6 + 50  # Запас на отступы
-                width = 400 + indent_reserve
-                
-                # Вычисляем уровень элемента и отступ справа
-                item_level = self._calculate_item_level(index)
-                right_padding = self._calculate_right_padding(item_level, indentation)
-            else:
-                width = 400  # Значение по умолчанию
-        
-        # Отрисовываем текстовую колонку с переносом
-        self._paint_text_column(painter, option, index, text, right_padding)
+        left_margin = self.CELL_LEFT_MARGIN if column == 0 else 0
+        right_margin = self.CELL_RIGHT_MARGIN if column == 0 else 0
+        self._paint_text_column(painter, option, index, text, right_margin, left_margin)
     
     def sizeHint(self, option, index):
         if not index.isValid():
@@ -266,23 +210,12 @@ class WordWrapItemDelegate(QStyledItemDelegate):
         if not text:
             return QSize(0, option.fontMetrics.height())
         
-        # Получаем ширину столбца
         column = index.column()
-        column_width = self._get_column_width(column, option, option.widget)
+        widget = option.widget or self._tree_widget
+        column_width = self._get_column_width(column, option, widget)
         
-        right_padding = 0  # Отступ справа для столбца "Наименование"
-        
-        # Для столбца "Наименование" (индекс 0) используем ширину с учетом отступов
-        if column == 0:
-            widget = option.widget
-            if widget and hasattr(widget, 'indentation'):
-                indentation = widget.indentation()
-                indent_reserve = indentation * 6 + 50
-                column_width = 400 + indent_reserve
-                
-                # Вычисляем уровень элемента и отступ справа
-                item_level = self._calculate_item_level(index)
-                right_padding = self._calculate_right_padding(item_level, indentation)
+        left_margin = self.CELL_LEFT_MARGIN if column == 0 else 0
+        right_margin = self.CELL_RIGHT_MARGIN if column == 0 else 0
         
         # Для столбца "Код классификации" (индекс 2) используем ширину текста без переноса
         if column == 2:
@@ -290,20 +223,24 @@ class WordWrapItemDelegate(QStyledItemDelegate):
             text_width = option.fontMetrics.horizontalAdvance(str(text))
             return QSize(text_width, option.fontMetrics.height())
         
-        # Для остальных столбцов создаем документ для расчета размера с переносом
+        # Документ для расчёта размера с переносом. Для столбца 0 ширина = столбец минус одинаковые отступы (текст не выходит за границы ячейки)
         doc = QTextDocument()
         doc.setDefaultFont(option.font)
         doc.setPlainText(str(text))
-        
-        # Настраиваем перенос текста
+        doc.setDocumentMargin(2)
         text_option = QTextOption()
         text_option.setWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
         doc.setDefaultTextOption(text_option)
-        
-        # Устанавливаем ширину документа равной ширине столбца с учетом внутреннего отступа справа
-        # Для столбца "Наименование" вычитаем отступ справа
-        available_width = column_width - right_padding if column == 0 else column_width
-        doc.setTextWidth(available_width)
-        
-        # Возвращаем размер с учетом переноса
-        return QSize(int(doc.idealWidth()), int(doc.size().height()))
+        if column == 0:
+            item_level = self._get_item_level(index)
+            indentation = (widget.indentation() if widget and hasattr(widget, 'indentation') else None) or 20
+            level_reserve = item_level * indentation
+            reserve = self.FIRST_COLUMN_WIDTH_RESERVE + level_reserve
+            available_width = column_width - left_margin - right_margin - reserve
+        else:
+            available_width = column_width - left_margin - right_margin
+        doc.setTextWidth(max(available_width, 60))
+        doc_height = int(doc.size().height())
+        fm = option.fontMetrics
+        vertical_padding = max(4, fm.lineSpacing() // 2)  # минимальный запас по высоте
+        return QSize(int(doc.idealWidth()), doc_height + vertical_padding)

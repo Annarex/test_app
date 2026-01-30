@@ -1,6 +1,6 @@
 """Построение дерева из данных"""
 from PyQt5.QtWidgets import QTreeWidget, QTreeWidgetItem, QHeaderView
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QColor, QBrush
 from logger import logger
 from models.constants.form_0503317_constants import Form0503317Constants
@@ -75,6 +75,13 @@ class TreeBuilder:
                     tree_widget.topLevelItem(i).setExpanded(True)
                 except:
                     pass
+
+            # Пересчёт высоты строк сразу и после первого цикла событий (когда ширина столбцов уже применена)
+            try:
+                tree_widget.doItemsLayout()
+            except Exception:
+                pass
+            QTimer.singleShot(0, lambda tw=tree_widget: tw.doItemsLayout() if tw else None)
 
             if items_created > 0 and tree_widget == self.main_window.data_tree:
                 msg = f"Построено дерево: {items_created} элементов"

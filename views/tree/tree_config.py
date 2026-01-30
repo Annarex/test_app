@@ -66,8 +66,8 @@ class TreeConfig:
         if mapping is None:
             mapping = self.tree_column_mapping or getattr(self.main_window, 'tree_column_mapping', {})
         
-        # Устанавливаем делегат для переноса текста в ячейках
-        tree_widget.setItemDelegate(WordWrapItemDelegate())
+        # Делегату передаём дерево, чтобы sizeHint сразу учитывал отступ по уровню (без запоздалого обновления высоты)
+        tree_widget.setItemDelegate(WordWrapItemDelegate(tree_widget))
         tree_widget.setUniformRowHeights(False)
         
         font = tree_widget.font()
@@ -131,8 +131,8 @@ class TreeConfig:
         for idx in range(len(display_headers)):
             if idx == 0:
                 header.setSectionResizeMode(idx, QHeaderView.Interactive)
-                indentation = tree_widget.indentation()
-                indent_reserve = indentation * 6 + 50
+                indentation = tree_widget.indentation() or 20
+                indent_reserve = indentation * 3 + 24  # запас под отступы уровней без перебора
                 header.resizeSection(idx, 400 + indent_reserve)
             elif idx == 1:
                 header.setSectionResizeMode(idx, QHeaderView.Fixed)
@@ -153,11 +153,16 @@ class TreeConfig:
             if new_size == 0:
                 return
             if logical_index == 0:
-                indentation = tree_widget.indentation()
-                indent_reserve = indentation * 6 + 50
+                indentation = tree_widget.indentation() or 20
+                indent_reserve = indentation * 3 + 24
                 max_width = 400 + indent_reserve
                 if new_size > max_width:
                     header.resizeSection(logical_index, max_width)
+                try:
+                    tree_widget.doItemsLayout()
+                except Exception:
+                    pass
+                QTimer.singleShot(0, lambda tw=tree_widget: tw.doItemsLayout() if tw else None)
             elif logical_index == 1 and header.sectionResizeMode(logical_index) == QHeaderView.Fixed and new_size != 80:
                 header.resizeSection(logical_index, 80)
             elif logical_index == 3 and header.sectionResizeMode(logical_index) == QHeaderView.Fixed and new_size != 50:
