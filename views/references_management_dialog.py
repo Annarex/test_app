@@ -8,8 +8,8 @@ from PyQt5.QtWidgets import (
     QSplitter, QListWidget, QListWidgetItem, QFormLayout,
     QTextEdit, QScrollArea, QSizePolicy, QMenu, QSpinBox, QDateEdit, QCheckBox
 )
-from PyQt5.QtCore import Qt, QDate
-from PyQt5.QtGui import QFont, QFontMetrics
+from PyQt5.QtCore import Qt, QDate, QTimer, QUrl
+from PyQt5.QtGui import QFont, QFontMetrics, QDesktopServices
 from pathlib import Path
 from datetime import datetime
 import pandas as pd
@@ -17,13 +17,14 @@ import sqlite3
 from logger import logger
 
 from models.database import DatabaseManager
-from models.base_models import YearRef, MunicipalityRef, FormTypeMeta, PeriodRef
+from models.base_models import YearRef, FormTypeMeta, PeriodRef
 from views.budget_references_update_dialog import REFERENCE_NAMES
 from views.reference_detail_dialog import ReferenceDetailDialog
 from views.column_visibility_dialog import ColumnVisibilityDialog
 from controllers.reference_controller import ReferenceController
 from styles.styles import set_tab_bar_min_width
 from utils.db_utils import get_filtered_view
+from views.metadata.metadata_panel import get_reference_date_from_meta_info
 
 
 class ReferencesManagementDialog(QDialog):
@@ -55,14 +56,6 @@ class ReferencesManagementDialog(QDialog):
             'is_config': True,
             'load_func': '_load_years',
             'save_func': '_save_years'
-        },
-        'Муниципальные образования': {
-            'table': 'ref_municipalities',
-            'load_method': None,
-            'columns': ['code', 'name', 'is_active'],
-            'is_config': True,
-            'load_func': '_load_municipalities',
-            'save_func': '_save_municipalities'
         },
         'Типы форм': {
             'table': 'ref_form_types',
@@ -254,19 +247,17 @@ class ReferencesManagementDialog(QDialog):
         self.filter_date = None  # По умолчанию фильтрация отключена
         
         self.init_ui()
-        # Дата по умолчанию из конфига (из метаданных ревизии или текущая)
-        ref_date = self.db_manager.load_config("reference_filter_date")
+        ref_date = self._revision_date_if_project_open()
         if ref_date and hasattr(self, 'date_filter') and hasattr(self, 'date_filter_checkbox'):
             try:
-                from PyQt5.QtCore import QDate
-                parts = ref_date.split('-')
-                if len(parts) == 3:
-                    y, m, d = int(parts[0]), int(parts[1]), int(parts[2])
-                    self.date_filter.setDate(QDate(y, m, d))
-                    self.date_filter_checkbox.setChecked(True)
-                    self.date_filter.setEnabled(True)
-            except Exception:
-                pass
+                y, m, d = (int(x) for x in ref_date.split('-')[:3])
+                self.date_filter.setDate(QDate(y, m, d))
+                self.date_filter_checkbox.setChecked(True)
+                self.date_filter.setEnabled(True)
+            except (ValueError, TypeError):
+                self.date_filter.setDate(QDate.currentDate())
+        elif hasattr(self, 'date_filter'):
+            self.date_filter.setDate(QDate.currentDate())
         self._update_filter_date()
         self.load_reference_list()
     
@@ -422,6 +413,13 @@ class ReferencesManagementDialog(QDialog):
         refresh_btn.setObjectName("compactButton")
         refresh_btn.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Preferred)
         buttons_layout.addWidget(refresh_btn)
+        
+        export_excel_btn = QPushButton("Выгрузить в Excel")
+        export_excel_btn.clicked.connect(self.export_reference_to_excel)
+        export_excel_btn.setObjectName("compactButton")
+        export_excel_btn.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Preferred)
+        export_excel_btn.setToolTip("Выгрузить данные в Excel")
+        buttons_layout.addWidget(export_excel_btn)
         
         # Кнопка сохранения для справочников конфигурации (будет показываться только для них)
         self.save_config_btn = QPushButton("💾 Сохранить")
@@ -757,6 +755,15 @@ class ReferencesManagementDialog(QDialog):
         self._update_filter_date()
         self.load_current_reference(skip_save_visibility=True)
     
+    def _revision_date_if_project_open(self):
+        """Дата из метаданных ревизии, если открыт проект с загруженной ревизией; иначе None."""
+        ctrl = getattr(self.parent(), 'controller', None) if self.parent() else None
+        if not ctrl or not getattr(ctrl, 'current_revision_id', None):
+            return None
+        project = getattr(ctrl, 'current_project', None)
+        meta = (project.data or {}).get('meta_info', {}) if project else {}
+        return get_reference_date_from_meta_info(meta) if meta else None
+
     def _update_filter_date(self):
         """Обновляет filter_date из поля выбора даты"""
         if hasattr(self, 'date_filter_checkbox') and self.date_filter_checkbox.isChecked():
@@ -827,7 +834,6 @@ class ReferencesManagementDialog(QDialog):
             if table_name:
                 config_key = f"references_table_columns:{table_name}"
                 saved_column_visibility = self.db_manager.load_config(config_key, {})
-        
         # Используем только сохраненную конфигурацию для текущей таблицы
         # Не используем column_visibility из предыдущей таблицы, чтобы избежать применения настроек к другим таблицам
         if saved_column_visibility:
@@ -912,28 +918,145 @@ class ReferencesManagementDialog(QDialog):
                       LEFT JOIN npa ON {table_name}.npa_id = npa.id'''
             if search_where:
                 query += f" {search_where}"
-            query += f" LIMIT {limit} OFFSET {offset}"
+            if limit is not None and offset is not None:
+                query += f" LIMIT {limit} OFFSET {offset}"
             return query, search_params
         else:
             # Если таблицы npa нет, просто исключаем npa_id
             query = f'SELECT {", ".join(available_columns)} FROM {table_name}'
             if search_where:
                 query += f" {search_where}"
-            query += f" LIMIT {limit} OFFSET {offset}"
+            if limit is not None and offset is not None:
+                query += f" LIMIT {limit} OFFSET {offset}"
             return query, search_params
     
     def _build_select_query(self, table_name: str, columns: list, search_where: str, 
-                            search_params: list, limit: int, offset: int) -> tuple:
-        """Строит простой SELECT запрос
-        
-        Returns:
-            tuple: (query, params) - SQL запрос и параметры
-        """
+                            search_params: list, limit: int = None, offset: int = None) -> tuple:
+        """Строит простой SELECT запрос. При limit=None/offset=None LIMIT/OFFSET не добавляются."""
         query = f'SELECT {", ".join(columns)} FROM {table_name}'
         if search_where:
             query += f" {search_where}"
-        query += f" LIMIT {limit} OFFSET {offset}"
+        if limit is not None and offset is not None:
+            query += f" LIMIT {limit} OFFSET {offset}"
         return query, search_params
+    
+    def _build_search_where(self, base_columns, add_date_filter=False, table_prefix=None):
+        """Строит WHERE для поиска и фильтра по дате. Возвращает (where_clause, params)."""
+        conditions, params = [], []
+        prefix = f"{table_prefix}." if table_prefix else ""
+        if add_date_filter and self.filter_date:
+            conditions.append(f"({prefix}startdate IS NULL OR date({prefix}startdate) <= date(?))")
+            conditions.append(f"({prefix}enddate IS NULL OR {prefix}enddate = '' OR date({prefix}enddate) >= date(?))")
+            params.extend([self.filter_date, self.filter_date])
+        if self.search_text:
+            text_columns = [c for c in base_columns if c not in ['id', 'guid', 'created_at', 'loaddate', 'startdate', 'enddate']]
+            if text_columns:
+                search_pattern = f"%{self.search_text}%"
+                conditions.append("(" + " OR ".join([f"{prefix}{c} LIKE ?" for c in text_columns]) + ")")
+                params.extend([search_pattern] * len(text_columns))
+        return ("WHERE " + " AND ".join(conditions), params) if conditions else ("", [])
+    
+    def _fetch_reference_data(self, limit=None, offset=None):
+        """Загружает данные текущего справочника из БД с учётом фильтров.
+        limit/offset = None — без пагинации (вся выборка). Возвращает (df, available_columns, total_records).
+        """
+        if not self.current_reference_type or self.current_reference_type.get('is_config', False):
+            return None, None, 0
+        self._update_filter_date()
+        try:
+            table_name = self.current_reference_type['table']
+            columns = self.current_reference_type.get('columns', [])
+            display_columns = self.current_reference_type.get('display_columns', [])
+            conn = sqlite3.connect(self.db_manager.db_path)
+            cursor = conn.cursor()
+            is_view = self.current_reference_type.get('is_view', False)
+            cursor.execute("SELECT name FROM sqlite_master WHERE type=? AND LOWER(name)=LOWER(?)",
+                           ('view' if is_view else 'table', table_name))
+            row = cursor.fetchone()
+            if not row:
+                conn.close()
+                return None, None, 0
+            resolved_table_name = row[0]
+            cursor.execute(f"PRAGMA table_info({resolved_table_name})")
+            existing_columns = [r[1] for r in cursor.fetchall()]
+            has_date_fields = 'startdate' in existing_columns and 'enddate' in existing_columns
+            use_date_filter = has_date_fields and self.filter_date is not None
+            has_npa = self.current_reference_type.get('has_npa', False)
+            has_npa_column = 'npa_id' in existing_columns
+            effective_table = resolved_table_name
+            
+            if use_date_filter:
+                join_npa = has_npa and has_npa_column
+                df_filtered = get_filtered_view(conn, table_name, self.filter_date, join_npa=join_npa)
+                if display_columns and len(df_filtered) > 0:
+                    col_map = {expr.partition(' AS ')[0].strip(): expr.partition(' AS ')[2].strip()
+                               for expr in display_columns if ' AS ' in expr}
+                    keep = [c for c in col_map if c in df_filtered.columns]
+                    if keep:
+                        df_filtered = df_filtered[keep].copy()
+                        df_filtered.columns = [col_map.get(c, c) for c in keep]
+                available_columns = list(df_filtered.columns)
+                if not display_columns:
+                    excluded = ['id', 'guid', 'created_at', 'loaddate'] + (['npa_id'] if has_npa and has_npa_column else [])
+                    available_columns = [c for c in available_columns if c not in excluded]
+                    if available_columns:
+                        df_filtered = df_filtered[available_columns].copy()
+                if self.search_text:
+                    mask = pd.Series([False] * len(df_filtered))
+                    skip_cols = ['id', 'guid', 'created_at', 'loaddate', 'startdate', 'enddate']
+                    for col in df_filtered.columns:
+                        if col not in skip_cols:
+                            mask |= df_filtered[col].astype(str).str.contains(self.search_text, case=False, na=False)
+                    df_filtered = df_filtered[mask]
+                total = len(df_filtered)
+                if limit is not None and offset is not None:
+                    df = df_filtered.iloc[offset:offset + limit].copy()
+                else:
+                    df = df_filtered
+                conn.close()
+                return df, available_columns, total
+            
+            search_where, search_params = self._build_search_where(existing_columns, add_date_filter=use_date_filter, table_prefix=effective_table if has_npa and has_npa_column else None)
+            if has_npa and has_npa_column:
+                count_query = f'SELECT COUNT(*) FROM {effective_table} LEFT JOIN npa ON {effective_table}.npa_id = npa.id'
+            else:
+                count_query = f'SELECT COUNT(*) FROM {effective_table}'
+            if search_where:
+                count_query += f" {search_where}"
+            cursor.execute(count_query, search_params if search_params else [])
+            total = cursor.fetchone()[0]
+            
+            if display_columns:
+                base_cols = self.current_reference_type.get('search_columns') or ['code', 'name', 'level', 'doc']
+                search_where, search_params = self._build_search_where(base_cols, add_date_filter=use_date_filter)
+                query = f'SELECT {", ".join(display_columns)} FROM {effective_table}'
+                if search_where:
+                    query += f" {search_where}"
+                if limit is not None and offset is not None:
+                    query += f" LIMIT {limit} OFFSET {offset}"
+                df = self._execute_query(conn, query, search_params)
+                available_columns = list(df.columns)
+            else:
+                excluded = ['id', 'guid', 'created_at', 'loaddate'] + (['npa_id'] if has_npa and has_npa_column else [])
+                if self.current_reference_type.get('is_online', False):
+                    available_columns = [c for c in existing_columns if c not in excluded]
+                elif columns:
+                    available_columns = [c for c in columns if c in existing_columns] or existing_columns[:10]
+                else:
+                    available_columns = [c for c in existing_columns if c not in excluded] or existing_columns[:10]
+                if has_npa and has_npa_column:
+                    search_where, search_params = self._build_search_where(available_columns, add_date_filter=use_date_filter, table_prefix=effective_table)
+                    query, params = self._build_query_with_npa_join(cursor, effective_table, available_columns, search_where, search_params, limit, offset)
+                else:
+                    search_where, search_params = self._build_search_where(available_columns, add_date_filter=use_date_filter)
+                    query, params = self._build_select_query(effective_table, available_columns, search_where, search_params, limit, offset)
+                df = self._execute_query(conn, query, params)
+                available_columns = list(df.columns)
+            conn.close()
+            return df, available_columns, total
+        except Exception as e:
+            logger.error(f"Ошибка загрузки данных справочника: {e}", exc_info=True)
+            return None, None, 0
     
     def load_current_reference(self, page: int = None, skip_save_visibility: bool = False):
         """Загрузка текущего справочника в таблицу с поддержкой пагинации.
@@ -975,31 +1098,8 @@ class ReferencesManagementDialog(QDialog):
         # Загрузка обычных справочников из БД
         try:
             table_name = self.current_reference_type['table']
-            columns = self.current_reference_type.get('columns', [])
-            display_columns = self.current_reference_type.get('display_columns', [])
-            conn = sqlite3.connect(self.db_manager.db_path)
-            cursor = conn.cursor()
-            # Проверяем существование таблицы или представления (без учёта регистра)
-            is_view = self.current_reference_type.get('is_view', False)
-            if is_view:
-                cursor.execute("SELECT name FROM sqlite_master WHERE type='view' AND LOWER(name)=LOWER(?)", (table_name,))
-            else:
-                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND LOWER(name)=LOWER(?)", (table_name,))
-            row = cursor.fetchone()
-            if not row:
-                entity_type = "представление" if is_view else "таблица"
-                self.status_label.setText(f"{entity_type.capitalize()} {table_name} не найдена в БД")
-                conn.close()
-                return
-            resolved_table_name = row[0]
-            # Получаем список колонок таблицы по точному имени из БД
-            cursor.execute(f"PRAGMA table_info({resolved_table_name})")
-            existing_columns = [row[1] for row in cursor.fetchall()]
-            
-            # Проверяем, есть ли поля startdate и enddate для фильтрации по дате
-            has_date_fields = 'startdate' in existing_columns and 'enddate' in existing_columns
-            # Для справочников с датами (в т.ч. v_budgetclastypeinc_merged) обязательно фильтруем по дате: по умолчанию из конфига или текущая
-            if has_date_fields and table_name == 'v_budgetclastypeinc_merged' and self.filter_date is None:
+            # Для v_budgetclastypeinc_merged по умолчанию подставляем дату из конфига
+            if table_name == 'v_budgetclastypeinc_merged' and self.filter_date is None:
                 self.filter_date = self.db_manager.load_config("reference_filter_date") or datetime.now().strftime('%Y-%m-%d')
                 if hasattr(self, 'date_filter') and hasattr(self, 'date_filter_checkbox'):
                     try:
@@ -1011,203 +1111,70 @@ class ReferencesManagementDialog(QDialog):
                             self.date_filter.setEnabled(True)
                     except Exception:
                         pass
-            use_date_filter = has_date_fields and self.filter_date is not None
-            # Обновляем дату фильтрации из поля выбора
             self._update_filter_date()
-            
-            # Для таблиц и VIEW с полями дат используем get_filtered_view для фильтрации и дедупликации
-            if use_date_filter:
-                # Определяем, нужен ли JOIN к npa
-                has_npa = self.current_reference_type.get('has_npa', False)
-                has_npa_column = 'npa_id' in existing_columns
-                join_npa = has_npa and has_npa_column
-                
-                # Загружаем отфильтрованные данные через get_filtered_view (работает и для таблиц, и для VIEW)
-                df_filtered = get_filtered_view(conn, table_name, self.filter_date, join_npa=join_npa)
-                # Для справочников с display_columns оставляем только нужные столбцы и заголовки (код, наименование, уровень)
-                display_columns = self.current_reference_type.get('display_columns')
-                if display_columns and len(df_filtered) > 0:
-                    col_map = {}
-                    for expr in display_columns:
-                        if ' AS ' in expr:
-                            left, _, right = expr.partition(' AS ')
-                            orig = left.strip()
-                            col_map[orig] = right.strip()
-                    if col_map:
-                        keep = [c for c in col_map if c in df_filtered.columns]
-                        if keep:
-                            df_filtered = df_filtered[keep].copy()
-                            df_filtered.columns = [col_map.get(c, c) for c in keep]
-                available_columns = list(df_filtered.columns)
-                # Применяем поиск к отфильтрованным данным
-                if self.search_text:
-                    search_mask = pd.Series([False] * len(df_filtered))
-                    for col in df_filtered.columns:
-                        if col not in ['id', 'guid', 'created_at', 'loaddate', 'startdate', 'enddate']:
-                            search_mask |= df_filtered[col].astype(str).str.contains(
-                                self.search_text, case=False, na=False
-                            )
-                    df_filtered = df_filtered[search_mask]
-                
-                # Применяем пагинацию
-                self.total_records = len(df_filtered)
-                self.total_pages = max(1, (self.total_records + self.page_size - 1) // self.page_size)
-                
-                # Корректируем текущую страницу
-                if self.current_page > self.total_pages:
-                    self.current_page = self.total_pages
-                if self.current_page < 1:
-                    self.current_page = 1
-                
-                offset = (self.current_page - 1) * self.page_size
-                limit = self.page_size
-                df = df_filtered.iloc[offset:offset + limit].copy()
-                if not available_columns:
-                    available_columns = list(df.columns)
-                
-                conn.close()
-                
-                # Заполняем таблицу используя вспомогательный метод
-                # Не передаем column_visibility, чтобы не применять настройки из предыдущей таблицы
-                self._fill_table_from_dataframe(df, available_columns, {}, 
-                                                offset, self.total_records, use_date_filter=True)
-                
-                return
-            
-            # Формируем WHERE условие для поиска и фильтрации по дате
-            def build_search_where(base_columns, add_date_filter=False, table_prefix=None):
-                """Строит WHERE условие для поиска по указанным колонкам и фильтрации по дате
-                
-                Args:
-                    base_columns: Список колонок для поиска
-                    add_date_filter: Добавить фильтр по дате
-                    table_prefix: Префикс таблицы для колонок (например, 'budgetclascostsmo') для избежания неоднозначности при JOIN
-                """
-                conditions = []
-                params = []
-                
-                # Префикс для колонок (если указан)
-                prefix = f"{table_prefix}." if table_prefix else ""
-                
-                # Добавляем фильтрацию по дате
-                if add_date_filter and self.filter_date:
-                    conditions.append(f"({prefix}startdate IS NULL OR date({prefix}startdate) <= date(?))")
-                    conditions.append(f"({prefix}enddate IS NULL OR {prefix}enddate = '' OR date({prefix}enddate) >= date(?))")
-                    params.extend([self.filter_date, self.filter_date])
-                
-                # Добавляем поиск
-                if self.search_text:
-                    text_columns = [col for col in base_columns 
-                                  if col not in ['id', 'guid', 'created_at', 'loaddate', 'startdate', 'enddate']]
-                    if text_columns:
-                        search_pattern = f"%{self.search_text}%"
-                        search_conditions = " OR ".join([f"{prefix}{col} LIKE ?" for col in text_columns])
-                        conditions.append(f"({search_conditions})")
-                        params.extend([search_pattern] * len(text_columns))
-                
-                if conditions:
-                    return "WHERE " + " AND ".join(conditions), params
-                return "", []
-            
-            # Сначала получаем общее количество записей для пагинации (с учетом поиска и фильтрации по дате)
-            # Используем точное имя таблицы из БД для запросов
-            effective_table = resolved_table_name
-            has_npa = self.current_reference_type.get('has_npa', False)
-            has_npa_column = 'npa_id' in existing_columns
-            use_table_prefix = has_npa and has_npa_column
-            
-            if use_table_prefix:
-                count_query = f'SELECT COUNT(*) FROM {effective_table} LEFT JOIN npa ON {effective_table}.npa_id = npa.id'
-                search_where, search_params = build_search_where(existing_columns, add_date_filter=use_date_filter, table_prefix=effective_table)
-            else:
-                count_query = f'SELECT COUNT(*) FROM {effective_table}'
-                search_where, search_params = build_search_where(existing_columns, add_date_filter=use_date_filter)
-            
-            if search_where:
-                count_query += f" {search_where}"
-                cursor.execute(count_query, search_params)
-            else:
-                cursor.execute(count_query)
-            
-            self.total_records = cursor.fetchone()[0]
-            self.total_pages = max(1, (self.total_records + self.page_size - 1) // self.page_size)
-            
-            # Корректируем текущую страницу, если она выходит за пределы
-            if self.current_page > self.total_pages:
-                self.current_page = self.total_pages
-            if self.current_page < 1:
-                self.current_page = 1
-            
-            # Вычисляем OFFSET и LIMIT для пагинации
             offset = (self.current_page - 1) * self.page_size
-            limit = self.page_size
-            
-            # Формируем запрос с учетом поиска и фильтрации по дате (таблица с display_columns и опционально search_columns)
-            if display_columns:
-                base_cols = self.current_reference_type.get('search_columns') or ['code', 'name', 'level', 'doc']
-                search_where, search_params = build_search_where(base_cols, add_date_filter=use_date_filter)
-                query = f'SELECT {", ".join(display_columns)} FROM {effective_table}'
-                if search_where:
-                    query += f" {search_where}"
-                query += f" LIMIT {limit} OFFSET {offset}"
-                df = self._execute_query(conn, query, search_params)
-                available_columns = list(df.columns)
-            else:
-                
-                # Определяем доступные колонки и строим запрос
-                # has_npa и has_npa_column уже определены выше для count_query
-                
-                if self.current_reference_type.get('is_online', False):
-                    excluded_cols = ['id', 'guid', 'created_at', 'loaddate']
-                    if has_npa and has_npa_column:
-                        excluded_cols.append('npa_id')
-                    available_columns = [col for col in existing_columns if col not in excluded_cols]
-                    
-                    if has_npa and has_npa_column:
-                        search_where, search_params = build_search_where(available_columns, add_date_filter=use_date_filter, table_prefix=effective_table)
-                        query, params = self._build_query_with_npa_join(
-                            cursor, effective_table, available_columns, search_where, search_params, limit, offset
-                        )
-                    else:
-                        search_where, search_params = build_search_where(available_columns, add_date_filter=use_date_filter)
-                        query, params = self._build_select_query(
-                            effective_table, available_columns, search_where, search_params, limit, offset
-                        )
-                    df = self._execute_query(conn, query, params)
-                elif columns:
-                    available_columns = [col for col in columns if col in existing_columns]
-                    if not available_columns:
-                        available_columns = existing_columns[:10]
-                    search_where, search_params = build_search_where(available_columns, add_date_filter=use_date_filter)
-                    query, params = self._build_select_query(
-                        effective_table, available_columns, search_where, search_params, limit, offset
-                    )
-                    df = self._execute_query(conn, query, params)
-                else:
-                    available_columns = [col for col in existing_columns 
-                                       if col not in ['id', 'guid', 'npa_id', 'created_at', 'loaddate']]
-                    if not available_columns:
-                        available_columns = existing_columns[:10]
-                    search_where, search_params = build_search_where(available_columns)
-                    query, params = self._build_select_query(
-                        effective_table, available_columns, search_where, search_params, limit, offset
-                    )
-                    df = self._execute_query(conn, query, params)
-                
-                available_columns = list(df.columns)  # Обновляем список колонок после запроса
-            
-            conn.close()
-            
-            # Заполняем таблицу используя вспомогательный метод
-            # Не передаем column_visibility, чтобы не применять настройки из предыдущей таблицы
-            self._fill_table_from_dataframe(df, available_columns, {}, 
-                                            offset, self.total_records, use_date_filter)
-            
+            df, available_columns, total = self._fetch_reference_data(self.page_size, offset)
+            if df is None:
+                self.status_label.setText("Таблица не найдена или ошибка загрузки")
+                return
+            self.total_records = total
+            self.total_pages = max(1, (total + self.page_size - 1) // self.page_size)
+            self.current_page = max(1, min(self.current_page, self.total_pages))
+            if offset != (self.current_page - 1) * self.page_size:
+                offset = (self.current_page - 1) * self.page_size
+                df, available_columns, total = self._fetch_reference_data(self.page_size, offset)
+            self._fill_table_from_dataframe(df, available_columns, {}, offset, self.total_records, use_date_filter=bool(self.filter_date))
         except Exception as e:
             logger.error(f"Ошибка загрузки справочника: {e}", exc_info=True)
             QMessageBox.warning(self, "Ошибка", f"Не удалось загрузить справочник:\n{str(e)}")
             self.status_label.setText("Ошибка загрузки")
             self._hide_pagination()
+    
+    def _get_full_reference_data(self):
+        """Полный набор данных для выгрузки: с учётом фильтров, без пагинации. Возвращает (df, columns) или (None, None)."""
+        if not self.current_reference_type:
+            return None, None
+        if self.current_reference_type.get('is_config', False):
+            if self.view_table.columnCount() == 0 or self.view_table.rowCount() == 0:
+                return None, None
+            columns = [self.view_table.horizontalHeaderItem(c).text() or f"Col{c}" for c in range(self.view_table.columnCount())]
+            rows = [[(self.view_table.item(r, c).text() if self.view_table.item(r, c) else "") for c in range(self.view_table.columnCount())] for r in range(self.view_table.rowCount())]
+            return pd.DataFrame(rows, columns=columns), columns
+        df, available_columns, _ = self._fetch_reference_data(None, None)
+        return (df, available_columns) if df is not None else (None, None)
+    
+    def export_reference_to_excel(self):
+        """Выгружает данные текущего справочника (с учётом фильтров) в файл Excel."""
+        if not self.current_reference_type:
+            QMessageBox.information(self, "Выгрузка", "Выберите справочник.")
+            return
+        df, columns = self._get_full_reference_data()
+        if df is None or df.empty:
+            QMessageBox.information(self, "Выгрузка", "Нет данных для выгрузки.")
+            return
+        self._update_filter_date()
+        table_name = self.current_reference_type.get('table') or 'reference'
+        default_dir = Path('data') / 'references'
+        default_dir.mkdir(parents=True, exist_ok=True)
+        base_name = table_name + (f"_{self.filter_date}" if self.filter_date else "") + ".xlsx"
+        default_path = str(default_dir / base_name)
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Сохранить выгрузку в Excel",
+            default_path,
+            "Excel files (*.xlsx);;All files (*.*)"
+        )
+        if not path:
+            return
+        if not path.lower().endswith('.xlsx'):
+            path += '.xlsx'
+        try:
+            df.to_excel(path, index=False, engine='openpyxl')
+            QMessageBox.information(self, "Выгрузка", f"Выгружено записей: {len(df)}.\nФайл: {path}")
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(path).resolve())))
+        except Exception as e:
+            logger.error(f"Ошибка выгрузки в Excel: {e}", exc_info=True)
+            QMessageBox.warning(self, "Ошибка", f"Не удалось сохранить файл:\n{str(e)}")
     
     def adjust_reference_columns_width(self):
         """Настройка ширины столбцов справочника
@@ -1451,17 +1418,6 @@ class ReferencesManagementDialog(QDialog):
         ]
         self._load_config_reference(years, columns, extractors)
     
-    def _load_municipalities(self):
-        """Загрузка справочника муниципальных образований"""
-        municip = self.db_manager.load_municipalities()
-        columns = ['Код', 'Наименование', 'Активен (1/0)']
-        extractors = [
-            lambda m: m.code or "",
-            lambda m: m.name or "",
-            lambda m: "1" if m.is_active else "0"
-        ]
-        self._load_config_reference(municip, columns, extractors)
-    
     def _load_forms(self):
         """Загрузка справочника типов форм"""
         forms = self.db_manager.load_form_types_meta()
@@ -1601,18 +1557,6 @@ class ReferencesManagementDialog(QDialog):
             item.is_active = (active_item.text().strip() == "1") if active_item else True
         
         self._save_config_reference(YearRef, 0, [set_year_fields], self.db_manager.save_years_bulk)
-    
-    def _save_municipalities(self):
-        """Сохранение справочника муниципальных образований"""
-        def set_municip_fields(item, row):
-            code_item = self.view_table.item(row, 0)
-            name_item = self.view_table.item(row, 1)
-            active_item = self.view_table.item(row, 2)
-            item.code = (code_item.text() if code_item else "").strip()
-            item.name = name_item.text().strip()
-            item.is_active = (active_item.text().strip() == "1") if active_item else True
-        
-        self._save_config_reference(MunicipalityRef, 1, [set_municip_fields], self.db_manager.save_municipalities_bulk)
     
     def _save_forms(self):
         """Сохранение справочника типов форм"""

@@ -1,10 +1,147 @@
 """Панель проектов"""
+from collections import defaultdict
+
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                              QLabel, QTreeWidget, QTreeWidgetItem, QMenu,
-                             QMessageBox)
+                             QMessageBox, QComboBox)
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
 from logger import logger
+
+# Роли данных в узле дерева
+ROLE_PROJECT_ID = Qt.UserRole
+ROLE_REVISION_ID = Qt.UserRole + 1
+ROLE_IS_REVISION = Qt.UserRole + 2
+
+DEFAULT_STRUCTURE = "Год>Проект>Форма>Период>Ревизия"
+
+# Пресеты: id -> (подпись, строка структуры). В строке: > вложенность, + склейка подписи через пробел
+TREE_PRESETS = {
+    "full": ("Год → Проект → Форма → Период → Ревизия", "Год>Проект>Форма>Период>Ревизия"),
+    "compact": ("Год → Проект → Ревизия", "Год>Проект>Ревизия"),
+    "year_period_form_rev": ("Год → Период → Форма+Ревизия", "Год>Период>Форма+Ревизия"),
+    "year_period_mo_form_rev": ("Год → Период → МО → Форма+Ревизия", "Год>Период>МО>Форма+Ревизия"),
+    "year_period_mo_form_rev2": ("Год → Период → МО → Форма → Ревизия", "Год>Период>МО>Форма>Ревизия"),
+    "year_mo_period_form_rev": ("Год → МО → Период → Форма+Ревизия", "Год>МО>Период>Форма+Ревизия"),
+    "year_mo_period_proj_form_rev": ("Год → МО → Период → Проект+Форма+Ревизия", "Год>МО>Период>Проект+Форма+Ревизия"),
+    "year_mo_period_proj_form_rev_1": ("Год → МО → Период → Проект → Форма+Ревизия", "Год>МО>Период>Проект>Форма+Ревизия"),
+}
+CONFIG_KEY_TREE_PRESET = "projects_tree_preset"
+
+
+def parse_structure(s: str):
+    """
+    Разбор строки структуры: > вложенность, + склейка подписи через пробел.
+    Возвращает список уровней, каждый уровень — список имён для подписи.
+    """
+    s = (s or "").strip()
+    if not s:
+        return parse_structure(DEFAULT_STRUCTURE)
+    levels = []
+    for part in s.split(">"):
+        names = [n.strip() for n in part.split("+") if n.strip()]
+        if names:
+            levels.append(names)
+    return levels if levels else parse_structure(DEFAULT_STRUCTURE)
+
+def _record_from_base(base, form=None, period=None, rev=None):
+    """Собрать одну запись для плоского списка (форма/период/рев опциональны)."""
+    rec = {**base, "form_code": None, "form_name": None, "period_code": None, "period_name": None, "revision_id": None, "revision": None, "status": None}
+    if form:
+        rec["form_code"], rec["form_name"] = form.get("form_code"), form.get("form_name")
+    if period:
+        rec["period_code"] = period.get("period_code")
+        rec["period_name"] = period.get("period_name") or period.get("period_code") or "—"
+    if rev:
+        rec["revision_id"], rec["revision"] = rev.get("revision_id"), rev.get("revision") or ""
+        rec["status"] = rev.get("status")
+    return rec
+
+def flatten_tree_data(tree_data):
+    """
+    Иерархия год→проекты→формы→периоды→ревизии в плоский список записей.
+    Проекты без форм дают одну запись с пустыми form/period/revision.
+    """
+    records = []
+    for year_entry in tree_data:
+        year = year_entry.get("year", "")
+        for proj in year_entry.get("projects") or []:
+            base = {
+                "year": year,
+                "project_id": proj.get("id"),
+                "project_name": proj.get("name") or "—",
+                "municipality": proj.get("municipality") or "—",
+            }
+            if not proj.get("forms"):
+                records.append(_record_from_base(base))
+                continue
+            for form in proj["forms"]:
+                for period in form.get("periods") or []:
+                    revs = period.get("revisions") or []
+                    if not revs:
+                        records.append(_record_from_base(base, form, period))
+                        continue
+                    for rev in revs:
+                        records.append(_record_from_base(base, form, period, rev))
+    return records
+
+def _key_for_name(record, name):
+    n = (name or "").strip()
+    if n == "Год":
+        return record.get("year")
+    if n == "Проект":
+        return record.get("project_id")
+    if n == "МО":
+        return record.get("municipality")
+    if n == "Форма":
+        return (record.get("form_code"), record.get("form_name"))
+    if n == "Период":
+        return record.get("period_code")
+    if n == "Ревизия":
+        return record.get("revision_id")
+    return record.get(n)
+
+def _label_for_name(record, name):
+    n = (name or "").strip()
+    if n == "Год":
+        return f"Год {record.get('year', '')}"
+    if n == "Проект":
+        return record.get("project_name") or "—"
+    if n == "МО":
+        return record.get("municipality") or "—"
+    if n == "Форма":
+        fc, fn = record.get("form_code"), record.get("form_name")
+        return f"{fn}" if fn else f"{fc}"
+    if n == "Период":
+        return record.get("period_name") or record.get("period_code") or "—"
+    if n == "Ревизия":
+        if record.get("revision_id") is None and not record.get("revision"):
+            return "Нет ревизий"
+        icon = "✅" if record.get("status") == "calculated" else "📝"
+        return f"{icon} рев. {record.get('revision') or ''}"
+    return str(record.get(n, ""))
+
+def _record_key(record, level_names):
+    """Ключ группировки записи по уровню."""
+    return tuple(_key_for_name(record, n) for n in level_names)
+
+def _record_label(record, level_names):
+    """Подпись узла: одно поле или склейка через пробел (+)."""
+    return " ".join(_label_for_name(record, n) for n in level_names if _label_for_name(record, n))
+
+def _group_by(records, level_names):
+    """Сгруппировать записи по ключу уровня."""
+    groups = defaultdict(list)
+    for rec in records:
+        groups[_record_key(rec, level_names)].append(rec)
+    return dict(groups)
+
+
+def _expand_tree_recursive(item):
+    """Развернуть узел и всех потомков."""
+    item.setExpanded(True)
+    for i in range(item.childCount()):
+        _expand_tree_recursive(item.child(i))
 
 
 class ProjectsPanel:
@@ -40,10 +177,21 @@ class ProjectsPanel:
         refresh_btn = QPushButton("Обновить")
         refresh_btn.clicked.connect(self.main_window.refresh_projects)
         buttons_layout.addWidget(refresh_btn)
-        
         layout.addLayout(buttons_layout)
-        
-        # Дерево проектов: Год -> Проект -> Форма -> Ревизия
+
+        # Выбор варианта отображения дерева (структура задаётся строкой: > вложенность, + склейка)
+        self.preset_combo = QComboBox()
+        for preset_id, (label, _structure) in TREE_PRESETS.items():
+            self.preset_combo.addItem(label, preset_id)
+        preset_saved = self._load_tree_preset()
+        idx = self.preset_combo.findData(preset_saved)
+        if idx >= 0:
+            self.preset_combo.setCurrentIndex(idx)
+        self.preset_combo.currentIndexChanged.connect(self._on_tree_preset_changed)
+        layout.addWidget(QLabel("Вид дерева:"))
+        layout.addWidget(self.preset_combo)
+
+        # Дерево проектов
         self.projects_tree = QTreeWidget()
         self.projects_tree.setIndentation(10)
         self.projects_tree.setHeaderHidden(True)
@@ -84,115 +232,116 @@ class ProjectsPanel:
         self.main_window.projects_toggle_button = toggle_button
 
         return container
-    
+
+    def _db(self):
+        """Доступ к менеджеру БД для конфига (опционально)."""
+        return getattr(self.controller, "db_manager", None)
+
+    def _load_tree_preset(self):
+        """Загрузить сохранённый пресет дерева из конфига."""
+        db = self._db()
+        if db and hasattr(db, "load_config"):
+            return db.load_config(CONFIG_KEY_TREE_PRESET) or "full"
+        return "full"
+
+    def _save_tree_preset(self, preset_id):
+        """Сохранить выбранный пресет в конфиг."""
+        db = self._db()
+        if db and hasattr(db, "save_config"):
+            db.save_config(CONFIG_KEY_TREE_PRESET, preset_id)
+
+    def _on_tree_preset_changed(self):
+        preset_id = self.preset_combo.currentData()
+        if preset_id:
+            self._save_tree_preset(preset_id)
+            self.update_projects_list(None)
+
+    def _get_current_preset(self):
+        """Текущий пресет (из комбо)."""
+        return self.preset_combo.currentData() or "full"
+
     def update_projects_list(self, _projects):
-        """Обновление дерева проектов по новой архитектуре MainController.build_project_tree"""
+        """Обновление дерева по данным контроллера и выбранному пресету."""
         self.projects_tree.clear()
-
-        # Получаем структурированные данные от контроллера
         tree_data = self.controller.build_project_tree()
-
-        for year_entry in tree_data:
-            year_label = f"Год {year_entry['year']}"
-            year_item = QTreeWidgetItem([year_label])
-            self.projects_tree.addTopLevelItem(year_item)
-
-            for proj in year_entry["projects"]:
-                proj_item = QTreeWidgetItem([proj["name"]])
-                # Сохраняем ID проекта на уровне узла проекта
-                proj_item.setData(0, Qt.UserRole, proj["id"])
-                year_item.addChild(proj_item)
-
-                # Формы/периоды/ревизии (показываем даже пустые, с заглушками)
-                if proj.get("forms"):
-                    for form in proj["forms"]:
-                        form_label = f"{form['form_name']} ({form['form_code']})"
-                        form_item = QTreeWidgetItem([form_label])
-                        proj_item.addChild(form_item)
-
-                        periods = form.get("periods") or []
-                        if not periods:
-                            form_item.addChild(QTreeWidgetItem(["Нет периодов"]))
-                            continue
-
-                        for period in periods:
-                            period_label = period.get("period_name") or period.get("period_code") or "—"
-                            period_item = QTreeWidgetItem([period_label])
-                            form_item.addChild(period_item)
-
-                            revisions = period.get("revisions") or []
-                            if revisions:
-                                for rev in revisions:
-                                    status_icon = "✅" if rev["status"] == "calculated" else "📝"
-                                    rev_text = f"{status_icon} рев. {rev['revision']}"
-                                    rev_item = QTreeWidgetItem([rev_text])
-                                    rev_item.setData(0, Qt.UserRole, rev.get("project_id"))
-                                    revision_id = rev.get("revision_id")
-                                    rev_item.setData(0, Qt.UserRole + 1, revision_id)
-                                    if revision_id:
-                                        logger.debug(
-                                            f"Сохранена ревизия в дереве: "
-                                            f"revision_id={revision_id}, project_id={rev.get('project_id')}, revision={rev.get('revision')}"
-                                        )
-                                    period_item.addChild(rev_item)
-                            else:
-                                period_item.addChild(QTreeWidgetItem(["Нет ревизий"]))
-                else:
-                    # Совсем нет форм — заглушка
-                    placeholder = QTreeWidgetItem(["Нет ревизий"])
-                    proj_item.addChild(placeholder)
-
-        # Разворачиваем верхние уровни (год, проект, форма, период)
-        # Ревизии остаются свернутыми по умолчанию
+        preset_id = self._get_current_preset()
+        self._build_tree_from_data(tree_data, preset_id)
         for i in range(self.projects_tree.topLevelItemCount()):
-            year_item = self.projects_tree.topLevelItem(i)
-            year_item.setExpanded(True)
-            for j in range(year_item.childCount()):
-                proj_item = year_item.child(j)
-                proj_item.setExpanded(True)
-                for k in range(proj_item.childCount()):
-                    form_item = proj_item.child(k)
-                    form_item.setExpanded(True)
-                    for m in range(form_item.childCount()):
-                        period_item = form_item.child(m)
-                        period_item.setExpanded(True)
+            _expand_tree_recursive(self.projects_tree.topLevelItem(i))
+
+    def _build_tree_from_data(self, tree_data, preset_id):
+        """Построить дерево по строке структуры пресета: > вложенность, + склейка подписи через пробел."""
+        preset = TREE_PRESETS.get(preset_id, TREE_PRESETS["full"])
+        structure_str = preset[1] if len(preset) > 1 else DEFAULT_STRUCTURE
+        levels = parse_structure(structure_str)
+        records = flatten_tree_data(tree_data)
+        self._add_level_from_records(records, levels, 0, None)
+
+    def _add_level_from_records(self, records, levels, level_index, parent_item):
+        """
+        Рекурсивно построить уровень: сгруппировать records по levels[level_index], создать узел на каждый ключ.
+        levels — список уровней, каждый уровень — список имён (подпись может быть из нескольких полей через +).
+        """
+        if not records or level_index >= len(levels):
+            return
+        level_names = levels[level_index]
+        groups = _group_by(records, level_names)
+
+        if not groups:
+            if parent_item:
+                placeholder = "Нет данных"
+                if level_index > 0 and level_names and (level_names[0] or "").strip() == "Ревизия":
+                    placeholder = "Нет ревизий"
+                parent_item.addChild(QTreeWidgetItem([placeholder]))
+            return
+
+        is_leaf = level_index == len(levels) - 1
+        for key, group_records in sorted(groups.items(), key=lambda x: str(x[0])):
+            rec = group_records[0]
+            label = _record_label(rec, level_names)
+            item = QTreeWidgetItem([label])
+            pid = rec.get("project_id")
+            rid = rec.get("revision_id")
+            if pid is not None:
+                item.setData(0, ROLE_PROJECT_ID, pid)
+            if rid is not None:
+                item.setData(0, ROLE_REVISION_ID, rid)
+            if rec.get("revision_id") is not None:
+                item.setData(0, ROLE_IS_REVISION, 1)
+
+            if parent_item is None:
+                self.projects_tree.addTopLevelItem(item)
+            else:
+                parent_item.addChild(item)
+
+            if not is_leaf:
+                self._add_level_from_records(group_records, levels, level_index + 1, item)
+
+    def _resolve_ids(self, item):
+        """Поднимаясь по дереву, возвращает (project_id, revision_id)."""
+        proj_id = rev_id = None
+        cur = item
+        while cur:
+            if proj_id is None:
+                proj_id = cur.data(0, ROLE_PROJECT_ID)
+            if rev_id is None:
+                rev_id = cur.data(0, ROLE_REVISION_ID)
+            if proj_id is not None and rev_id is not None:
+                break
+            cur = cur.parent()
+        return proj_id, rev_id
+
+    def _is_revision_item(self, item):
+        """True, если узел — ревизия (установлено при построении дерева)."""
+        return item.data(0, ROLE_IS_REVISION) == 1
 
     def on_project_tree_double_clicked(self, item, column):
         """Обработка двойного клика по дереву проектов"""
-        # Поднимаемся по дереву, чтобы найти project_id/revision_id даже при клике на заглушки
-        def _resolve_ids(it):
-            proj_id = None
-            rev_id = None
-            cur = it
-            while cur:
-                if proj_id is None:
-                    proj_id = cur.data(0, Qt.UserRole)
-                if rev_id is None:
-                    rev_id = cur.data(0, Qt.UserRole + 1)
-                if proj_id is not None and rev_id is not None:
-                    break
-                cur = cur.parent()
-            return proj_id, rev_id
-
-        project_id, revision_id = _resolve_ids(item)
-        
+        project_id, revision_id = self._resolve_ids(item)
         if not project_id:
             return
-        
-        # Определяем, является ли узел ревизией (ревизия имеет revision_id и является дочерним элементом периода)
-        is_revision = False
-        if revision_id is not None and revision_id != 0:
-            # Проверяем структуру дерева: ревизия является дочерним элементом периода
-            parent = item.parent()
-            if parent and item.childCount() == 0:
-                # Период является дочерним элементом формы
-                grandparent = parent.parent() if parent else None
-                if grandparent:
-                    grandparent_text = grandparent.text(0).lower()
-                    if "форма" in grandparent_text or "(" in grandparent_text:
-                        is_revision = True
-        
-        if is_revision:
+
+        if self._is_revision_item(item):
             # Подтягиваем параметры формы из ревизии для последующей загрузки файлов
             self.controller.set_form_params_from_revision(revision_id)
             # Загружаем конкретную ревизию
@@ -211,31 +360,11 @@ class ProjectsPanel:
         item = self.projects_tree.itemAt(position)
         if not item:
             return
-        project_id = item.data(0, Qt.UserRole)
-        revision_id = item.data(0, Qt.UserRole + 1)
-
-        # Если нет ID проекта — контекстное меню не показываем
+        project_id, revision_id = self._resolve_ids(item)
         if not project_id:
             return
 
-        # Определяем, является ли узел ревизией
-        # Структура дерева: Год -> Проект -> Форма -> Период -> Ревизия
-        # Ревизия - это узел, который является дочерним элементом периода
-        # и не имеет дочерних элементов
-        is_revision = False
-        
-        # Проверяем структуру дерева: ревизия является дочерним элементом периода
-        parent = item.parent()
-        if parent and item.childCount() == 0:
-            # Период является дочерним элементом формы
-            grandparent = parent.parent() if parent else None
-            if grandparent:
-                # Проверяем, что дедушка - это форма (содержит "форма" или "(")
-                grandparent_text = grandparent.text(0).lower()
-                if "форма" in grandparent_text or "(" in grandparent_text:
-                    # Родитель - период, значит текущий узел - ревизия
-                    is_revision = True
-
+        is_revision = self._is_revision_item(item)
         menu = QMenu()
         edit_action = None
         edit_rev_action = None

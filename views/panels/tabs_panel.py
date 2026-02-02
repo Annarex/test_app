@@ -81,13 +81,6 @@ class TabsPanel:
         self.section_combo.currentTextChanged.connect(self.main_window.on_section_changed)
         tree_control_layout.addWidget(self.section_combo)
         
-        # Выбор типа данных
-        tree_control_layout.addWidget(QLabel("Тип данных:"))
-        self.data_type_combo = QComboBox()
-        self.data_type_combo.addItems(["Утвержденный", "Исполненный", "Оба"])
-        self.data_type_combo.currentTextChanged.connect(self.main_window.on_data_type_changed)
-        tree_control_layout.addWidget(self.data_type_combo)
-        
         # Чекбокс для скрытия нулевых столбцов
         # Панель инструментов для ревизии (активна только при выбранной ревизии)
         self.revision_toolbar = QHBoxLayout()
@@ -161,7 +154,6 @@ class TabsPanel:
         self.main_window.tree_tab = self.tree_tab
         self.main_window.data_tree = self.data_tree
         self.main_window.section_combo = self.section_combo
-        self.main_window.data_type_combo = self.data_type_combo
         self.main_window.expand_all_btn = self.expand_all_btn
         self.main_window.collapse_all_btn = self.collapse_all_btn
         self.main_window.reference_date_edit = self.reference_date_edit

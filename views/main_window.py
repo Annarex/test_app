@@ -41,7 +41,6 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.controller = MainController()
         self.current_section = "Доходы"
-        self.current_data_type = "Оба"
         self.main_splitter = None
         self.projects_panel_index = 0
         self.projects_inner_panel = None
@@ -594,10 +593,6 @@ class MainWindow(QMainWindow):
         """Обновляет высоту заголовка дерева (делегирует к tree_config)"""
         self.tree_config._update_tree_header_height(tree_widget)
 
-    def apply_tree_data_type_visibility(self):
-        """Скрывает столбцы дерева в зависимости от выбранного типа данных (делегирует к tree_config)"""
-        self.tree_config.apply_tree_data_type_visibility()
-
     def format_budget_value(self, value):
         """Форматирование значения бюджета для отображения (делегирует к tree_builder)"""
         return self.tree_builder.format_budget_value(value)
@@ -617,13 +612,7 @@ class MainWindow(QMainWindow):
         self.selection_start_column = None
         if self.controller.current_project:
             self.tree_builder.load_project_data_to_tree(self.controller.current_project)
-    def on_data_type_changed(self, data_type):
-        """Обработка смены типа данных"""
-        self.current_data_type = data_type
-        self.tree_config.apply_tree_data_type_visibility()
-        if self.controller.current_project:
-            self.tree_builder.load_project_data_to_tree(self.controller.current_project)
-    
+
     def expand_all_tree(self):
         """Развернуть все узлы дерева"""
         for tree_widget in self.tree_builder._get_tree_widgets():

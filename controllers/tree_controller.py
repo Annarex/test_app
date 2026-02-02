@@ -61,12 +61,9 @@ class TreeController(QObject):
         periods_all = self.db_manager.load_periods()
         periods_by_id = {p.id: p for p in periods_all if p.id is not None}
 
-        # Загружаем справочники годов и МО один раз (оптимизация: не в цикле)
+        # Загружаем справочники годов один раз (оптимизация: не в цикле)
         years_all = self.db_manager.load_years()
         years_by_id = {y.id: y for y in years_all if y.id is not None}
-        
-        municipalities_all = self.db_manager.load_municipalities()
-        municipalities_by_id = {m.id: m for m in municipalities_all if m.id is not None}
 
         # Год → { project_id → ... }
         years_map = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(list))))
@@ -141,12 +138,13 @@ class TreeController(QObject):
                 proj_obj = projects_by_id.get(project_id)
                 if not proj_obj:
                     continue
-                # Получаем название МО из справочника (новая архитектура) - используем предзагруженный словарь
-                municipality_name = "-"  # Имя МО по умолчанию
-                if hasattr(proj_obj, 'municipality_id') and proj_obj.municipality_id:
-                    municip_ref = municipalities_by_id.get(proj_obj.municipality_id)
-                    if municip_ref:
-                        municipality_name = municip_ref.name
+                # Название МО по коду ОКТМО и дате создания проекта
+                municipality_name = "-"
+                if proj_obj.oktmo_code:
+                    filter_date = proj_obj.created_at.strftime("%Y-%m-%d") if proj_obj.created_at else None
+                    name = self.db_manager.get_oktmo_name_by_code(proj_obj.oktmo_code, filter_date)
+                    if name:
+                        municipality_name = name
                 
                 proj_entry = {
                     "id": proj_obj.id,

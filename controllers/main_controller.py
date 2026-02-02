@@ -56,9 +56,6 @@ class MainController(QObject):
         self.current_form = None
         self.current_revision_id = None
         
-        # Справочники (используем из reference_controller)
-        self.references = self.reference_controller.references
-        
         # Синхронизируем состояние между контроллерами
         self._sync_controller_state()
         
@@ -82,19 +79,16 @@ class MainController(QObject):
         self.revision_controller.current_project = self.current_project
         self.revision_controller.current_form = self.current_form
         self.revision_controller.current_revision_id = self.current_revision_id
-        self.revision_controller.references = self.references
         
         self.form_controller.current_project = self.current_project
         self.form_controller.current_form = self.current_form
         self.form_controller.current_revision_id = self.current_revision_id
-        self.form_controller.references = self.references
         self.form_controller.pending_form_type_code = self.revision_controller.pending_form_type_code
         self.form_controller.pending_revision = self.revision_controller.pending_revision
         
         self.calculation_controller.current_project = self.current_project
         self.calculation_controller.current_form = self.current_form
         self.calculation_controller.current_revision_id = self.current_revision_id
-        self.calculation_controller.references = self.references
 
     # ------------------------------------------------------------------
     # Выбор формы/периода/ревизии пользователем (до загрузки файла)
@@ -296,13 +290,13 @@ class MainController(QObject):
             revision_text = project.revision or "—"
             status_text = getattr(project.status, "value", str(project.status)) if project.status else "—"
 
-        # МО — берём из справочника по municipality_id проекта
+        # МО — по коду ОКТМО и дате создания проекта
         try:
-            if hasattr(project, "municipality_id") and project.municipality_id:
-                municip_list = self.db_manager.load_municipalities()
-                municip_ref = next((m for m in municip_list if m.id == project.municipality_id), None)
-                if municip_ref:
-                    municipality_text = municip_ref.name or municipality_text
+            if project.oktmo_code:
+                filter_date = project.created_at.strftime("%Y-%m-%d") if project.created_at else None
+                name = self.db_manager.get_oktmo_name_by_code(project.oktmo_code, filter_date)
+                if name:
+                    municipality_text = name
         except Exception as e:
             logger.warning(f"Ошибка получения МО для проекта {project.id}: {e}", exc_info=True)
 

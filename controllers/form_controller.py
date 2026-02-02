@@ -35,9 +35,6 @@ class FormController(QObject):
         self.pending_form_type_code: Optional[str] = None
         self.pending_revision: str = "1.0"
 
-        # Кэш справочников (передаётся снаружи)
-        self.references: Dict[str, Any] = {}
-
     def initialize_form_for_project(self, form_meta: Optional[FormTypeMeta] = None) -> None:
         """
         Инициализация формы для проекта
@@ -130,17 +127,9 @@ class FormController(QObject):
             # Копируем файл в папку проекта с префиксом даты/времени
             copied_file_path = self.copy_form_file_to_project(file_path, self.current_project.id)
             
-            # Используем одни и те же справочники из кэша; при отсутствии — загружаем и кладём в кэш
-            reference_data_income = self.references.get('доходы')
-            if reference_data_income is None:
-                reference_data_income = self.db_manager.load_income_reference_df()
-                if reference_data_income is not None:
-                    self.references['доходы'] = reference_data_income
-            reference_data_sources = self.references.get('источники')
-            if reference_data_sources is None:
-                reference_data_sources = self.db_manager.load_sources_reference_df()
-                if reference_data_sources is not None:
-                    self.references['источники'] = reference_data_sources
+            # Загружаем справочники из БД
+            reference_data_income = self.db_manager.load_income_reference_df()
+            reference_data_sources = self.db_manager.load_sources_reference_df()
 
             # Явно предупреждаем, если справочники не загружены
             missing_refs = []
@@ -285,17 +274,9 @@ class FormController(QObject):
             return project_data
         
         try:
-            # Используем одни и те же справочники из кэша; при отсутствии — загружаем и кладём в кэш
-            reference_data_income = self.references.get('доходы')
-            if reference_data_income is None:
-                reference_data_income = self.db_manager.load_income_reference_df()
-                if reference_data_income is not None:
-                    self.references['доходы'] = reference_data_income
-            reference_data_sources = self.references.get('источники')
-            if reference_data_sources is None:
-                reference_data_sources = self.db_manager.load_sources_reference_df()
-                if reference_data_sources is not None:
-                    self.references['источники'] = reference_data_sources
+            # Загружаем справочники из БД
+            reference_data_income = self.db_manager.load_income_reference_df()
+            reference_data_sources = self.db_manager.load_sources_reference_df()
 
             # Если справочники отсутствуют, явно предупреждаем пользователя
             missing_refs = []

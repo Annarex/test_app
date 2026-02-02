@@ -29,26 +29,15 @@ class CalculationController(QObject):
         self.current_form = None
         self.current_revision_id: Optional[int] = None
 
-        # Кэш справочников (передаётся снаружи)
-        self.references: Dict[str, Any] = {}
-
     def calculate_sums(self) -> Optional[Dict[str, Any]]:
         """Расчет агрегированных сумм"""
         if not self.current_project or not self.current_form:
             self.error_occurred.emit("Проект не выбран")
             return None
 
-        # Используем одни и те же справочники из кэша; при отсутствии — загружаем и кладём в кэш
-        reference_data_income = self.references.get('доходы')
-        if reference_data_income is None:
-            reference_data_income = self.db_manager.load_income_reference_df()
-            if reference_data_income is not None:
-                self.references['доходы'] = reference_data_income
-        reference_data_sources = self.references.get('источники')
-        if reference_data_sources is None:
-            reference_data_sources = self.db_manager.load_sources_reference_df()
-            if reference_data_sources is not None:
-                self.references['источники'] = reference_data_sources
+        # Загружаем справочники из БД
+        reference_data_income = self.db_manager.load_income_reference_df()
+        reference_data_sources = self.db_manager.load_sources_reference_df()
 
         if isinstance(self.current_form, Form0503317):
             missing_refs = []
@@ -264,18 +253,9 @@ class CalculationController(QObject):
                 self.error_occurred.emit("Нет данных в *_values для экспорта")
                 return None
 
-            # Выполняем расчет сумм из нормализованных данных, чтобы получить расчетные значения
-            # для подсветки ошибок в Excel (аналогично calculate_sums). Справочники — из общего кэша.
-            reference_data_income = self.references.get('доходы')
-            if reference_data_income is None:
-                reference_data_income = self.db_manager.load_income_reference_df()
-                if reference_data_income is not None:
-                    self.references['доходы'] = reference_data_income
-            reference_data_sources = self.references.get('источники')
-            if reference_data_sources is None:
-                reference_data_sources = self.db_manager.load_sources_reference_df()
-                if reference_data_sources is not None:
-                    self.references['источники'] = reference_data_sources
+            # Выполняем расчет сумм из нормализованных данных для подсветки ошибок в Excel
+            reference_data_income = self.db_manager.load_income_reference_df()
+            reference_data_sources = self.db_manager.load_sources_reference_df()
             calculation_results = self.db_manager.calculate_sums_from_values(
                 project_id=self.current_project.id,
                 revision_id=self.current_revision_id,

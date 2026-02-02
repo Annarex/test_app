@@ -52,7 +52,7 @@ class Project:
         self.name = ""
         # Поля для связи со справочниками
         self.year_id = None
-        self.municipality_id = None
+        self.oktmo_code: Optional[str] = None  # Код ОКТМО (8 разрядов), из таблицы oktmo
         self.created_at = datetime.now()
         self.data = {}
         
@@ -61,7 +61,7 @@ class Project:
             'id': self.id,
             'name': self.name,
             'year_id': self.year_id,
-            'municipality_id': self.municipality_id,
+            'oktmo_code': self.oktmo_code,
             'created_at': self.created_at.isoformat(),
             'data': self.data
         }
@@ -72,7 +72,7 @@ class Project:
         project.id = data.get('id')
         project.name = data.get('name', '')
         project.year_id = data.get('year_id')
-        project.municipality_id = data.get('municipality_id')
+        project.oktmo_code = data.get('oktmo_code')
         created_at = data.get('created_at')
         project.created_at = datetime.fromisoformat(created_at) if created_at else datetime.now()
         project.data = data.get('data', {})

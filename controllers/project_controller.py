@@ -30,13 +30,13 @@ class ProjectController(QObject):
             project = Project()
             project.name = project_data.get('name', '')
             project.year_id = project_data.get('year_id')
-            project.municipality_id = project_data.get('municipality_id')
+            project.oktmo_code = project_data.get('oktmo_code')
+            created_at = project_data.get('created_at')
+            project.created_at = created_at if created_at else datetime.now()
             
-            # Сохраняем в БД
             project_id = self.db_manager.save_project(project)
             project.id = project_id
             
-            # Обновляем список проектов
             projects = self.load_projects()
             self.projects_updated.emit(projects)
             
@@ -71,8 +71,10 @@ class ProjectController(QObject):
             self.current_project.name = project_data.get('name', self.current_project.name)
             if 'year_id' in project_data:
                 self.current_project.year_id = project_data.get('year_id')
-            if 'municipality_id' in project_data:
-                self.current_project.municipality_id = project_data.get('municipality_id')
+            if 'oktmo_code' in project_data:
+                self.current_project.oktmo_code = project_data.get('oktmo_code')
+            if 'created_at' in project_data:
+                self.current_project.created_at = project_data.get('created_at')
             
             self.db_manager.save_project(self.current_project)
             

@@ -7,7 +7,6 @@ from views.widgets import WordWrapItemDelegate
 from models.constants.form_0503317_constants import Form0503317Constants
 from logger import logger
 from views.tree.tree_header_configurator import TreeHeaderConfigurator
-from views.tree.tree_column_visibility_manager import TreeColumnVisibilityManager
 from views.tree.tree_header_layout_helper import TreeHeaderLayoutHelper
 
 
@@ -26,7 +25,6 @@ class TreeConfig:
         
         # Инициализация компонентов через композицию
         self.header_configurator = TreeHeaderConfigurator()
-        self.visibility_manager = TreeColumnVisibilityManager(main_window)
         self.layout_helper = TreeHeaderLayoutHelper(main_window)
     
     def configure_tree_headers(self, section_name: str):
@@ -240,9 +238,3 @@ class TreeConfig:
         """Восстанавливает сохраненные настройки видимости столбцов для всех деревьев."""
         for tree_widget in self._get_tree_widgets():
             self._restore_tree_column_visibility(tree_widget, section_name, display_headers)
-    
-    def apply_tree_data_type_visibility(self):
-        """Скрывает столбцы дерева в зависимости от выбранного типа данных."""
-        current_data_type = getattr(self.main_window, 'current_data_type', 'Оба')
-        for tree_widget in self._get_tree_widgets():
-            self.visibility_manager.apply_data_type_visibility(current_data_type, tree_widget)

@@ -13,7 +13,6 @@ from .base_models import (
     ProjectStatus,
     FormType,
     YearRef,
-    MunicipalityRef,
     FormTypeMeta,
     PeriodRef,
     ProjectForm,
@@ -51,7 +50,7 @@ class DatabaseManager:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL,
                     year_id INTEGER,
-                    municipality_id INTEGER,
+                    oktmo_code TEXT,
                     created_at TEXT NOT NULL
                 )
             ''')
@@ -92,42 +91,11 @@ class DatabaseManager:
                 )
             ''')
 
-            # Справочник видов муниципальных образований
+            # Справочник видов муниципальных образований (оставлен для совместимости со старыми БД)
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS ref_municipality_types (
                     municipality_type_code VARCHAR(1) PRIMARY KEY,
                     name TEXT NOT NULL
-                )
-            ''')
-            
-            # Справочник муниципальных образований (расширенный)
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS ref_municipalities (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    code VARCHAR(3) UNIQUE,
-                    name TEXT NOT NULL,
-                    municipality_type_code VARCHAR(1) REFERENCES ref_municipality_types(municipality_type_code),
-                    municipality_code VARCHAR(3),
-                    genitive_case TEXT,
-                    council_address TEXT,
-                    administration_address TEXT,
-                    council_email VARCHAR(50),
-                    administration_email VARCHAR(50),
-                    council_position VARCHAR(30),
-                    council_surname VARCHAR(30),
-                    council_first_name VARCHAR(30),
-                    council_patronymic VARCHAR(30),
-                    administration_position VARCHAR(30),
-                    administration_surname VARCHAR(30),
-                    administration_first_name VARCHAR(30),
-                    administration_patronymic VARCHAR(30),
-                    agreement_date DATE,
-                    decision_date DATE,
-                    decision_number VARCHAR(50),
-                    initial_income REAL,
-                    initial_expense REAL,
-                    initial_deficit REAL,
-                    is_active INTEGER NOT NULL DEFAULT 1
                 )
             ''')
 
@@ -454,39 +422,38 @@ class DatabaseManager:
                 periods,
             )
         
-        # ref_municipalities
-        cursor.execute('SELECT COUNT(*) FROM ref_municipalities')
-        count_municipalities = cursor.fetchone()[0]
-        if count_municipalities == 0:
-            # Предзагруженные муниципальные образования
-            municipalities = [
-                (1, "Амвросиевка", 1),
-                (2, "Волноваха", 1),
-                (3, "Володарка", 1),
-                (4, "Горловка", 1),
-                (5, "Дебальцево", 1),
-                (6, "Докучаевск", 1),
-                (7, "Донецк", 1),
-                (8, "Енакиево", 1),
-                (9, "Иловайск", 1),
-                (10, "Красный лиман", 1),
-                (11, "Макеевка", 1),
-                (12, "Мангуш", 1),
-                (13, "Мариуполь", 1),
-                (14, "Новозаовск", 1),
-                (15, "Снежное", 1),
-                (16, "Старобешево", 1),
-                (17, "Тельманово", 1),
-                (18, "Торез", 1),
-                (19, "Харцызск", 1),
-                (20, "Шахтерск", 1),
-                (21, "Ясиноватая", 1),
-            ]
-            cursor.executemany(
-                'INSERT INTO ref_municipalities (code, name, is_active) VALUES (?, ?, ?)',
-                municipalities,
-            )
+        # Миграция projects: municipality_id -> oktmo_code (для существующих БД)
+        self._migrate_projects_to_oktmo(cursor.connection)
     
+    def _migrate_projects_to_oktmo(self, conn: sqlite3.Connection) -> None:
+        """Добавить oktmo_code и удалить municipality_id в таблице projects при необходимости."""
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(projects)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if 'municipality_id' in columns:
+            if 'oktmo_code' not in columns:
+                cursor.execute('ALTER TABLE projects ADD COLUMN oktmo_code TEXT')
+            try:
+                cursor.execute('ALTER TABLE projects DROP COLUMN municipality_id')
+            except sqlite3.OperationalError:
+                # SQLite < 3.35 не поддерживает DROP COLUMN — пересоздаём таблицу
+                cursor.execute('''
+                    CREATE TABLE projects_new (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT NOT NULL,
+                        year_id INTEGER,
+                        oktmo_code TEXT,
+                        created_at TEXT NOT NULL
+                    )
+                ''')
+                cursor.execute('''
+                    INSERT INTO projects_new (id, name, year_id, oktmo_code, created_at)
+                    SELECT id, name, year_id, NULL, created_at FROM projects
+                ''')
+                cursor.execute('DROP TABLE projects')
+                cursor.execute('ALTER TABLE projects_new RENAME TO projects')
+        conn.commit()
+
     def _init_budget_references_tables(self, cursor: sqlite3.Cursor) -> None:
         """
         Инициализация таблиц бюджетных справочников из Osnova/database_schema.sql.
@@ -1166,28 +1133,22 @@ class DatabaseManager:
     def save_project(self, project: Project) -> int:
         """Сохранение проекта в БД (новая архитектура).
 
-        В таблице projects теперь храним только базовые поля проекта:
-        - id, name, year_id, municipality_id, created_at.
+        В таблице projects хранятся: id, name, year_id, oktmo_code, created_at.
         Вся информация о формах, периодах и ревизиях хранится в project_forms / form_revisions.
         """
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-
             year_id = project.year_id
-            municipality_id = project.municipality_id
+            oktmo_code = (project.oktmo_code or "").strip() or None
+            created_at = project.created_at.isoformat()
 
             if project.id is None:
                 cursor.execute(
                     '''
-                    INSERT INTO projects (name, year_id, municipality_id, created_at)
+                    INSERT INTO projects (name, year_id, oktmo_code, created_at)
                     VALUES (?, ?, ?, ?)
                     ''',
-                    (
-                        project.name,
-                        year_id,
-                        municipality_id,
-                        project.created_at.isoformat(),
-                    ),
+                    (project.name, year_id, oktmo_code, created_at),
                 )
                 project.id = cursor.lastrowid
             else:
@@ -1196,19 +1157,12 @@ class DatabaseManager:
                     UPDATE projects SET
                         name=?,
                         year_id=?,
-                        municipality_id=?,
+                        oktmo_code=?,
                         created_at=?
                     WHERE id=?
                     ''',
-                    (
-                        project.name,
-                        year_id,
-                        municipality_id,
-                        project.created_at.isoformat(),
-                        project.id,
-                    ),
+                    (project.name, year_id, oktmo_code, created_at, project.id),
                 )
-
             conn.commit()
             return project.id
     
@@ -1635,7 +1589,7 @@ class DatabaseManager:
             cursor = conn.cursor()
             cursor.execute(
                 '''
-                SELECT id, name, year_id, municipality_id, created_at
+                SELECT id, name, year_id, oktmo_code, created_at
                 FROM projects ORDER BY created_at DESC
                 '''
             )
@@ -1646,7 +1600,7 @@ class DatabaseManager:
                     'id': project_id,
                     'name': row[1],
                     'year_id': row[2],
-                    'municipality_id': row[3],
+                    'oktmo_code': row[3],
                     'created_at': row[4],
                     # Данные по умолчанию - пустые, данные загружаются только при загрузке ревизии
                     'data': {},
@@ -1654,6 +1608,53 @@ class DatabaseManager:
                 projects.append(Project.from_dict(project_data))
 
         return projects
+
+    def load_oktmo_for_municipality(
+        self, filter_date: str, code_length: int = 8
+    ) -> List[Tuple[str, str]]:
+        """
+        Загрузка из oktmo записей с кодом заданной длины (по умолчанию 8 разрядов),
+        отфильтрованных по дате (startdate/enddate).
+        Возвращает список пар (code, name) для комбобокса МО в диалоге проекта.
+        """
+        result: List[Tuple[str, str]] = []
+        with sqlite3.connect(self.db_path) as conn:
+            df = get_filtered_view(conn, 'oktmo', filter_date=filter_date)
+        if df.empty or 'code' not in df.columns or 'name' not in df.columns:
+            return result
+        for _, row in df.iterrows():
+            code_val = row.get('code')
+            if pd.isna(code_val):
+                continue
+            code_str = str(code_val).replace(' ', '').strip()
+            if len(code_str) != code_length:
+                continue
+            name_val = row.get('name')
+            name_str = '' if pd.isna(name_val) else str(name_val).strip()
+            result.append((code_str, name_str))
+        return result
+
+    def get_oktmo_name_by_code(
+        self, code: str, filter_date: Optional[str] = None
+    ) -> Optional[str]:
+        """
+        По коду ОКТМО и дате (startdate/enddate) возвращает name из oktmo.
+        """
+        if not (code or "").strip():
+            return None
+        code_clean = str(code).replace(' ', '').strip()
+        with sqlite3.connect(self.db_path) as conn:
+            df = get_filtered_view(conn, 'oktmo', filter_date=filter_date)
+        if df.empty or 'code' not in df.columns or 'name' not in df.columns:
+            return None
+        for _, row in df.iterrows():
+            c = row.get('code')
+            if pd.isna(c):
+                continue
+            if str(c).replace(' ', '').strip() == code_clean:
+                n = row.get('name')
+                return None if pd.isna(n) else str(n).strip()
+        return None
     
     def _load_project_data(self, cursor, project_id: int, revision_id: Optional[int] = None) -> Dict[str, Any]:
         """
@@ -1841,109 +1842,6 @@ class DatabaseManager:
                 cursor.executemany(
                     'INSERT INTO ref_years (year, is_active) VALUES (?, ?)',
                     [(y.year, 1 if y.is_active else 0) for y in years],
-                )
-            conn.commit()
-
-    # ----- Справочник МО -----
-
-    def get_or_create_municipality(self, name: str, code: Optional[str] = None) -> MunicipalityRef:
-        name = (name or "").strip()
-        code = (code or "").strip() or None
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            if code:
-                cursor.execute(
-                    'SELECT id, code, name, is_active FROM ref_municipalities WHERE code=?',
-                    (code,)
-                )
-            else:
-                cursor.execute(
-                    'SELECT id, code, name, is_active FROM ref_municipalities WHERE name=?',
-                    (name,)
-                )
-            row = cursor.fetchone()
-            if row:
-                return MunicipalityRef.from_row(
-                    {'id': row[0], 'code': row[1], 'name': row[2], 'is_active': row[3]}
-                )
-
-            cursor.execute(
-                'INSERT INTO ref_municipalities (code, name, is_active) VALUES (?, ?, 1)',
-                (code, name)
-            )
-            m_id = cursor.lastrowid
-            conn.commit()
-            return MunicipalityRef.from_row({'id': m_id, 'code': code, 'name': name, 'is_active': 1})
-
-    def load_municipalities(self) -> List[MunicipalityRef]:
-        result: List[MunicipalityRef] = []
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute('SELECT id, code, name, is_active FROM ref_municipalities ORDER BY name')
-            for row in cursor.fetchall():
-                result.append(
-                    MunicipalityRef.from_row(
-                        {'id': row[0], 'code': row[1], 'name': row[2], 'is_active': row[3]}
-                    )
-                )
-        return result
-    
-    def get_municipality_by_id(self, municipality_id: int):
-        """Получение расширенной информации о МО по ID"""
-        from models.base_models import ExtendedMunicipalityRef
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT id, code, name, municipality_type_code, municipality_code, genitive_case,
-                       council_address, administration_address, council_email, administration_email,
-                       council_position, council_surname, council_first_name, council_patronymic,
-                       administration_position, administration_surname, administration_first_name, administration_patronymic,
-                       agreement_date, decision_date, decision_number,
-                       initial_income, initial_expense, initial_deficit, is_active
-                FROM ref_municipalities WHERE id=?
-            ''', (municipality_id,))
-            row = cursor.fetchone()
-            if row:
-                return ExtendedMunicipalityRef.from_row({
-                    'id': row[0],
-                    'code': row[1],
-                    'name': row[2],
-                    'municipality_type_code': row[3],
-                    'municipality_code': row[4],
-                    'genitive_case': row[5],
-                    'council_address': row[6],
-                    'administration_address': row[7],
-                    'council_email': row[8],
-                    'administration_email': row[9],
-                    'council_position': row[10],
-                    'council_surname': row[11],
-                    'council_first_name': row[12],
-                    'council_patronymic': row[13],
-                    'administration_position': row[14],
-                    'administration_surname': row[15],
-                    'administration_first_name': row[16],
-                    'administration_patronymic': row[17],
-                    'agreement_date': row[18],
-                    'decision_date': row[19],
-                    'decision_number': row[20],
-                    'initial_income': row[21],
-                    'initial_expense': row[22],
-                    'initial_deficit': row[23],
-                    'is_active': row[24]
-                })
-        return None
-
-    def save_municipalities_bulk(self, municip_list: List[MunicipalityRef]) -> None:
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute('DELETE FROM ref_municipalities')
-            if municip_list:
-                cursor.executemany(
-                    'INSERT INTO ref_municipalities (code, name, is_active) VALUES (?, ?, ?)',
-                    [
-                        (m.code or None, m.name, 1 if m.is_active else 0)
-                        for m in municip_list
-                    ],
                 )
             conn.commit()
 
