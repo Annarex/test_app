@@ -39,7 +39,7 @@ class ProjectDialog(QDialog):
 
         self.init_ui()
         self._load_years()
-        filter_date = date.today().isoformat()
+        filter_date = date.today().strftime("%Y-%m-%d")
         self._load_oktmo_for_dialog(filter_date)
 
     def init_ui(self):
@@ -99,7 +99,7 @@ class ProjectDialog(QDialog):
                 self.municipality_combo.setCurrentIndex(idx)
 
     def _on_created_at_changed(self, qdate: QDate):
-        filter_date = f"{qdate.year():04d}-{qdate.month():02d}-{qdate.day():02d}"
+        filter_date = qdate.toString("yyyy-MM-dd")
         self._load_oktmo_for_dialog(filter_date)
 
     def set_project(self, project: Project):

@@ -421,38 +421,7 @@ class DatabaseManager:
                 'VALUES (?, ?, ?, ?, ?)',
                 periods,
             )
-        
-        # Миграция projects: municipality_id -> oktmo_code (для существующих БД)
-        self._migrate_projects_to_oktmo(cursor.connection)
-    
-    def _migrate_projects_to_oktmo(self, conn: sqlite3.Connection) -> None:
-        """Добавить oktmo_code и удалить municipality_id в таблице projects при необходимости."""
-        cursor = conn.cursor()
-        cursor.execute("PRAGMA table_info(projects)")
-        columns = [row[1] for row in cursor.fetchall()]
-        if 'municipality_id' in columns:
-            if 'oktmo_code' not in columns:
-                cursor.execute('ALTER TABLE projects ADD COLUMN oktmo_code TEXT')
-            try:
-                cursor.execute('ALTER TABLE projects DROP COLUMN municipality_id')
-            except sqlite3.OperationalError:
-                # SQLite < 3.35 не поддерживает DROP COLUMN — пересоздаём таблицу
-                cursor.execute('''
-                    CREATE TABLE projects_new (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        name TEXT NOT NULL,
-                        year_id INTEGER,
-                        oktmo_code TEXT,
-                        created_at TEXT NOT NULL
-                    )
-                ''')
-                cursor.execute('''
-                    INSERT INTO projects_new (id, name, year_id, oktmo_code, created_at)
-                    SELECT id, name, year_id, NULL, created_at FROM projects
-                ''')
-                cursor.execute('DROP TABLE projects')
-                cursor.execute('ALTER TABLE projects_new RENAME TO projects')
-        conn.commit()
+           
 
     def _init_budget_references_tables(self, cursor: sqlite3.Cursor) -> None:
         """
