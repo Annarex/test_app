@@ -179,6 +179,18 @@ class MenuBar:
         fullscreen_action.triggered.connect(self.main_window.toggle_fullscreen)
         view_menu.addAction(fullscreen_action)
         
+        # Подменю "Вид дерева" — пресеты структуры дерева проектов
+        tree_view_menu = config_menu.addMenu("&Вид дерева")
+        self._tree_preset_actions = {}
+        for preset_id, label in self.main_window.get_tree_preset_list():
+            action = QAction(label, self.main_window)
+            action.setCheckable(True)
+            action.setStatusTip(f"Структура дерева: {label}")
+            action.triggered.connect(lambda checked, pid=preset_id: self.main_window.set_tree_preset(pid))
+            tree_view_menu.addAction(action)
+            self._tree_preset_actions[preset_id] = action
+        tree_view_menu.aboutToShow.connect(self._update_tree_preset_checked)
+        
         config_menu.addSeparator()
         
         # Сброс настроек столбцов
@@ -204,3 +216,9 @@ class MenuBar:
         shortcuts_action.setStatusTip("Список горячих клавиш")
         shortcuts_action.triggered.connect(self.main_window.show_shortcuts)
         help_menu.addAction(shortcuts_action)
+    
+    def _update_tree_preset_checked(self):
+        """Перед показом подменю «Вид дерева» отметить текущий пресет."""
+        current = self.main_window.get_current_tree_preset()
+        for pid, action in self._tree_preset_actions.items():
+            action.setChecked(pid == current)

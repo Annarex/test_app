@@ -638,6 +638,18 @@ class MainWindow(QMainWindow):
     def show_tree_header_context_menu(self, position):
         """Контекстное меню для заголовков дерева (делегирует к tree_handlers)"""
         self.tree_handlers.show_tree_header_context_menu(position)
+
+    def get_tree_preset_list(self):
+        """Список пресетов вида дерева проектов: [(preset_id, label), ...]."""
+        return self.projects_panel_obj.get_tree_preset_list()
+
+    def get_current_tree_preset(self):
+        """Текущий пресет вида дерева (из конфига)."""
+        return self.projects_panel_obj.get_current_tree_preset()
+
+    def set_tree_preset(self, preset_id):
+        """Установить пресет вида дерева и обновить список проектов."""
+        self.projects_panel_obj.set_tree_preset(preset_id)
     
     def copy_tree_item_value(self, item):
         """Копировать значение из дерева (делегирует к tree_handlers)"""

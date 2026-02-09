@@ -5,11 +5,8 @@
 | Поле | Тип | Описание |
 |------|-----|----------|
 | id | INTEGER PRIMARY KEY AUTOINCREMENT | Идентификатор записи. |
-| code | VARCHAR(3) UNIQUE | Код МО (3 символа). |
-| name | TEXT NOT NULL | Наименование. |
-| municipality_type_code | VARCHAR(1) | Ссылка на ref_municipality_types. |
-| municipality_code | VARCHAR(3) | Код муниципалитета. |
-| genitive_case | TEXT | Наименование в родительном падеже. |
+| code_oktmo | TEXT | Код муниципального органа. |
+| date_actuality | TEXT | Дата актуальности. |
 | council_address | TEXT | Адрес совета. |
 | administration_address | TEXT | Адрес администрации. |
 | council_email | VARCHAR(50) | Email совета. |
@@ -25,7 +22,3 @@
 | agreement_date | DATE | Дата соглашения. |
 | decision_date | DATE | Дата решения. |
 | decision_number | VARCHAR(50) | Номер решения. |
-| initial_income | REAL | Начальные доходы. |
-| initial_expense | REAL | Начальные расходы. |
-| initial_deficit | REAL | Начальный дефицит. |
-| is_active | INTEGER NOT NULL DEFAULT 1 | Признак активности. |

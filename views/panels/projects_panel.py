@@ -3,7 +3,7 @@ from collections import defaultdict
 
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                              QLabel, QTreeWidget, QTreeWidgetItem, QMenu,
-                             QMessageBox, QComboBox)
+                             QMessageBox)
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
 from logger import logger
@@ -179,18 +179,6 @@ class ProjectsPanel:
         buttons_layout.addWidget(refresh_btn)
         layout.addLayout(buttons_layout)
 
-        # Выбор варианта отображения дерева (структура задаётся строкой: > вложенность, + склейка)
-        self.preset_combo = QComboBox()
-        for preset_id, (label, _structure) in TREE_PRESETS.items():
-            self.preset_combo.addItem(label, preset_id)
-        preset_saved = self._load_tree_preset()
-        idx = self.preset_combo.findData(preset_saved)
-        if idx >= 0:
-            self.preset_combo.setCurrentIndex(idx)
-        self.preset_combo.currentIndexChanged.connect(self._on_tree_preset_changed)
-        layout.addWidget(QLabel("Вид дерева:"))
-        layout.addWidget(self.preset_combo)
-
         # Дерево проектов
         self.projects_tree = QTreeWidget()
         self.projects_tree.setIndentation(10)
@@ -250,15 +238,23 @@ class ProjectsPanel:
         if db and hasattr(db, "save_config"):
             db.save_config(CONFIG_KEY_TREE_PRESET, preset_id)
 
-    def _on_tree_preset_changed(self):
-        preset_id = self.preset_combo.currentData()
-        if preset_id:
+    def get_tree_preset_list(self):
+        """Список пресетов дерева для меню: [(preset_id, label), ...]."""
+        return [(pid, label) for pid, (label, _) in TREE_PRESETS.items()]
+
+    def get_current_tree_preset(self):
+        """Текущий пресет дерева (из конфига)."""
+        return self._load_tree_preset()
+
+    def set_tree_preset(self, preset_id):
+        """Установить пресет дерева и обновить список."""
+        if preset_id and preset_id in TREE_PRESETS:
             self._save_tree_preset(preset_id)
             self.update_projects_list(None)
 
     def _get_current_preset(self):
-        """Текущий пресет (из комбо)."""
-        return self.preset_combo.currentData() or "full"
+        """Текущий пресет (из конфига)."""
+        return self._load_tree_preset()
 
     def update_projects_list(self, _projects):
         """Обновление дерева по данным контроллера и выбранному пресету."""
