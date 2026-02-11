@@ -10,3 +10,6 @@ logs/*.log
 budget_forms.db
 templates/шаблон_письма.docx
 templates/шаблон_решения.docx
+.cursor/
+.vscode/
+__pycache__/

@@ -5,6 +5,7 @@ import sqlite3
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 import pandas as pd
+from logger import logger
 
 class FormType(Enum):
     FORM_0503317 = "0503317"
@@ -377,7 +378,8 @@ class ExtendedMunicipalityRef(MunicipalityRef):
             if isinstance(agreement_date, str):
                 try:
                     m.agreement_date = datetime.fromisoformat(agreement_date)
-                except:
+                except (ValueError, TypeError) as e:
+                    logger.debug(f"Не удалось распарсить дату соглашения '{agreement_date}': {e}")
                     m.agreement_date = None
             elif isinstance(agreement_date, datetime):
                 m.agreement_date = agreement_date
@@ -387,7 +389,8 @@ class ExtendedMunicipalityRef(MunicipalityRef):
             if isinstance(decision_date, str):
                 try:
                     m.decision_date = datetime.fromisoformat(decision_date)
-                except:
+                except (ValueError, TypeError) as e:
+                    logger.debug(f"Не удалось распарсить дату решения '{decision_date}': {e}")
                     m.decision_date = None
             elif isinstance(decision_date, datetime):
                 m.decision_date = decision_date

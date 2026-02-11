@@ -59,7 +59,6 @@ class Form0503317Parser:
         for sheet_name in self.constants.SHEETS:
             try:
                 sheets[sheet_name] = pd.read_excel(file_path, sheet_name=sheet_name, header=None)
-                logger.debug(f"Лист '{sheet_name}' загружен")
             except Exception as e:
                 logger.warning(f"Лист '{sheet_name}' не найден: {e}")
         
@@ -154,7 +153,6 @@ class Form0503317Parser:
             logger.warning(f"Раздел '{section_type}' не найден")
             return [], []
             
-        logger.debug(f"Раздел '{section_type}' начинается со строки {start_row + 1}")
         header_row = start_row + 3
         return self._extract_table_data(sheet, header_row, section_type)
     
@@ -192,7 +190,6 @@ class Form0503317Parser:
         zero_columns = []
         if total_row_data:
             zero_columns = self._get_zero_columns(total_row_data, budget_columns)
-            logger.debug(f"Для раздела '{section_type}' нулевые столбцы: {zero_columns}")
         
         return data, zero_columns
     

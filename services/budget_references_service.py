@@ -261,14 +261,14 @@ class BudgetReferencesService:
     
     def get_or_insert_npa(self, cursor: sqlite3.Cursor, npa_item: Dict) -> int:
         """
-        Получает или вставляет НПА, возвращает его ID.
+        Получает или вставляет НПА, возвращает его Код НПА.
         
         Args:
             cursor: Курсор БД
             npa_item: Словарь с данными НПА
             
         Returns:
-            ID НПА
+            Код НПА
         """
         name = npa_item.get('name', '') or ''
         numdoc = npa_item.get('numdoc', '') or ''

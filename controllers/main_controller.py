@@ -196,29 +196,14 @@ class MainController(QObject):
         self._sync_controller_state()
         self._initialize_form_for_project()
 
-        # При загрузке существующего проекта пересчитываем уровни строк
-        # на основе актуальных справочников, если это поддерживаемая форма
-        # НЕ пересчитываем, если загружена конкретная ревизия (чтобы не перезаписывать данные)
-        if (
-            self.current_form
-            and isinstance(self.current_form, Form0503317)
-            and self.current_project.data
-            and self.current_revision_id is None  # Только если не загружена конкретная ревизия
-        ):
-            # Используем метод form_controller для пересчета уровней
-            updated_data = self.form_controller.recalculate_levels_on_load(self.current_project.data)
-            if updated_data:
-                self.current_project.data = updated_data
-                try:
-                    self.db_manager.save_project(self.current_project)
-                    logger.info("Уровни строк пересчитаны на основе справочников")
-                except Exception as e:
-                    logger.error(f"Ошибка сохранения проекта после пересчета уровней: {e}", exc_info=True)
-
-            # Инициализируем форму данными проекта, чтобы экспорт/проверка
-            # работали сразу после загрузки без повторного парсинга файла.
-            if self.current_form:
-                self.current_form.load_saved_data(self.current_project.data)
+        # ОПТИМИЗАЦИЯ: Убран автоматический пересчет уровней при загрузке.
+        # Теперь данные отображаются как есть в БД (быстрая загрузка).
+        # Пересчет уровней выполняется только по кнопке "Пересчитать" в UI.
+        
+        # Инициализируем форму данными проекта, чтобы экспорт/проверка
+        # работали сразу после загрузки без повторного парсинга файла.
+        if self.current_form and self.current_project.data:
+            self.current_form.load_saved_data(self.current_project.data)
 
         self._sync_controller_state()
         self.project_loaded.emit(project)
@@ -274,21 +259,21 @@ class MainController(QObject):
                             if period_ref:
                                 period_text = period_ref.name or period_ref.code or period_text
                 else:
-                    # Если ревизия по ID не найдена — fallback на старые поля проекта
-                    revision_text = project.revision or "—"
-                    status_text = getattr(project.status, "value", str(project.status)) if project.status else "—"
-                    form_text = getattr(project.form_type, "value", str(project.form_type)) if project.form_type else "—"
+                    # Если ревизия по ID не найдена — используем заглушки
+                    revision_text = "—"
+                    status_text = "—"
+                    form_text = "—"
             except Exception as e:
                 logger.error(f"Ошибка получения информации о ревизии: {e}", exc_info=True)
-                # Fallback на старые поля проекта
-                revision_text = project.revision or "—"
-                status_text = getattr(project.status, "value", str(project.status)) if project.status else "—"
-                form_text = getattr(project.form_type, "value", str(project.form_type)) if project.form_type else "—"
+                # Fallback - используем заглушки
+                revision_text = "—"
+                status_text = "—"
+                form_text = "—"
         else:
-            # Проект без выбранной ревизии (старые проекты или только что созданные)
-            form_text = getattr(project.form_type, "value", str(project.form_type)) if project.form_type else "—"
-            revision_text = project.revision or "—"
-            status_text = getattr(project.status, "value", str(project.status)) if project.status else "—"
+            # Проект без выбранной ревизии
+            form_text = "—"
+            revision_text = "—"
+            status_text = "—"
 
         # МО — по коду ОКТМО и дате создания проекта
         try:

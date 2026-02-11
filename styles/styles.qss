@@ -431,3 +431,103 @@ QPushButton#compactButton:pressed {
 QPushButton#compactButton:disabled {
     background-color: #cccccc;
 }
+
+/* ============================================================================
+   СТИЛИ ДЛЯ ДИАЛОГА АЛЬТЕРНАТИВ (TEXT VALIDATION)
+   ============================================================================ */
+
+/* Информационная карточка */
+QWidget#infoCard {
+    background-color: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: 4px;
+    padding: 2px 6px;
+}
+
+/* Метки в информационной карточке */
+QWidget#infoCard QLabel {
+    font-size: 12pt;
+    color: #495057;
+}
+
+/* Заголовки секций */
+QLabel#sectionHeader {
+    font-size: 11pt;
+    padding: 5px;
+    font-weight: bold;
+}
+
+/* Кнопка успеха для альтернатив (зеленая) */
+QPushButton#buttonApplyAlternative {
+    background-color: #28a745;
+    color: white;
+    padding: 8px 16px;
+    border: none;
+    border-radius: 4px;
+    font-weight: bold;
+}
+
+QPushButton#buttonApplyAlternative:hover {
+    background-color: #218838;
+}
+
+QPushButton#buttonApplyAlternative:disabled {
+    background-color: #cccccc;
+}
+
+/* Вкладки для альтернатив (синий акцент) */
+QTabWidget#alternativesTabs::pane {
+    border: 1px solid #dee2e6;
+    border-radius: 4px;
+    background-color: #ffffff;
+}
+
+QTabWidget#alternativesTabs QTabBar::tab {
+    background-color: #e9ecef;
+    color: #495057;
+    padding: 8px 16px;
+    margin-right: 2px;
+    border-top-left-radius: 4px;
+    border-top-right-radius: 4px;
+}
+
+QTabWidget#alternativesTabs QTabBar::tab:selected {
+    background-color: #007bff;
+    color: white;
+    font-weight: bold;
+}
+
+QTabWidget#alternativesTabs QTabBar::tab:hover {
+    background-color: #0056b3;
+    color: white;
+}
+
+/* Таблицы альтернатив */
+QTableWidget#alternativesTable {
+    background-color: #ffffff;
+    border: 1px solid #dee2e6;
+    border-radius: 4px;
+    gridline-color: #dee2e6;
+    alternate-background-color: #f8f9fa;
+}
+
+QTableWidget#alternativesTable::item:selected {
+    background-color: #007bff;
+    color: white;
+}
+
+/* Информационный футер */
+QLabel#infoFooter {
+    background-color: #e7f3ff;
+    padding: 3px 6px;
+    border-radius: 3px;
+    border-left: 3px solid #007bff;
+    font-size: 8pt;
+    line-height: 1.2;
+}
+
+/* Кнопка закрытия */
+QPushButton#buttonClose {
+    padding: 8px 24px;
+    font-size: 10pt;
+}

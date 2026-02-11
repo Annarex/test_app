@@ -341,7 +341,8 @@ class BudgetReferencesUpdateDialog(QDialog):
                 # Сохраняем количество реально загруженных записей
                 try:
                     loaded_count = int(message.split(": ")[-1])
-                except:
+                except (ValueError, IndexError) as e:
+                    logger.debug(f"Не удалось распарсить количество записей из сообщения: {e}")
                     loaded_count = 0
                 self.update_stats[table_name]['loaded_count'] = loaded_count
         
@@ -350,7 +351,8 @@ class BudgetReferencesUpdateDialog(QDialog):
             if row is not None:
                 try:
                     count = int(message.split(": ")[-1])
-                except:
+                except (ValueError, IndexError) as e:
+                    logger.debug(f"Не удалось распарсить количество из сообщения: {e}")
                     count = 0
                 
                 if count == 0:

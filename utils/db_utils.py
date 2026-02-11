@@ -73,10 +73,11 @@ def get_filtered_view(
     filter_date: Optional[str] = None,
     filter_ppocode: Optional[Union[str, Sequence[str]]] = None,
     partition_by: Union[str, List[str]] = None,
-    join_npa: bool = False
+    join_npa: bool = False,
+    deduplicate: bool = True
 ) -> pd.DataFrame:
     """
-    Получает данные из таблицы или VIEW с фильтрацией по дате, по ppocode (ОКТМО) и дедупликацией.
+    Получает данные из таблицы или VIEW с фильтрацией по дате, по ppocode (ОКТМО) и опциональной дедупликацией.
     
     Работает как для обычных таблиц онлайн справочников (например, 'budgetclastypeinc'),
     так и для объединенных VIEW (например, 'v_budgetclastypeinc_merged').
@@ -88,8 +89,8 @@ def get_filtered_view(
     3. Если задан filter_ppocode и у таблицы/VIEW есть колонка ppocode — фильтрует:
        - строка или один элемент: ppocode = ?
        - список: ppocode IN (?, ?, ...) (например, ФУ 00000000 + ОКТМО из ревизии)
-    4. Применяет дедупликацию: выбирает запись с максимальным startdate (и year, если присутствует) 
-       для каждой комбинации полей из partition_by
+    4. Применяет дедупликацию (если deduplicate=True): выбирает запись с максимальным startdate (и year, если присутствует) 
+       для каждой комбинации полей из partition_by. Если deduplicate=False, возвращает все записи.
     5. Опционально добавляет JOIN к таблице npa для получения данных нормативно-правовых актов
     
     Args:
@@ -99,6 +100,7 @@ def get_filtered_view(
         filter_ppocode: Код(ы) участника БП (ОКТМО): одна строка или список строк (ФУ + ОКТМО из ревизии)
         partition_by: Поля для группировки при дедупликации (опционально, определяется автоматически)
         join_npa: Если True, добавляет LEFT JOIN к таблице npa для получения данных НПА
+        deduplicate: Если True (по умолчанию), оставляет только одну запись на группу. Если False, возвращает все записи.
         
     Returns:
         DataFrame с отфильтрованными и дедуплицированными данными
@@ -167,15 +169,24 @@ def get_filtered_view(
     inner_select = ('t.*' + select_npa) if join_npa else '*'
     where_clause = " AND ".join(where_parts)
     # Во внешнем SELECT — только *: результат подзапроса не имеет алиаса t/n, иначе "no such table: t".
+    # Условие rn: = 1 для дедупликации (только первая запись), <> 0 для всех записей
+    rn_condition = "rn = 1" if deduplicate else "rn <> 0"
     query = f"""
         SELECT * FROM (
             SELECT {inner_select},
                 ROW_NUMBER() OVER (PARTITION BY {partition_fields} {order_by}) AS rn
             FROM {from_clause}
             WHERE {where_clause}
-        ) WHERE rn = 1
+        ) WHERE {rn_condition}
     """
 
+    # Подставляем параметры в SQL для отладки
+    query_with_params = query
+    for param in (params if params else []):
+        param_str = f"'{param}'" if isinstance(param, str) else str(param)
+        query_with_params = query_with_params.replace('?', param_str, 1)
+    
     result = pd.read_sql_query(query, conn, params=params if params else None)
     result = result.drop(columns=['rn'], errors='ignore')
+    #result.to_csv('debug_filtered_view.csv', index=False, encoding='utf-8-sig')  # Сохранение для отладки
     return result

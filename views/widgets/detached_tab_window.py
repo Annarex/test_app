@@ -34,11 +34,8 @@ class DetachedTabWindow(QMainWindow):
 
     def closeEvent(self, event):
         """Обработка закрытия окна - переопределяем метод closeEvent"""
-        logger.debug(f"closeEvent вызван для окна '{self.tab_name}'")
-        
         # Проверяем, не происходит ли уже возврат вкладки (чтобы избежать повторного вызова)
         if self.property("attaching"):
-            logger.debug(f"Флаг 'attaching' установлен, пропускаем возврат вкладки")
             event.accept()
             return
         
@@ -48,7 +45,6 @@ class DetachedTabWindow(QMainWindow):
                 # Используем tab_widget из centralWidget, если он доступен
                 tab_widget = self.centralWidget() or self.tab_widget
                 if tab_widget:
-                    logger.debug(f"Вызов attach_tab из closeEvent для '{self.tab_name}'")
                     self.main_window.attach_tab(self.tab_name, tab_widget)
                 else:
                     logger.warning(f"Не удалось получить виджет для возврата вкладки '{self.tab_name}'")

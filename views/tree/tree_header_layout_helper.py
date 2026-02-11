@@ -64,8 +64,8 @@ class TreeHeaderLayoutHelper:
                 header = self.main_window.data_tree.header()
                 font_metrics = header.fontMetrics()
                 header.setFixedHeight(font_metrics.lineSpacing() + 6)
-            except:
-                pass
+            except Exception as e:
+                logger.debug(f"Не удалось установить минимальную высоту заголовка: {e}")
     
     def _calculate_header_height(self, header, text: str, column_index: int) -> float:
         """Вычисление высоты заголовка для конкретной колонки

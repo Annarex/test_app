@@ -105,7 +105,8 @@ class TreeConfig:
         # Отключаем старые соединения и подключаем заново
         try:
             header.customContextMenuRequested.disconnect()
-        except:
+        except Exception:
+            # Соединение не было установлено - это нормально
             pass
         header.customContextMenuRequested.connect(self.main_window.show_tree_header_context_menu)
         

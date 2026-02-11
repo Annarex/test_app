@@ -1,7 +1,8 @@
 """Панель вкладок"""
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
                              QComboBox, QLabel, QCheckBox, QPushButton, QToolButton,
-                             QTextEdit, QTableWidget, QHeaderView, QMenu, QAction, QLineEdit)
+                             QTextEdit, QTableWidget, QHeaderView, QMenu, QAction, QLineEdit,
+                             QDialog, QTextBrowser, QTableWidgetItem)
 from PyQt5.QtCore import Qt, QSize
 from PyQt5.QtGui import QFont, QFontMetrics
 from PyQt5.QtWidgets import QStyle
@@ -9,6 +10,7 @@ from views.excel_viewer import ExcelViewer
 from views.widgets import WordWrapItemDelegate
 from views.column_visibility_dialog import ColumnVisibilityDialog
 from styles.styles import set_tab_bar_min_width
+from views.text_validation_widget import TextValidationWidget
 
 
 class TabsPanel:
@@ -239,6 +241,10 @@ class TabsPanel:
         self.errors_table.setAlternatingRowColors(True)
         self.errors_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.errors_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        
+        # Обработчик двойного клика для показа деталей ошибки
+        self.errors_table.cellDoubleClicked.connect(self._show_error_details)
+        
         # Контекстное меню для заголовков таблицы ошибок
         errors_header = self.errors_table.horizontalHeader()
         errors_header.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -270,6 +276,11 @@ class TabsPanel:
         self.main_window.errors_export_btn = self.errors_export_btn
         
         tabs.addTab(self.errors_tab, "Ошибки")
+        
+        # Вкладка с проверкой текстов классификации
+        self.text_validation_tab = TextValidationWidget(self.main_window)
+        self.main_window.text_validation_tab = self.text_validation_tab
+        tabs.addTab(self.text_validation_tab, "Ошибки текстов")
         
         # Вкладка с просмотром Excel
         self.excel_viewer = ExcelViewer()
@@ -333,3 +344,70 @@ class TabsPanel:
         except Exception as e:
             from logger import logger
             logger.error(f"Ошибка при открытии диалога выбора столбцов: {e}", exc_info=True)
+    
+    def _show_error_details(self, row: int, column: int):
+        """Показ детальной информации об ошибке при двойном клике"""
+        from logger import logger
+        logger.info(f"Двойной клик на ошибке расчета: row={row}, column={column}")
+        
+        # Получаем отфильтрованные данные
+        section_filter = self.errors_section_filter.currentText()
+        errors_data = self.main_window.errors_manager.errors_data
+        
+        if section_filter == "Все":
+            filtered_data = errors_data
+        else:
+            filtered_data = [e for e in errors_data if e['section'] == section_filter]
+        
+        if row < 0 or row >= len(filtered_data):
+            return
+        
+        error = filtered_data[row]
+        
+        # Формируем детальное сообщение
+        details = f"""<h3>Детали ошибки расчета</h3>
+        <table cellpadding='5' style='border: 1px solid #ccc;'>
+        <tr><td><b>Раздел:</b></td><td>{error.get('section', '')}</td></tr>
+        <tr><td><b>Наименование:</b></td><td>{error.get('name', '')}</td></tr>
+        <tr><td><b>Код строки:</b></td><td>{error.get('code', '')}</td></tr>
+        <tr><td><b>Уровень:</b></td><td>{error.get('level', '')}</td></tr>
+        <tr><td><b>Тип:</b></td><td>{error.get('type', '')}</td></tr>
+        <tr><td><b>Колонка:</b></td><td>{error.get('column', '')}</td></tr>
+        <tr style='background-color: #ffe6e6;'><td><b>Оригинальное значение:</b></td><td>{self._format_value(error.get('original', ''))}</td></tr>
+        <tr style='background-color: #e6ffe6;'><td><b>Расчетное значение:</b></td><td>{self._format_value(error.get('calculated', ''))}</td></tr>
+        <tr style='background-color: #fff3e6;'><td><b>Разница:</b></td><td>{self._format_value(error.get('difference', ''))}</td></tr>
+        </table>
+        <p style='margin-top: 10px;'><i>💡 Это несоответствие между данными из Excel и результатом автоматического расчета</i></p>
+        """
+        
+        # Создаем кастомный диалог с возможностью выделения текста
+        dialog = QDialog(self.main_window)
+        dialog.setWindowTitle("Детали ошибки")
+        dialog.setMinimumSize(600, 400)
+        
+        layout = QVBoxLayout(dialog)
+        
+        # Текстовый браузер с поддержкой выделения
+        text_browser = QTextBrowser()
+        text_browser.setHtml(details)
+        text_browser.setOpenExternalLinks(False)
+        layout.addWidget(text_browser)
+        
+        # Кнопка закрытия
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        close_btn = QPushButton("Закрыть")
+        close_btn.clicked.connect(dialog.accept)
+        button_layout.addWidget(close_btn)
+        layout.addLayout(button_layout)
+        
+        dialog.exec_()
+    
+    def _format_value(self, value) -> str:
+        """Форматирование значения для отображения"""
+        if value in (None, "", "x"):
+            return ""
+        try:
+            return f"{float(value):,.2f}"
+        except (ValueError, TypeError):
+            return str(value)

@@ -99,15 +99,12 @@ class TabManager:
             tab_name: Название вкладки
             tab_widget: Виджет вкладки (опционально)
         """
-        logger.debug(f"attach_tab вызван для вкладки '{tab_name}'")
-        
         # Проверяем, есть ли эта вкладка в открепленных окнах
         if tab_name not in self.main_window.detached_windows:
             # Если вкладка уже не в словаре, возможно она уже была возвращена
             # Проверяем, не находится ли она уже в tabs_panel
             for i in range(self.main_window.tabs_panel.count()):
                 if self.main_window.tabs_panel.tabText(i) == tab_name:
-                    logger.debug(f"Вкладка '{tab_name}' уже находится в tabs_panel")
                     return
             logger.warning(f"Вкладка '{tab_name}' не найдена в detached_windows и не найдена в tabs_panel")
             return
@@ -124,17 +121,14 @@ class TabManager:
             try:
                 detached_window.setProperty("attaching", True)
                 detached_window.close()
-            except:
-                pass
+            except Exception as e:
+                logger.debug(f"Не удалось закрыть открепленное окно '{tab_name}': {e}")
             if tab_name in self.main_window.detached_windows:
                 del self.main_window.detached_windows[tab_name]
             return
         
-        logger.debug(f"Виджет для вкладки '{tab_name}' получен: {type(tab_widget).__name__}")
-        
         # Сохраняем размер виджета
         widget_size = tab_widget.size()
-        logger.debug(f"Размер виджета: {widget_size.width()}x{widget_size.height()}")
         
         # Устанавливаем флаг, чтобы closeEvent не вызывал attach_tab повторно
         detached_window.setProperty("attaching", True)
@@ -153,10 +147,6 @@ class TabManager:
         }
         position = tab_positions.get(tab_name, self.main_window.tabs_panel.count())
         
-        logger.debug(f"Добавление вкладки '{tab_name}' в позицию {position}, текущее количество вкладок: {self.main_window.tabs_panel.count()}")
-        logger.debug(f"Виджет имеет layout: {tab_widget.layout() is not None}")
-        logger.debug(f"Виджет имеет родителя: {tab_widget.parent() is not None}, тип родителя: {type(tab_widget.parent()).__name__ if tab_widget.parent() else 'None'}")
-        
         # ВАЖНО: Не удаляем виджет из окна до добавления в tabs_panel
         # QTabWidget.insertTab() автоматически установит правильного родителя
         # и удалит виджет из старого родителя
@@ -172,17 +162,9 @@ class TabManager:
         # insertTab автоматически установит правильного родителя и удалит из старого
         try:
             inserted_index = self.main_window.tabs_panel.insertTab(position, tab_widget, tab_name)
-            logger.debug(f"Вкладка вставлена на индекс {inserted_index}, новое количество вкладок: {self.main_window.tabs_panel.count()}")
             
             # Проверяем, что вкладка действительно добавлена
             if inserted_index >= 0 and inserted_index < self.main_window.tabs_panel.count():
-                actual_tab_name = self.main_window.tabs_panel.tabText(inserted_index)
-                logger.debug(f"Проверка: вкладка на индексе {inserted_index} имеет имя '{actual_tab_name}'")
-                
-                # Проверяем, что виджет действительно установлен как виджет вкладки
-                widget_at_index = self.main_window.tabs_panel.widget(inserted_index)
-                logger.debug(f"Виджет на индексе {inserted_index}: {type(widget_at_index).__name__ if widget_at_index else 'None'}, совпадает с tab_widget: {widget_at_index == tab_widget}")
-                
                 # Убеждаемся, что вкладка видна
                 self.main_window.tabs_panel.setCurrentIndex(inserted_index)
                 self.main_window.tabs_panel.setTabVisible(inserted_index, True)
@@ -190,7 +172,6 @@ class TabManager:
                 # Теперь можно удалить виджет из окна, так как он уже в tabs_panel
                 try:
                     detached_window.setCentralWidget(None)
-                    logger.debug("Центральный виджет удален из окна после добавления в tabs_panel")
                 except Exception as e:
                     logger.warning(f"Ошибка при удалении центрального виджета: {e}")
                 

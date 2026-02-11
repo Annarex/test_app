@@ -346,7 +346,6 @@ class ProjectsPanel:
         else:
             # Клик по проекту/форме/периоду/заглушке — выбираем проект, чтобы можно было загрузить новую форму
             if project_id:
-                logger.debug(f"Выбор проекта {project_id}")
                 self.controller.project_controller.load_project(project_id)
             else:
                 logger.warning("Проект не определён для выбранного узла")

@@ -12,12 +12,14 @@ from PyQt5.QtCore import Qt, QDate, QTimer, QUrl
 from PyQt5.QtGui import QFont, QFontMetrics, QDesktopServices
 from pathlib import Path
 from datetime import datetime
+from typing import Any, Dict, Optional
 import pandas as pd
 import sqlite3
 from logger import logger
 
 from models.database import DatabaseManager
 from models.base_models import YearRef, FormTypeMeta, PeriodRef
+from models.references.reference_field_mappings import get_display_columns, get_search_columns
 from views.budget_references_update_dialog import REFERENCE_NAMES
 from views.reference_detail_dialog import ReferenceDetailDialog
 from views.column_visibility_dialog import ColumnVisibilityDialog
@@ -37,16 +39,17 @@ class ReferencesManagementDialog(QDialog):
             'load_method': 'load_income_sources_reference',
             'load_type': 'доходы',
             'is_view': True,
-            'columns': ['inctypecode', 'incsubtypecode', 'analyticalgroupcode', 'name', 'level'],
-            'display_columns': ['concatenated_code AS код', 'name AS наименование', 'level AS уровень'],
-            'search_columns': ['inctypecode', 'incsubtypecode', 'analyticalgroupcode', 'name', 'level'],
+            'columns': ['concatenated_code', 'name', 'level', 'inctypecode', 'incsubtypecode', 'analyticalgroupcode'],
+            'display_columns': None,  # Генерируется автоматически из reference_field_mappings
+            'search_columns': None,  # Генерируется автоматически из reference_field_mappings
         },
         'Коды источников': {
             'table': 'source_reference_records',
             'load_method': 'load_income_sources_reference',  # Специальный метод для доходов/источников
             'load_type': 'источники',  # Тип для ReferenceController
             'columns': ['code', 'name', 'level', 'doc'],
-            'display_columns': ['code AS код', 'name AS наименование', 'level AS уровень', 'doc AS документ']
+            'display_columns': None,  # Генерируется автоматически из reference_field_mappings
+            'search_columns': None,  # Генерируется автоматически из reference_field_mappings
         },
         # Справочники конфигурации
         'Годы': {
@@ -72,6 +75,19 @@ class ReferencesManagementDialog(QDialog):
             'is_config': True,
             'load_func': '_load_periods',
             'save_func': '_save_periods'
+        },
+        'Сотрудники МО': {
+            'table': 'ref_municipal_employees',
+            'load_method': None,
+            'columns': ['id', 'oktmo_code', 'startdate', 'enddate', 'council_position', 'council_surname', 
+                       'council_first_name', 'council_patronymic', 'council_address', 'council_email',
+                       'administration_position', 'administration_surname', 'administration_first_name', 
+                       'administration_patronymic', 'administration_address', 'administration_email',
+                       'agreement_date', 'decision_date', 'decision_number'],
+            'display_columns': None,  # Генерируется автоматически из reference_field_mappings
+            'search_columns': None,  # Генерируется автоматически из reference_field_mappings
+            'editable': True,
+            'dialog_class': 'MunicipalEmployeeDialog'
         },
         # Справочники из бюджетной системы (онлайн справочники)
         '─── Онлайн справочники ───': {
@@ -252,8 +268,8 @@ class ReferencesManagementDialog(QDialog):
             try:
                 y, m, d = (int(x) for x in ref_date.split('-')[:3])
                 self.date_filter.setDate(QDate(y, m, d))
-                self.date_filter_checkbox.setChecked(True)
-                self.date_filter.setEnabled(True)
+                self.date_filter_checkbox.setChecked(False)
+                self.date_filter.setEnabled(False)
             except (ValueError, TypeError):
                 self.date_filter.setDate(QDate.currentDate())
         elif hasattr(self, 'date_filter'):
@@ -530,6 +546,28 @@ class ReferencesManagementDialog(QDialog):
         
         # Изначально скрываем пагинацию
         self.pagination_widget.setVisible(False)
+        
+        # Панель управления (кнопки для редактируемых справочников)
+        controls_layout = QHBoxLayout()
+        controls_layout.setSpacing(10)
+        
+        self.add_record_btn = QPushButton("➕ Добавить")
+        self.add_record_btn.clicked.connect(self.add_record)
+        self.add_record_btn.setVisible(False)
+        controls_layout.addWidget(self.add_record_btn)
+        
+        self.edit_record_btn = QPushButton("✏ Редактировать")
+        self.edit_record_btn.clicked.connect(self.edit_record)
+        self.edit_record_btn.setVisible(False)
+        controls_layout.addWidget(self.edit_record_btn)
+        
+        self.delete_record_btn = QPushButton("🗑 Удалить")
+        self.delete_record_btn.clicked.connect(self.delete_record)
+        self.delete_record_btn.setVisible(False)
+        controls_layout.addWidget(self.delete_record_btn)
+        
+        controls_layout.addStretch()
+        layout.addLayout(controls_layout)
         
         # Статус
         self.status_label = QLabel("Выберите справочник для просмотра")
@@ -853,11 +891,25 @@ class ReferencesManagementDialog(QDialog):
         self.view_table.setColumnCount(len(available_columns))
         self.view_table.setHorizontalHeaderLabels(available_columns)
         
+        # Проверяем есть ли в данных колонка id
+        has_id_column = 'id' in df.columns
+        id_col_idx = available_columns.index('id') if has_id_column else -1
+        
         for row_idx, (_, row) in enumerate(df.iterrows()):
             for col_idx, col_name in enumerate(available_columns):
                 value = row.get(col_name, '')
                 item = QTableWidgetItem(str(value) if pd.notna(value) else '')
+                # Сохраняем ID записи в первом видимом столбце для редактируемых справочников
+                if has_id_column and col_idx == 0:
+                    record_id = row.get('id')
+                    if pd.notna(record_id):
+                        item.setData(Qt.UserRole, int(record_id))
                 self.view_table.setItem(row_idx, col_idx, item)
+        
+        # Скрываем колонку id для редактируемых справочников
+        if has_id_column and self.current_reference_type and self.current_reference_type.get('editable', False):
+            if id_col_idx >= 0:
+                self.view_table.setColumnHidden(id_col_idx, True)
         
         # Настраиваем ширину столбцов
         self.adjust_reference_columns_width()
@@ -875,6 +927,16 @@ class ReferencesManagementDialog(QDialog):
         
         # Обновляем статус
         self._update_status_label(offset, len(df), total_records, use_date_filter)
+        
+        # Показываем/скрываем кнопки управления записями для редактируемых справочников
+        if self.current_reference_type and self.current_reference_type.get('editable', False):
+            self.add_record_btn.setVisible(True)
+            self.edit_record_btn.setVisible(True)
+            self.delete_record_btn.setVisible(True)
+        else:
+            self.add_record_btn.setVisible(False)
+            self.edit_record_btn.setVisible(False)
+            self.delete_record_btn.setVisible(False)
     
     def _update_status_label(self, offset: int, df_length: int, total_records: int, 
                               use_date_filter: bool = False):
@@ -966,7 +1028,12 @@ class ReferencesManagementDialog(QDialog):
         try:
             table_name = self.current_reference_type['table']
             columns = self.current_reference_type.get('columns', [])
-            display_columns = self.current_reference_type.get('display_columns', [])
+            display_columns = self.current_reference_type.get('display_columns')
+            
+            # Автоматически генерируем display_columns из маппинга, если не указаны
+            if display_columns is None and columns:
+                display_columns = get_display_columns(table_name, columns)
+            
             conn = sqlite3.connect(self.db_manager.db_path)
             cursor = conn.cursor()
             is_view = self.current_reference_type.get('is_view', False)
@@ -1027,9 +1094,20 @@ class ReferencesManagementDialog(QDialog):
             total = cursor.fetchone()[0]
             
             if display_columns:
-                base_cols = self.current_reference_type.get('search_columns') or ['code', 'name', 'level', 'doc']
+                # Автоматически получаем search_columns из маппинга, если не указаны
+                base_cols = self.current_reference_type.get('search_columns')
+                if base_cols is None:
+                    base_cols = get_search_columns(table_name)
+                
                 search_where, search_params = self._build_search_where(base_cols, add_date_filter=use_date_filter)
-                query = f'SELECT {", ".join(display_columns)} FROM {effective_table}'
+                
+                # Для редактируемых справочников всегда добавляем id в начало запроса
+                if self.current_reference_type.get('editable', False) and 'id' in existing_columns:
+                    select_fields = ['id'] + display_columns
+                else:
+                    select_fields = display_columns
+                
+                query = f'SELECT {", ".join(select_fields)} FROM {effective_table}'
                 if search_where:
                     query += f" {search_where}"
                 if limit is not None and offset is not None:
@@ -1107,7 +1185,7 @@ class ReferencesManagementDialog(QDialog):
                         if len(parts) == 3:
                             from PyQt5.QtCore import QDate
                             self.date_filter.setDate(QDate(int(parts[0]), int(parts[1]), int(parts[2])))
-                            self.date_filter_checkbox.setChecked(True)
+                            # self.date_filter_checkbox.setChecked(True)
                             self.date_filter.setEnabled(True)
                     except Exception:
                         pass
@@ -1677,3 +1755,171 @@ class ReferencesManagementDialog(QDialog):
         else:
             self.current_page = 1
         self.load_current_reference()
+    
+    # --- Методы для работы с записями ---
+    
+    def add_record(self):
+        """Добавление новой записи"""
+        if not self.current_reference_type or not self.current_reference_type.get('editable'):
+            return
+        
+        dialog_class_name = self.current_reference_type.get('dialog_class')
+        if dialog_class_name == 'MunicipalEmployeeDialog':
+            from views.municipal_employees_dialog import MunicipalEmployeeDialog
+            dialog = MunicipalEmployeeDialog(self.db_manager, self)
+            if dialog.exec_() == QDialog.Accepted:
+                data = dialog.get_data()
+                self._save_municipal_employee(data)
+                self.load_current_reference()
+                QMessageBox.information(self, "Успех", "Запись добавлена")
+    
+    def edit_record(self):
+        """Редактирование выбранной записи"""
+        if not self.current_reference_type or not self.current_reference_type.get('editable'):
+            return
+        
+        selected_rows = self.view_table.selectionModel().selectedRows()
+        if not selected_rows:
+            QMessageBox.warning(self, "Ошибка", "Выберите запись для редактирования")
+            return
+        
+        row = selected_rows[0].row()
+        record_id = self.view_table.item(row, 0).data(Qt.UserRole) if self.view_table.item(row, 0) else None
+        
+        if not record_id:
+            QMessageBox.warning(self, "Ошибка", "Не удалось определить ID записи")
+            return
+        
+        dialog_class_name = self.current_reference_type.get('dialog_class')
+        if dialog_class_name == 'MunicipalEmployeeDialog':
+            # Загружаем данные записи
+            employee_data = self._load_municipal_employee(record_id)
+            if employee_data:
+                from views.municipal_employees_dialog import MunicipalEmployeeDialog
+                dialog = MunicipalEmployeeDialog(self.db_manager, self, employee_data)
+                if dialog.exec_() == QDialog.Accepted:
+                    data = dialog.get_data()
+                    self._save_municipal_employee(data)
+                    self.load_current_reference()
+                    QMessageBox.information(self, "Успех", "Запись обновлена")
+    
+    def delete_record(self):
+        """Удаление выбранной записи"""
+        if not self.current_reference_type or not self.current_reference_type.get('editable'):
+            return
+        
+        selected_rows = self.view_table.selectionModel().selectedRows()
+        if not selected_rows:
+            QMessageBox.warning(self, "Ошибка", "Выберите запись для удаления")
+            return
+        
+        reply = QMessageBox.question(
+            self, "Подтверждение", 
+            "Вы уверены, что хотите удалить выбранную запись?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            row = selected_rows[0].row()
+            record_id = self.view_table.item(row, 0).data(Qt.UserRole) if self.view_table.item(row, 0) else None
+            
+            if record_id:
+                table_name = self.current_reference_type.get('table')
+                if table_name:
+                    self._delete_record_from_table(table_name, record_id)
+                    self.load_current_reference()
+                    QMessageBox.information(self, "Успех", "Запись удалена")
+    
+    def _save_municipal_employee(self, data: Dict[str, Any]):
+        """Сохранение данных сотрудника МО в БД"""
+        import sqlite3
+        try:
+            with sqlite3.connect(self.db_manager.db_path) as conn:
+                cursor = conn.cursor()
+                
+                if data.get('id'):
+                    # Обновление
+                    cursor.execute('''
+                        UPDATE ref_municipal_employees
+                        SET oktmo_code=?, startdate=?, enddate=?,
+                            council_position=?, council_surname=?, council_first_name=?, council_patronymic=?,
+                            council_address=?, council_email=?,
+                            administration_position=?, administration_surname=?, administration_first_name=?, 
+                            administration_patronymic=?, administration_address=?, administration_email=?,
+                            agreement_date=?, decision_date=?, decision_number=?
+                        WHERE id=?
+                    ''', (
+                        data['oktmo_code'], data['startdate'], data['enddate'],
+                        data['council_position'], data['council_surname'], data['council_first_name'], data['council_patronymic'],
+                        data['council_address'], data['council_email'],
+                        data['administration_position'], data['administration_surname'], data['administration_first_name'],
+                        data['administration_patronymic'], data['administration_address'], data['administration_email'],
+                        data['agreement_date'], data['decision_date'], data['decision_number'],
+                        data['id']
+                    ))
+                else:
+                    # Вставка
+                    cursor.execute('''
+                        INSERT INTO ref_municipal_employees (
+                            oktmo_code, startdate, enddate,
+                            council_position, council_surname, council_first_name, council_patronymic,
+                            council_address, council_email,
+                            administration_position, administration_surname, administration_first_name,
+                            administration_patronymic, administration_address, administration_email,
+                            agreement_date, decision_date, decision_number
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        data['oktmo_code'], data['startdate'], data['enddate'],
+                        data['council_position'], data['council_surname'], data['council_first_name'], data['council_patronymic'],
+                        data['council_address'], data['council_email'],
+                        data['administration_position'], data['administration_surname'], data['administration_first_name'],
+                        data['administration_patronymic'], data['administration_address'], data['administration_email'],
+                        data['agreement_date'], data['decision_date'], data['decision_number']
+                    ))
+                conn.commit()
+        except Exception as e:
+            logger.error(f"Ошибка сохранения сотрудника МО: {e}", exc_info=True)
+            raise
+    
+    def _load_municipal_employee(self, record_id: int) -> Optional[Dict[str, Any]]:
+        """Загрузка данных сотрудника МО из БД"""
+        import sqlite3
+        try:
+            with sqlite3.connect(self.db_manager.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT id, oktmo_code, startdate, enddate,
+                           council_position, council_surname, council_first_name, council_patronymic,
+                           council_address, council_email,
+                           administration_position, administration_surname, administration_first_name,
+                           administration_patronymic, administration_address, administration_email,
+                           agreement_date, decision_date, decision_number
+                    FROM ref_municipal_employees
+                    WHERE id=?
+                ''', (record_id,))
+                row = cursor.fetchone()
+                if row:
+                    return {
+                        'id': row[0], 'oktmo_code': row[1], 'startdate': row[2], 'enddate': row[3],
+                        'council_position': row[4], 'council_surname': row[5], 'council_first_name': row[6],
+                        'council_patronymic': row[7], 'council_address': row[8], 'council_email': row[9],
+                        'administration_position': row[10], 'administration_surname': row[11],
+                        'administration_first_name': row[12], 'administration_patronymic': row[13],
+                        'administration_address': row[14], 'administration_email': row[15],
+                        'agreement_date': row[16], 'decision_date': row[17], 'decision_number': row[18]
+                    }
+        except Exception as e:
+            logger.error(f"Ошибка загрузки сотрудника МО: {e}", exc_info=True)
+        return None
+    
+    def _delete_record_from_table(self, table_name: str, record_id: int):
+        """Удаление записи из таблицы"""
+        import sqlite3
+        try:
+            with sqlite3.connect(self.db_manager.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(f"DELETE FROM {table_name} WHERE id=?", (record_id,))
+                conn.commit()
+        except Exception as e:
+            logger.error(f"Ошибка удаления записи: {e}", exc_info=True)
+            raise

@@ -3,6 +3,7 @@
 """
 from pathlib import Path
 from typing import Optional
+from logger import logger
 
 
 # Кэш для загруженных стилей
@@ -47,10 +48,10 @@ def load_styles(theme: str = "styles", use_cache: bool = True) -> str:
                     _cached_styles = styles
                 return styles
         except Exception as e:
-            print(f"Ошибка загрузки стилей из {styles_path}: {e}")
+            logger.error(f"Ошибка загрузки стилей из {styles_path}: {e}")
             return ""
     else:
-        print(f"Файл стилей не найден: {styles_path}")
+        logger.warning(f"Файл стилей не найден: {styles_path}")
         return ""
 
 

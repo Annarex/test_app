@@ -554,6 +554,12 @@ class MainWindow(QMainWindow):
             
             # Обновляем вкладку ошибок
             self.errors_manager.load_errors_to_tab(project.data)
+            
+            # ОПТИМИЗАЦИЯ: Обновляем вкладку текстовых ошибок только если она уже была открыта
+            # или если это другой проект/ревизия (проверка _last_loaded_key внутри)
+            # Данные загружаются быстро благодаря кэшированию в _auto_load_saved_errors()
+            if hasattr(self, 'text_validation_tab'):
+                self.text_validation_tab._auto_load_saved_errors()
 
             # Загружаем файл в просмотрщик Excel:
             # Используем исходный файл ревизии (form_revisions.file_path), а не экспортированный

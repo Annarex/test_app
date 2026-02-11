@@ -267,25 +267,9 @@ class RevisionController(QObject):
                     exc_info=True,
                 )
             
-            # Пересчитываем уровни и значения на основе справочников, если файл есть
-            if revision_record.file_path and os.path.exists(revision_record.file_path):
-                try:
-                    # Загружаем справочники из БД
-                    reference_data_income = self.db_manager.load_income_reference_df()
-                    reference_data_sources = self.db_manager.load_sources_reference_df()
-
-                    if isinstance(form_controller.current_form, Form0503317):
-                        updated_data = form_controller.current_form.recalculate_levels_with_references(
-                            revision_data,
-                            reference_data_income,
-                            reference_data_sources
-                        )
-                        if updated_data:
-                            project.data = updated_data
-                            form_controller.current_form.load_saved_data(updated_data)
-                            logger.info("Уровни и значения пересчитаны на основе справочников")
-                except Exception as e:
-                    logger.error(f"Ошибка пересчета уровней и значений: {e}", exc_info=True)
+            # ОПТИМИЗАЦИЯ: Убран автоматический пересчет уровней при загрузке ревизии.
+            # Данные загружаются как есть из БД для быстрой загрузки.
+            # Пересчет выполняется только по кнопке "Пересчитать" в UI.
             
             return project
                 
