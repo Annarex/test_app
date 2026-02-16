@@ -923,7 +923,7 @@ class DatabaseManager:
                 grbscode,
                 id_code,
                 loaddate,
-                (COALESCE(rzpr, '') || COALESCE(kcsr, '') || COALESCE(kvr, '') || COALESCE(grbscode, '') || COALESCE(id_code, '')) AS concatenated_code,
+                (COALESCE(grbscode, '')||COALESCE(rzpr, '') || COALESCE(kcsr, '') || COALESCE(kvr, '')) AS concatenated_code,
                 npa_id,
                 created_at
             FROM (

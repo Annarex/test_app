@@ -25,6 +25,7 @@ from views.project_dialog import ProjectDialog
 from views.excel_viewer import ExcelViewer
 # Импорты ReferenceViewer и DictionariesDialog удалены - функционал интегрирован в ReferencesManagementDialog
 from views.references_management_dialog import ReferencesManagementDialog
+from views.universal_text_validation_dialog import UniversalTextValidationDialog
 from views.form_load_dialog import FormLoadDialog
 from views.widgets import WrapHeaderView, WordWrapItemDelegate, DetachedTabWindow
 from views.menu import MenuBar, ToolBar
@@ -681,6 +682,17 @@ class MainWindow(QMainWindow):
         """Показать диалог обновления онлайн справочников"""
         from views.budget_references_update_dialog import BudgetReferencesUpdateDialog
         dlg = BudgetReferencesUpdateDialog(self.controller.db_manager, self)
+        dlg.exec_()
+    
+    def show_universal_text_validation(self):
+        """Показать диалог проверки текстов из Excel"""
+        dlg = UniversalTextValidationDialog(self.controller.db_manager.db_path, self)
+        dlg.exec_()
+    
+    def show_docx_to_excel_dialog(self):
+        """Показать диалог конвертации DOCX в Excel"""
+        from views.docx_to_excel_dialog import DocxToExcelDialog
+        dlg = DocxToExcelDialog(self)
         dlg.exec_()
     
     def reset_column_visibility_settings(self):

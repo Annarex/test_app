@@ -120,6 +120,25 @@ class MenuBar:
         update_online_refs_action.triggered.connect(self.main_window.show_budget_references_update_dialog)
         reference_menu.addAction(update_online_refs_action)
         
+        # ========== Меню "Инструменты" ==========
+        tools_menu = menubar.addMenu("&Инструменты")
+        
+        # Проверка текстов из Excel
+        check_texts_action = QAction("&Проверка текстов из Excel...", self.main_window)
+        check_texts_action.setIcon(self.main_window.style().standardIcon(QStyle.SP_FileDialogContentsView))
+        check_texts_action.setShortcut("Ctrl+T")
+        check_texts_action.setStatusTip("Проверка текстов из Excel на соответствие справочникам")
+        check_texts_action.triggered.connect(self.main_window.show_universal_text_validation)
+        tools_menu.addAction(check_texts_action)
+        
+        # Конвертация DOCX в Excel
+        docx_to_excel_action = QAction("&Конвертация DOCX в Excel...", self.main_window)
+        docx_to_excel_action.setIcon(self.main_window.style().standardIcon(QStyle.SP_FileDialogDetailedView))
+        docx_to_excel_action.setShortcut("Ctrl+Shift+C")
+        docx_to_excel_action.setStatusTip("Конвертировать документ Word (DOCX) в Excel (XLSX)")
+        docx_to_excel_action.triggered.connect(self.main_window.show_docx_to_excel_dialog)
+        tools_menu.addAction(docx_to_excel_action)
+        
         # ========== Меню "Конфигурация" ==========
         config_menu = menubar.addMenu("&Конфигурация")
         

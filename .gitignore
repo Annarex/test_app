@@ -13,3 +13,6 @@ templates/шаблон_решения.docx
 .cursor/
 .vscode/
 __pycache__/
+data/converted/*.xlsx
+data/converted/*.docx
+data/projects/
