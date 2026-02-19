@@ -827,6 +827,126 @@ class DatabaseManager:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_sourcesmo_gaifcode ON budgetclassourcesmo(gaifcode)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_sourcesmo_npa_id ON budgetclassourcesmo(npa_id)')
         
+        # Таблица: Коды видов расходов (КВР)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS budgetclaskvr (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT,
+                name TEXT,
+                startdate TEXT,
+                enddate TEXT,
+                level TEXT,
+                stagename TEXT,
+                budgetname TEXT,
+                pponame TEXT,
+                ppocode TEXT,
+                year TEXT,
+                npa_id INTEGER,
+                created_at TEXT DEFAULT (strftime('%d.%m.%Y %H:%M:%S', 'now', 'localtime')),
+                FOREIGN KEY (npa_id) REFERENCES npa(id)
+            )
+        ''')
+        
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_kvr_ppocode ON budgetclaskvr(ppocode)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_kvr_code ON budgetclaskvr(code)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_kvr_dates ON budgetclaskvr(startdate, enddate)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_kvr_level ON budgetclaskvr(level)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_kvr_npa_id ON budgetclaskvr(npa_id)')
+        
+        # Таблица: Коды разделов и подразделов (РЗПР)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS budgetclasrzpr (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT,
+                name TEXT,
+                startdate TEXT,
+                enddate TEXT,
+                level TEXT,
+                stagename TEXT,
+                budgetname TEXT,
+                pponame TEXT,
+                ppocode TEXT,
+                year TEXT,
+                npa_id INTEGER,
+                created_at TEXT DEFAULT (strftime('%d.%m.%Y %H:%M:%S', 'now', 'localtime')),
+                FOREIGN KEY (npa_id) REFERENCES npa(id)
+            )
+        ''')
+        
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_rzpr_ppocode ON budgetclasrzpr(ppocode)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_rzpr_code ON budgetclasrzpr(code)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_rzpr_dates ON budgetclasrzpr(startdate, enddate)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_rzpr_level ON budgetclasrzpr(level)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_rzpr_npa_id ON budgetclasrzpr(npa_id)')
+        
+        # Таблица: Коды целевых статей расходов ФУ (КЦСР)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS budgetclaskcsr (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT,
+                name TEXT,
+                startdate TEXT,
+                enddate TEXT,
+                level TEXT,
+                stagename TEXT,
+                budgetname TEXT,
+                pponame TEXT,
+                ppocode TEXT,
+                year TEXT,
+                dbkkcsr_id TEXT,
+                parentcode TEXT,
+                id_code TEXT,
+                idparent TEXT,
+                signsistem TEXT,
+                levelkcsr TEXT,
+                npa_id INTEGER,
+                created_at TEXT DEFAULT (strftime('%d.%m.%Y %H:%M:%S', 'now', 'localtime')),
+                FOREIGN KEY (npa_id) REFERENCES npa(id)
+            )
+        ''')
+        
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_kcsr_ppocode ON budgetclaskcsr(ppocode)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_kcsr_code ON budgetclaskcsr(code)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_kcsr_dates ON budgetclaskcsr(startdate, enddate)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_kcsr_level ON budgetclaskcsr(level)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_kcsr_levelkcsr ON budgetclaskcsr(levelkcsr)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_kcsr_parentcode ON budgetclaskcsr(parentcode)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_kcsr_npa_id ON budgetclaskcsr(npa_id)')
+        
+        # Таблица: Коды целевых статей расходов МО (КЦСР)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS budgetclaskcsrmo (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT,
+                name TEXT,
+                startdate TEXT,
+                enddate TEXT,
+                level TEXT,
+                stagename TEXT,
+                budgetname TEXT,
+                pponame TEXT,
+                ppocode TEXT,
+                year TEXT,
+                dbkkcsr_id TEXT,
+                parentcode TEXT,
+                id_code TEXT,
+                idparent TEXT,
+                signsistem TEXT,
+                levelkcsr TEXT,
+                npa_id INTEGER,
+                created_at TEXT DEFAULT (strftime('%d.%m.%Y %H:%M:%S', 'now', 'localtime')),
+                FOREIGN KEY (npa_id) REFERENCES npa(id)
+            )
+        ''')
+        
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_kcsrmo_ppocode ON budgetclaskcsrmo(ppocode)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_kcsrmo_code ON budgetclaskcsrmo(code)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_kcsrmo_dates ON budgetclaskcsrmo(startdate, enddate)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_kcsrmo_level ON budgetclaskcsrmo(level)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_kcsrmo_levelkcsr ON budgetclaskcsrmo(levelkcsr)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_kcsrmo_parentcode ON budgetclaskcsrmo(parentcode)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_kcsrmo_npa_id ON budgetclaskcsrmo(npa_id)')
+        
         # Таблица: Нормативно-правовые акты (НПА)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS npa (
@@ -1059,6 +1179,37 @@ class DatabaseManager:
                 SELECT * FROM budgetclassourcesmo
             )
             ORDER BY ppocode, code, startdate, enddate, year
+        ''')
+        
+        # VIEW: объединенные данные BUDGETCLASKCSR и BUDGETCLASKCSRMO
+        cursor.execute('''
+            CREATE VIEW IF NOT EXISTS v_budgetclaskcsr_merged AS
+            SELECT 
+                id,
+                code,
+                name,
+                startdate,
+                enddate,
+                level,
+                stagename,
+                budgetname,
+                pponame,
+                ppocode,
+                year,
+                dbkkcsr_id,
+                parentcode,
+                id_code,
+                idparent,
+                signsistem,
+                levelkcsr,
+                npa_id,
+                created_at
+            FROM (
+                SELECT * FROM budgetclaskcsr
+                UNION ALL
+                SELECT * FROM budgetclaskcsrmo
+            )
+            ORDER BY ppocode, code, parentcode, levelkcsr, startdate, enddate, year
         ''')
         
         # VIEW: актуальные записи budgetclastypeinc
@@ -3499,6 +3650,67 @@ class DatabaseManager:
                     })
             
             return sorted(info_list, key=lambda x: x['table_name'])
+
+    def get_budget_references_updates_history(
+        self,
+        table_names: Optional[List[str]] = None,
+        period_days: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Получает историю обновлений онлайн-справочников из budget_references_updates.
+
+        Args:
+            table_names: Список таблиц для фильтрации (None = все таблицы)
+            period_days: Период в днях (None = без ограничения)
+
+        Returns:
+            Список записей истории обновлений
+        """
+        query = """
+            SELECT
+                table_name,
+                records_count,
+                created_at,
+                update_at
+            FROM budget_references_updates
+            WHERE 1 = 1
+        """
+        params: List[Any] = []
+
+        if table_names:
+            placeholders = ",".join(["?" for _ in table_names])
+            query += f" AND table_name IN ({placeholders})"
+            params.extend(table_names)
+
+        parsed_update_at_expr = (
+            "datetime(" \
+            "substr(update_at, 7, 4) || '-' || " \
+            "substr(update_at, 4, 2) || '-' || " \
+            "substr(update_at, 1, 2) || ' ' || " \
+            "substr(update_at, 12, 8)" \
+            ")"
+        )
+
+        if period_days is not None and period_days > 0:
+            query += f" AND {parsed_update_at_expr} >= datetime('now', 'localtime', ?)"
+            params.append(f"-{period_days} days")
+
+        query += f" ORDER BY {parsed_update_at_expr} ASC, table_name ASC"
+
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+
+        return [
+            {
+                'table_name': row[0],
+                'records_count': row[1],
+                'created_at': row[2],
+                'update_at': row[3]
+            }
+            for row in rows
+        ]
     
     # --- Методы для работы с конфигурацией ---
     

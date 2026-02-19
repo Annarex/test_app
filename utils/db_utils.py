@@ -21,6 +21,10 @@ SORT_RULES = {
     'budgetclasgaifmo': ['ppocode', 'code', 'startdate', 'enddate', 'year'],
     'budgetclassources': ['gaifcode', 'ppocode', 'code', 'startdate', 'enddate', 'year'],
     'budgetclassourcesmo': ['gaifcode', 'ppocode', 'code', 'startdate', 'enddate', 'year'],
+    'budgetclaskvr': ['ppocode', 'code', 'startdate', 'enddate', 'year'],
+    'budgetclasrzpr': ['ppocode', 'code', 'startdate', 'enddate', 'year'],
+    'budgetclaskcsr': ['ppocode', 'code', 'level', 'startdate', 'enddate', 'year'],
+    'budgetclaskcsrmo': ['ppocode', 'code', 'level', 'startdate', 'enddate', 'year'],
 }
 
 
@@ -141,7 +145,7 @@ def get_filtered_view(
     select_npa = ''
     if join_npa and _has_column(conn, table_name, 'npa_id'):
         cursor = conn.cursor()
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND LOWER(name)='npa'")
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='npa'")
         npa_row = cursor.fetchone()
         if npa_row:
             npa_tbl = f'{npa_row[0]}'

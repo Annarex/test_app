@@ -15,6 +15,7 @@ import sqlite3
 import pandas as pd
 from logger import logger
 from utils.db_utils import get_filtered_view
+from utils.text_validation.display_helpers import richtext_to_html, find_alternative_variants
 
 
 class HtmlDelegate(QStyledItemDelegate):
@@ -356,10 +357,12 @@ class TextValidationWidget(QWidget):
         # Обработчик двойного клика
         self.errors_table.cellDoubleClicked.connect(self._show_error_details)
         
-        # Устанавливаем делегат для отображения HTML в столбцах с подсветкой
+        # Устанавливаем делегат для отображения HTML во всех текстовых столбцах
         html_delegate = HtmlDelegate(self.errors_table)
         self.errors_table.setItemDelegateForColumn(0, html_delegate)  # Текст в проекте
+        self.errors_table.setItemDelegateForColumn(1, html_delegate)  # Эталон из справочника
         self.errors_table.setItemDelegateForColumn(3, html_delegate)  # Код в проекте
+        self.errors_table.setItemDelegateForColumn(4, html_delegate)  # Код справочника
         
         layout.addWidget(self.errors_table)
         
@@ -797,127 +800,8 @@ class TextValidationWidget(QWidget):
             QMessageBox.critical(self, "Ошибка", f"Ошибка при загрузке сохраненных ошибок:\n{str(e)}")
     
     def _richtext_to_html(self, orig_text, diff_idx, corrections, invert_colors=False):
-        """
-        Преобразование подсвеченного текста в HTML для отображения в Qt таблице
-        
-        Args:
-            orig_text: Исходный текст
-            diff_idx: Список индексов позиций с ошибками
-            corrections: Список исправлений
-            invert_colors: Если True, отличия подсвечиваются зеленым (для альтернатив)
-        """
-        if not orig_text:
-            return ""
-        
-        # Функция для экранирования HTML символов
-        def escape_html(text):
-            return (text.replace('&', '&amp;')
-                       .replace('<', '&lt;')
-                       .replace('>', '&gt;')
-                       .replace('"', '&quot;')
-                       .replace("'", '&#39;'))
-        
-        # Разделяем исправления на:
-        # - corrections_map: для replace/delete (привязаны к диапазону ошибок)
-        # - insert_map: для insert (отсутствует в orig, есть только в ref)
-        corrections_map = {}
-        insert_map = {}
-        for start, end, correct_text, kind in corrections:
-            if kind in ("replace", "delete"):
-                # Привязываем правильный текст к началу ошибочного диапазона
-                corrections_map[start] = correct_text
-            elif kind == "insert":
-                # Вставка: позиция между символами 0..len(orig)
-                if start not in insert_map:
-                    insert_map[start] = []
-                insert_map[start].append(correct_text)
-        
-        html_parts = []
-        diff_idx_set = set(diff_idx)
-        
-        # Сначала обрабатываем все insert в начале строки
-        if 0 in insert_map:
-            for txt in insert_map[0]:
-                if invert_colors:
-                    # Для альтернатив: insert = удаленное из оригинала (красным перечеркнутым)
-                    html_parts.append(f'<span style="color:red;text-decoration:line-through">{escape_html(txt)}</span>')
-                else:
-                    # Для основной таблицы: insert = что нужно добавить (зеленым)
-                    html_parts.append(f'<span style="color:green;font-weight:bold;text-decoration:underline">{escape_html(txt)}</span>')
-        
-        i = 0
-        while i < len(orig_text):
-            if i in diff_idx_set:
-                # Нашли ошибку (replace/delete): показываем правильный текст (зеленым),
-                # затем неправильный фрагмент (красным).
-                error_start = i
-                while i < len(orig_text) and i in diff_idx_set:
-                    i += 1
-                error_end = i
-                error_text = orig_text[error_start:error_end]
-                
-                # Цвета для подсветки
-                if invert_colors:
-                    # Для альтернатив: отличия в альтернативе = правильные варианты (зеленый)
-                    error_color = "green"
-                    correct_color = "red"  # То что было в оригинале (красным перечеркнутым)
-                    correct_decoration = "line-through"
-                else:
-                    # Для основной таблицы: ошибки = красный, правильное = зеленый
-                    error_color = "red"
-                    correct_color = "green"
-                    correct_decoration = "underline"
-                
-                # Показываем текст из corrections (что в оригинале/эталоне)
-                if error_start in corrections_map:
-                    correct_text = corrections_map[error_start]
-                    if correct_text:
-                        if invert_colors:
-                            # Для альтернатив: показываем что было в оригинале (красным перечеркнутым)
-                            html_parts.append(f'<span style="color:{correct_color};text-decoration:{correct_decoration}">{escape_html(correct_text)}</span>')
-                        else:
-                            # Для основной таблицы: показываем правильный вариант (зеленым)
-                            html_parts.append(f'<span style="color:{correct_color};font-weight:bold;text-decoration:{correct_decoration}">{escape_html(correct_text)}</span>')
-                
-                # Отличающийся текст подсвечиваем
-                html_parts.append(f'<span style="color:{error_color};font-weight:bold;text-decoration:underline">{escape_html(error_text)}</span>')
-            else:
-                # Правильный текст - обычным цветом
-                start_ok = i
-                while i < len(orig_text) and i not in diff_idx_set:
-                    # Проверяем, есть ли insert после текущего символа
-                    next_pos = i + 1
-                    if next_pos in insert_map:
-                        # Добавляем текущий символ
-                        if start_ok <= i:
-                            text_ok = orig_text[start_ok:i+1]
-                            if text_ok:
-                                html_parts.append(escape_html(text_ok))
-                        # Добавляем insert после этого символа
-                        for txt in insert_map[next_pos]:
-                            if invert_colors:
-                                # Для альтернатив: insert = удаленное из оригинала (красным перечеркнутым)
-                                html_parts.append(f'<span style="color:red;text-decoration:line-through">{escape_html(txt)}</span>')
-                            else:
-                                # Для основной таблицы: insert = что нужно добавить
-                                html_parts.append(f'<span style="color:green;font-weight:bold;text-decoration:underline">{escape_html(txt)}</span>')
-                        start_ok = i + 1
-                    i += 1
-                text_ok = orig_text[start_ok:i]
-                if text_ok:
-                    html_parts.append(escape_html(text_ok))
-        
-        # Обрабатываем вставки в самом конце строки
-        if len(orig_text) in insert_map:
-            for txt in insert_map[len(orig_text)]:
-                if invert_colors:
-                    # Для альтернатив: insert = удаленное из оригинала (красным перечеркнутым)
-                    html_parts.append(f'<span style="color:red;text-decoration:line-through">{escape_html(txt)}</span>')
-                else:
-                    # Для основной таблицы: insert = что нужно добавить
-                    html_parts.append(f'<span style="color:green;font-weight:bold;text-decoration:underline">{escape_html(txt)}</span>')
-        
-        return ''.join(html_parts)
+        """Преобразование подсвеченного текста в HTML (делегирует в общую функцию)"""
+        return richtext_to_html(orig_text, diff_idx, corrections, invert_colors)
     
     def _update_errors_table(self):
         """Обновление таблицы ошибок"""
@@ -963,9 +847,12 @@ class TextValidationWidget(QWidget):
                 item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
                 self.errors_table.setItem(row_idx, 0, item)
                 
-                # Эталон из справочника
+                # Эталон из справочника (оборачиваем в HTML для единообразного отображения)
                 ref_text = error.reference_text if error.reference_text else ""
-                self.errors_table.setItem(row_idx, 1, QTableWidgetItem(ref_text))
+                ref_item = QTableWidgetItem()
+                ref_item.setData(Qt.DisplayRole, ref_text)  # Обычный текст, без HTML
+                ref_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                self.errors_table.setItem(row_idx, 1, ref_item)
                 
                 # Distance
                 self.errors_table.setItem(row_idx, 2, QTableWidgetItem(str(error.distance)))
@@ -990,14 +877,17 @@ class TextValidationWidget(QWidget):
                 else:
                     self.errors_table.setItem(row_idx, 3, QTableWidgetItem(orig_code))
                 
-                # Код справочника
+                # Код справочника (оборачиваем для единообразного отображения)
+                ref_code = ""
                 if error.code_error and error.code_error.ref_code:
                     ref_code = error.code_error.ref_code
-                    self.errors_table.setItem(row_idx, 4, QTableWidgetItem(ref_code))
                 elif error.reference_index is not None and error.reference_index < len(self.reference_codes):
-                    self.errors_table.setItem(row_idx, 4, QTableWidgetItem(self.reference_codes[error.reference_index]))
-                else:
-                    self.errors_table.setItem(row_idx, 4, QTableWidgetItem(""))
+                    ref_code = self.reference_codes[error.reference_index]
+                
+                ref_code_item = QTableWidgetItem()
+                ref_code_item.setData(Qt.DisplayRole, ref_code)  # Обычный текст, без HTML
+                ref_code_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                self.errors_table.setItem(row_idx, 4, ref_code_item)
             
             except Exception as e:
                 logger.error(f"Ошибка при обработке строки {row_idx}: {e}", exc_info=True)
@@ -1470,9 +1360,49 @@ class TextValidationWidget(QWidget):
             pponame = reference_data[idx].get('pponame', '') if idx < len(reference_data) else ""
             variants.append((dist, ref_name, ref_code, idx, startdate, ppocode, pponame))
         
-        # Сортируем по distance и берем топ-5
+        # Сортируем по distance и возвращаем топ-5 (СТАРАЯ РЕАЛИЗАЦИЯ - УДАЛИТЬ)
         variants.sort(key=lambda x: x[0])
         return variants[:5]
+    
+    def _find_alternative_variants(self, original_text: str, original_index: int, deduplicate: bool = True):
+        """Поиск альтернативных вариантов из справочника (делегирует в общую функцию)"""
+        section = self.section_combo.currentText()
+        section_table_map = {
+            'Доходы': 'v_budgetclastypeinc_merged',
+            'Расходы': 'v_budgetclascosts_merged',
+            'Источники финансирования': 'v_budgetclassources_merged',
+        }
+        table_name = section_table_map.get(section)
+        
+        if not table_name:
+            return []
+        
+        # Получаем параметры фильтрации
+        ppocode_from_meta = getattr(self.main_window, 'current_ppocode', None)
+        if ppocode_from_meta and ppocode_from_meta.strip():
+            ppocode_filter = ["00000000", ppocode_from_meta]
+        else:
+            ppocode_filter = "00000000"
+        
+        filter_date = self.main_window.reference_date_edit.text().strip()
+        if not filter_date:
+            from datetime import datetime
+            filter_date = datetime.now().strftime("%Y-%m-%d")
+        
+        # Создаем функцию-экстрактор кодов
+        def code_extractor(df):
+            return self._extract_codes_from_reference(df, section)
+        
+        return find_alternative_variants(
+            original_text=original_text,
+            db_path=self.controller.db_manager.db_path,
+            table_name=table_name,
+            filter_date=filter_date,
+            ppocode_filter=ppocode_filter,
+            code_extractor=code_extractor,
+            deduplicate=deduplicate,
+            top_n=5
+        )
     
     def _show_alternative_details(self, table: QTableWidget, row: int, section: str):
         """Показ детальной информации об альтернативном варианте"""

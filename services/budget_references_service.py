@@ -24,6 +24,10 @@ URL_BUDGETCLASGAIFFB = "http://budget.gov.ru/epbs/registry/7710568760-BUDGETCLAS
 URL_BUDGETCLASGAIFMO = "http://budget.gov.ru/epbs/registry/7710568760-BUDGETCLASGAIFMO/data"
 URL_BUDGETCLASSOURCES = "http://budget.gov.ru/epbs/registry/7710568760-BUDGETCLASSOURCES/data"
 URL_BUDGETCLASSOURCESMO = "http://budget.gov.ru/epbs/registry/7710568760-BUDGETCLASSOURCESMO/data"
+URL_BUDGETCLASKVR = "http://budget.gov.ru/epbs/registry/7710568760-BUDGETCLASKVR/data"
+URL_BUDGETCLASRZPR = "https://budget.gov.ru/epbs/registry/7710568760-BUDGETCLASRZPR/data"
+URL_BUDGETCLASKCSR = "https://budget.gov.ru/epbs/registry/7710568760-BUDGETCLASKCSR/data"
+URL_BUDGETCLASKCSRMO = "https://budget.gov.ru/epbs/registry/7710568760-BUDGETCLASKCSRMO/data"
 
 PAGE_SIZE = 1000
 
@@ -41,6 +45,10 @@ URL_TO_TABLE = {
     URL_BUDGETCLASGAIFMO: 'budgetclasgaifmo',
     URL_BUDGETCLASSOURCES: 'budgetclassources',
     URL_BUDGETCLASSOURCESMO: 'budgetclassourcesmo',
+    URL_BUDGETCLASKVR: 'budgetclaskvr',
+    URL_BUDGETCLASRZPR: 'budgetclasrzpr',
+    URL_BUDGETCLASKCSR: 'budgetclaskcsr',
+    URL_BUDGETCLASKCSRMO: 'budgetclaskcsrmo',
 }
 
 FIELD_MAPPING = {}
@@ -70,6 +78,10 @@ def get_default_filters(default_region: str = "21") -> Dict[str, Optional[Dict]]
         'budgetclasgaifmo': {"ppocode": f"{default_region}______"},
         'budgetclassources': {"ppocode": f"{default_region}______"},
         'budgetclassourcesmo': {"ppocode": f"{default_region}______"},
+        'budgetclaskvr': None,
+        'budgetclasrzpr': None,
+        'budgetclaskcsr': {"ppocode": f"{default_region}______"},
+        'budgetclaskcsrmo': {"ppocode": f"{default_region}______"},
     }
 
 
@@ -491,7 +503,7 @@ class BudgetReferencesService:
                     logger.info(f"[{table_name}] Количество совпадает ({api_count_int}). Загрузка не требуется.")
                     from models.database import DatabaseManager
                     db_manager = DatabaseManager(self.db_path)
-                    db_manager.update_budget_reference_date(table_name, 0)
+                    db_manager.update_budget_reference_date(table_name, api_count_int)
                     return 0
             
             # Шаг 4: Определяем, нужно ли очищать таблицу

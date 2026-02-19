@@ -1,22 +1,32 @@
 """
 Модуль для работы с бюджетными справочниками из API бюджетной системы.
 
-Включает:
-- reference_field_mappings: маппинг латинских названий полей на русские заголовки
+Единая конфигурация справочников:
+- references_config: объединенная конфигурация типов справочников и маппинга полей
 """
 
-from .reference_field_mappings import (
+from .references_config import (
+    REFERENCE_TYPES,
+    get_reference_types,
+    get_reference_config,
+    get_table_config,
     get_display_columns,
     get_russian_name,
     get_search_columns,
     TABLE_FIELD_MAPPINGS,
-    COMMON_FIELDS
+    COMMON_FIELDS,
+    SEARCH_COLUMNS
 )
 
 __all__ = [
+    'REFERENCE_TYPES',
+    'get_reference_types',
+    'get_reference_config',
+    'get_table_config',
     'get_display_columns',
     'get_russian_name',
     'get_search_columns',
     'TABLE_FIELD_MAPPINGS',
-    'COMMON_FIELDS'
+    'COMMON_FIELDS',
+    'SEARCH_COLUMNS'
 ]

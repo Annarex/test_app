@@ -119,6 +119,12 @@ class MenuBar:
         update_online_refs_action.setStatusTip("Обновление справочников из API бюджетной системы")
         update_online_refs_action.triggered.connect(self.main_window.show_budget_references_update_dialog)
         reference_menu.addAction(update_online_refs_action)
+
+        update_stats_action = QAction("Стат&истика обновления онлайн справочников...", self.main_window)
+        update_stats_action.setIcon(self.main_window.style().standardIcon(QStyle.SP_FileDialogDetailedView))
+        update_stats_action.setStatusTip("Просмотр статистики обновлений таблицы budget_references_updates")
+        update_stats_action.triggered.connect(self.main_window.show_budget_references_updates_statistics_dialog)
+        reference_menu.addAction(update_stats_action)
         
         # ========== Меню "Инструменты" ==========
         tools_menu = menubar.addMenu("&Инструменты")

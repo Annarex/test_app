@@ -683,6 +683,12 @@ class MainWindow(QMainWindow):
         from views.budget_references_update_dialog import BudgetReferencesUpdateDialog
         dlg = BudgetReferencesUpdateDialog(self.controller.db_manager, self)
         dlg.exec_()
+
+    def show_budget_references_updates_statistics_dialog(self):
+        """Показать диалог статистики обновлений онлайн справочников"""
+        from views.budget_references_updates_statistics_dialog import BudgetReferencesUpdatesStatisticsDialog
+        dlg = BudgetReferencesUpdatesStatisticsDialog(self.controller.db_manager, self)
+        dlg.exec_()
     
     def show_universal_text_validation(self):
         """Показать диалог проверки текстов из Excel"""

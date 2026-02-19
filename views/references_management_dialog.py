@@ -19,219 +19,21 @@ from logger import logger
 
 from models.database import DatabaseManager
 from models.base_models import YearRef, FormTypeMeta, PeriodRef
-from models.references.reference_field_mappings import get_display_columns, get_search_columns
+from models.references.references_config import get_display_columns, get_search_columns
 from views.budget_references_update_dialog import REFERENCE_NAMES
 from views.reference_detail_dialog import ReferenceDetailDialog
 from views.column_visibility_dialog import ColumnVisibilityDialog
 from controllers.reference_controller import ReferenceController
 from styles.styles import set_tab_bar_min_width
-from utils.db_utils import get_filtered_view
+from utils.db_utils import get_filtered_view, SORT_RULES
 from views.metadata.metadata_panel import get_reference_date_from_meta_info
 
 
 class ReferencesManagementDialog(QDialog):
     """Диалог для управления справочниками"""
     
-    # Список справочников с их методами загрузки
-    REFERENCE_TYPES = {
-        'Коды доходов': {
-            'table': 'v_budgetclastypeinc_merged',
-            'load_method': 'load_income_sources_reference',
-            'load_type': 'доходы',
-            'is_view': True,
-            'columns': ['concatenated_code', 'name', 'level', 'inctypecode', 'incsubtypecode', 'analyticalgroupcode'],
-            'display_columns': None,  # Генерируется автоматически из reference_field_mappings
-            'search_columns': None,  # Генерируется автоматически из reference_field_mappings
-        },
-        'Коды источников': {
-            'table': 'source_reference_records',
-            'load_method': 'load_income_sources_reference',  # Специальный метод для доходов/источников
-            'load_type': 'источники',  # Тип для ReferenceController
-            'columns': ['code', 'name', 'level', 'doc'],
-            'display_columns': None,  # Генерируется автоматически из reference_field_mappings
-            'search_columns': None,  # Генерируется автоматически из reference_field_mappings
-        },
-        # Справочники конфигурации
-        'Годы': {
-            'table': 'ref_years',
-            'load_method': None,
-            'columns': ['year', 'is_active'],
-            'is_config': True,
-            'load_func': '_load_years',
-            'save_func': '_save_years'
-        },
-        'Типы форм': {
-            'table': 'ref_form_types',
-            'load_method': None,
-            'columns': ['id', 'code', 'name', 'periodicity', 'is_active'],
-            'is_config': True,
-            'load_func': '_load_forms',
-            'save_func': '_save_forms'
-        },
-        'Периоды': {
-            'table': 'ref_periods',
-            'load_method': None,
-            'columns': ['id', 'code', 'name', 'sort_order', 'form_type_code', 'is_active'],
-            'is_config': True,
-            'load_func': '_load_periods',
-            'save_func': '_save_periods'
-        },
-        'Сотрудники МО': {
-            'table': 'ref_municipal_employees',
-            'load_method': None,
-            'columns': ['id', 'oktmo_code', 'startdate', 'enddate', 'council_position', 'council_surname', 
-                       'council_first_name', 'council_patronymic', 'council_address', 'council_email',
-                       'administration_position', 'administration_surname', 'administration_first_name', 
-                       'administration_patronymic', 'administration_address', 'administration_email',
-                       'agreement_date', 'decision_date', 'decision_number'],
-            'display_columns': None,  # Генерируется автоматически из reference_field_mappings
-            'search_columns': None,  # Генерируется автоматически из reference_field_mappings
-            'editable': True,
-            'dialog_class': 'MunicipalEmployeeDialog'
-        },
-        # Справочники из бюджетной системы (онлайн справочники)
-        '─── Онлайн справочники ───': {
-            'table': None,
-            'is_separator': True
-        },
-        'ОКТМО': {
-            'table': 'oktmo',
-            'load_method': None,
-            'columns': None,  # None означает загрузить все колонки
-            'is_online': True
-        },
-        'Классификаторы доходов бюджета ФУ': {
-            'table': 'budgetclastypeinc',
-            'load_method': None,
-            'columns': None,  # None означает загрузить все колонки
-            'is_online': True,
-            'has_npa': True  # Указываем, что есть связь с npa
-        },
-        'Классификаторы доходов бюджета МО': {
-            'table': 'budgetclassubtypincmo',
-            'load_method': None,
-            'columns': None,
-            'is_online': True,
-            'has_npa': True
-        },
-        'Администраторы бюджета ФУ': {
-            'table': 'budgetclasgabs',
-            'load_method': None,
-            'columns': None,
-            'is_online': True,
-            'has_npa': True
-        },
-        'Администраторы бюджета МО': {
-            'table': 'budgetclasgabsmo',
-            'load_method': None,
-            'columns': None,
-            'is_online': True,
-            'has_npa': True
-        },
-        'Распорядители бюджета ФУ': {
-            'table': 'budgetclasgrbs',
-            'load_method': None,
-            'columns': None,
-            'is_online': True,
-            'has_npa': True
-        },
-        'Распорядители бюджета МО': {
-            'table': 'budgetclasgrbsmo',
-            'load_method': None,
-            'columns': None,
-            'is_online': True,
-            'has_npa': True
-        },
-        'Классификаторы расходов бюджета ФУ': {
-            'table': 'budgetclascosts',
-            'load_method': None,
-            'columns': None,
-            'is_online': True,
-            'has_npa': True
-        },
-        'Классификаторы расходов бюджета МО': {
-            'table': 'budgetclascostsmo',
-            'load_method': None,
-            'columns': None,
-            'is_online': True,
-            'has_npa': True
-        },
-        'Источники финансирования дефицита ФУ': {
-            'table': 'budgetclasgaiffb',
-            'load_method': None,
-            'columns': None,
-            'is_online': True,
-            'has_npa': True
-        },
-        'Источники финансирования дефицита МО': {
-            'table': 'budgetclasgaifmo',
-            'load_method': None,
-            'columns': None,
-            'is_online': True,
-            'has_npa': True
-        },
-        'Классификаторы источников финансирования ФУ': {
-            'table': 'budgetclassources',
-            'load_method': None,
-            'columns': None,
-            'is_online': True,
-            'has_npa': True
-        },
-        'Классификаторы источников финансирования МО': {
-            'table': 'budgetclassourcesmo',
-            'load_method': None,
-            'columns': None,
-            'is_online': True,
-            'has_npa': True
-        },
-        # Объединенные представления (ФУ + МО)
-        '─── Объединенные представления ───': {
-            'table': None,
-            'is_separator': True
-        },
-        'Классификаторы доходов (объединенные)': {
-            'table': 'v_budgetclastypeinc_merged',
-            'load_method': None,
-            'columns': None,
-            'is_view': True,
-            'has_npa': True
-        },
-        'Классификаторы расходов (объединенные)': {
-            'table': 'v_budgetclascosts_merged',
-            'load_method': None,
-            'columns': None,
-            'is_view': True,
-            'has_npa': True
-        },
-        'Распорядители бюджета (объединенные)': {
-            'table': 'v_budgetclasgrbs_merged',
-            'load_method': None,
-            'columns': None,
-            'is_view': True,
-            'has_npa': True
-        },
-        'Администраторы бюджета (объединенные)': {
-            'table': 'v_budgetclasgabs_merged',
-            'load_method': None,
-            'columns': None,
-            'is_view': True,
-            'has_npa': True
-        },
-        'Источники финансирования дефицита (объединенные)': {
-            'table': 'v_budgetclasgaiffb_merged',
-            'load_method': None,
-            'columns': None,
-            'is_view': True,
-            'has_npa': True
-        },
-        'Классификаторы источников финансирования (объединенные)': {
-            'table': 'v_budgetclassources_merged',
-            'load_method': None,
-            'columns': None,
-            'is_view': True,
-            'has_npa': True
-        }
-    }
+    # Импортируем конфигурацию справочников из единого источника
+    from models.references.references_config import REFERENCE_TYPES
     
     def __init__(self, db_manager: DatabaseManager, parent=None):
         super().__init__(parent)
@@ -261,6 +63,11 @@ class ReferencesManagementDialog(QDialog):
         
         # Переменная для хранения выбранной даты фильтрации
         self.filter_date = None  # По умолчанию фильтрация отключена
+        
+        # Переменные для хранения сортировки
+        self.sort_column = None  # Имя столбца для сортировки
+        self.sort_order = Qt.AscendingOrder  # Порядок сортировки
+        self.use_default_sort = False  # Использовать сортировку по умолчанию из VIEW
         
         self.init_ui()
         ref_date = self._revision_date_if_project_open()
@@ -341,6 +148,19 @@ class ReferencesManagementDialog(QDialog):
         date_layout.addWidget(self.date_filter)
         
         layout.addLayout(date_layout)
+        
+        # Checkbox для включения/выключения сортировки по умолчанию
+        sort_layout = QHBoxLayout()
+        sort_layout.setSpacing(5)
+        
+        self.default_sort_checkbox = QCheckBox("Использовать сортировку по умолчанию")
+        self.default_sort_checkbox.setChecked(False)  # По умолчанию отключено
+        self.default_sort_checkbox.setToolTip("Если включено, используется логическая сортировка из VIEW (для онлайн справочников).\nЕсли выключено, используется сортировка из SORT_RULES (ppocode, code, даты и т.д.).\nЛибо кликните по заголовку столбца для пользовательской сортировки.")
+        self.default_sort_checkbox.stateChanged.connect(self.on_default_sort_toggled)
+        sort_layout.addWidget(self.default_sort_checkbox)
+        sort_layout.addStretch()
+        
+        layout.addLayout(sort_layout)
         
         # Список справочников
         self.references_list = QListWidget()
@@ -457,13 +277,15 @@ class ReferencesManagementDialog(QDialog):
         self.view_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.view_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.view_table.horizontalHeader().setStretchLastSection(True)
-        # Включаем сортировку по столбцам
-        self.view_table.setSortingEnabled(True)
+        # Отключаем встроенную сортировку QTableWidget (будем сортировать через SQL)
+        self.view_table.setSortingEnabled(False)
         # Добавляем обработчик двойного клика для открытия детальной информации
         self.view_table.itemDoubleClicked.connect(self.on_row_double_clicked)
         # Контекстное меню для заголовков таблицы
         header = self.view_table.horizontalHeader()
         header.setContextMenuPolicy(Qt.CustomContextMenu)
+        # Подключаем обработчик клика по заголовку для сортировки
+        header.sectionClicked.connect(self.on_header_clicked)
         header.customContextMenuRequested.connect(self.show_table_header_context_menu)
         layout.addWidget(self.view_table)
         
@@ -783,10 +605,15 @@ class ReferencesManagementDialog(QDialog):
                     self.ref_name_edit.clear()
                     self.info_label.setVisible(False)
         
-        # Сбрасываем пагинацию и поиск при смене справочника
+        # Сбрасываем пагинацию, поиск и сортировку при смене справочника
         self.current_page = 1
         self.page_size = 1000
         self.page_size_input.setValue(1000)
+        self.sort_column = None
+        self.sort_order = Qt.AscendingOrder
+        self.use_default_sort = True
+        if hasattr(self, 'default_sort_checkbox'):
+            self.default_sort_checkbox.setChecked(True)
         if hasattr(self, 'search_input'):
             self.search_input.clear()
         # Обновляем дату фильтрации из поля выбора
@@ -834,6 +661,50 @@ class ReferencesManagementDialog(QDialog):
         # Перезагружаем данные с учетом новой даты
         self.load_current_reference()
     
+    def on_default_sort_toggled(self, state: int):
+        """Обработчик включения/выключения сортировки по умолчанию"""
+        self.use_default_sort = (state == Qt.Checked)
+        # Сбрасываем пользовательскую сортировку при изменении флага
+        if self.use_default_sort:
+            self.sort_column = None
+            self.sort_order = Qt.AscendingOrder
+        # Сбрасываем на первую страницу при изменении сортировки
+        self.current_page = 1
+        # Перезагружаем данные
+        self.load_current_reference()
+    
+    def on_header_clicked(self, logical_index: int):
+        """Обработчик клика по заголовку столбца для сортировки"""
+        if self.view_table.columnCount() == 0:
+            return
+        
+        # Получаем имя столбца
+        header_item = self.view_table.horizontalHeaderItem(logical_index)
+        if not header_item:
+            return
+        
+        column_name = header_item.text()
+        
+        # Если кликнули по тому же столбцу, меняем направление сортировки
+        if self.sort_column == column_name:
+            self.sort_order = Qt.DescendingOrder if self.sort_order == Qt.AscendingOrder else Qt.AscendingOrder
+        else:
+            # Иначе устанавливаем новый столбец с возрастающей сортировкой
+            self.sort_column = column_name
+            self.sort_order = Qt.AscendingOrder
+        
+        # Отключаем сортировку по умолчанию при установке пользовательской сортировки
+        if self.use_default_sort:
+            self.use_default_sort = False
+            if hasattr(self, 'default_sort_checkbox'):
+                self.default_sort_checkbox.setChecked(False)
+        
+        # Сбрасываем на первую страницу при изменении сортировки
+        self.current_page = 1
+        
+        # Перезагружаем данные с учетом новой сортировки
+        self.load_current_reference()
+    
     # --- Вспомогательные методы для работы с данными ---
     
     def _execute_query(self, conn, query: str, params: list = None) -> pd.DataFrame:
@@ -845,7 +716,8 @@ class ReferencesManagementDialog(QDialog):
     def _save_column_visibility(self) -> dict:
         """Сохраняет текущую видимость столбцов и возвращает словарь видимости"""
         column_visibility = {}
-        if self.view_table.columnCount() > 0 and self.view_table.rowCount() > 0:
+        # Проверяем только наличие столбцов, количество строк не важно (может быть 0 после фильтрации)
+        if self.view_table.columnCount() > 0:
             for col in range(self.view_table.columnCount()):
                 header_item = self.view_table.horizontalHeaderItem(col)
                 if header_item:
@@ -859,6 +731,8 @@ class ReferencesManagementDialog(QDialog):
                     config_key = f"references_table_columns:{table_name}"
                     self.db_manager.save_config(config_key, column_visibility)
         return column_visibility
+    
+
     
     def _restore_column_visibility(self, column_visibility: dict = None):
         """Восстанавливает видимость столбцов из сохраненной конфигурации для текущей таблицы
@@ -885,7 +759,16 @@ class ReferencesManagementDialog(QDialog):
     def _fill_table_from_dataframe(self, df: pd.DataFrame, available_columns: list, 
                                     column_visibility: dict, offset: int, total_records: int,
                                     use_date_filter: bool = False):
-        """Заполняет таблицу из DataFrame с восстановлением видимости столбцов и обновлением статуса"""
+        """Заполняет таблицу из DataFrame с восстановлением видимости столбцов и обновлением статуса
+        
+        Args:
+            df: DataFrame с данными
+            available_columns: Список доступных столбцов
+            column_visibility: Словарь видимости столбцов
+            offset: Смещение для пагинации
+            total_records: Общее количество записей
+            use_date_filter: Флаг использования фильтра по дате
+        """
         # Заполняем таблицу
         self.view_table.setRowCount(len(df))
         self.view_table.setColumnCount(len(available_columns))
@@ -917,8 +800,13 @@ class ReferencesManagementDialog(QDialog):
         # Восстанавливаем видимость столбцов
         self._restore_column_visibility(column_visibility)
         
-        # Включаем сортировку
-        self.view_table.setSortingEnabled(True)
+        # Обновляем индикатор сортировки в заголовке
+        if self.sort_column is not None:
+            header = self.view_table.horizontalHeader()
+            for col_idx, col_name in enumerate(available_columns):
+                if col_name == self.sort_column:
+                    header.setSortIndicator(col_idx, self.sort_order)
+                    break
         
         # Показываем пагинацию
         self._show_pagination()
@@ -957,7 +845,7 @@ class ReferencesManagementDialog(QDialog):
             )
     
     def _build_query_with_npa_join(self, cursor, table_name: str, available_columns: list,
-                                    search_where: str, search_params: list, limit: int, offset: int) -> tuple:
+                                    search_where: str, search_params: list, limit: int, offset: int, order_by: str = None) -> tuple:
         """Строит SQL запрос для онлайн справочника с учетом NPA JOIN
         
         Returns:
@@ -980,6 +868,8 @@ class ReferencesManagementDialog(QDialog):
                       LEFT JOIN npa ON {table_name}.npa_id = npa.id'''
             if search_where:
                 query += f" {search_where}"
+            if order_by:
+                query += f" {order_by}"
             if limit is not None and offset is not None:
                 query += f" LIMIT {limit} OFFSET {offset}"
             return query, search_params
@@ -988,16 +878,20 @@ class ReferencesManagementDialog(QDialog):
             query = f'SELECT {", ".join(available_columns)} FROM {table_name}'
             if search_where:
                 query += f" {search_where}"
+            if order_by:
+                query += f" {order_by}"
             if limit is not None and offset is not None:
                 query += f" LIMIT {limit} OFFSET {offset}"
             return query, search_params
     
     def _build_select_query(self, table_name: str, columns: list, search_where: str, 
-                            search_params: list, limit: int = None, offset: int = None) -> tuple:
+                            search_params: list, limit: int = None, offset: int = None, order_by: str = None) -> tuple:
         """Строит простой SELECT запрос. При limit=None/offset=None LIMIT/OFFSET не добавляются."""
         query = f'SELECT {", ".join(columns)} FROM {table_name}'
         if search_where:
             query += f" {search_where}"
+        if order_by:
+            query += f" {order_by}"
         if limit is not None and offset is not None:
             query += f" LIMIT {limit} OFFSET {offset}"
         return query, search_params
@@ -1037,7 +931,7 @@ class ReferencesManagementDialog(QDialog):
             conn = sqlite3.connect(self.db_manager.db_path)
             cursor = conn.cursor()
             is_view = self.current_reference_type.get('is_view', False)
-            cursor.execute("SELECT name FROM sqlite_master WHERE type=? AND LOWER(name)=LOWER(?)",
+            cursor.execute("SELECT name FROM sqlite_master WHERE type=? AND name=?",
                            ('view' if is_view else 'table', table_name))
             row = cursor.fetchone()
             if not row:
@@ -1107,9 +1001,24 @@ class ReferencesManagementDialog(QDialog):
                 else:
                     select_fields = display_columns
                 
+                # Добавляем сортировку
+                order_by = ""
+                if self.sort_column:
+                    # Пользовательская сортировка (клик по заголовку)
+                    sort_direction = "ASC" if self.sort_order == Qt.AscendingOrder else "DESC"
+                    order_by = f"ORDER BY {self.sort_column} {sort_direction}"
+                elif not self.use_default_sort:
+                    # Если сортировка по умолчанию отключена, используем SORT_RULES
+                    base_table = table_name[2:-7] if table_name.startswith('v_') and table_name.endswith('_merged') else table_name
+                    sort_fields = SORT_RULES.get(base_table, ['id'])
+                    order_by = f"ORDER BY {', '.join(sort_fields)}"
+                # Если use_default_sort=True и sort_column=None, не добавляем ORDER BY (используется из VIEW/таблицы)
+                
                 query = f'SELECT {", ".join(select_fields)} FROM {effective_table}'
                 if search_where:
                     query += f" {search_where}"
+                if order_by:
+                    query += f" {order_by}"
                 if limit is not None and offset is not None:
                     query += f" LIMIT {limit} OFFSET {offset}"
                 df = self._execute_query(conn, query, search_params)
@@ -1122,12 +1031,36 @@ class ReferencesManagementDialog(QDialog):
                     available_columns = [c for c in columns if c in existing_columns] or existing_columns[:10]
                 else:
                     available_columns = [c for c in existing_columns if c not in excluded] or existing_columns[:10]
+                
+                # Добавляем сортировку
+                order_by = ""
+                if self.sort_column:
+                    # Пользовательская сортировка (клик по заголовку)
+                    sort_direction = "ASC" if self.sort_order == Qt.AscendingOrder else "DESC"
+                    # Добавляем префикс таблицы для полей при JOIN с npa
+                    if has_npa and has_npa_column:
+                        order_by = f"ORDER BY {effective_table}.{self.sort_column} {sort_direction}"
+                    else:
+                        order_by = f"ORDER BY {self.sort_column} {sort_direction}"
+                elif not self.use_default_sort:
+                    # Если сортировка по умолчанию отключена, используем SORT_RULES
+                    # Извлекаем базовое имя таблицы из VIEW если нужно
+                    base_table = table_name[2:-7] if table_name.startswith('v_') and table_name.endswith('_merged') else table_name
+                    sort_fields = SORT_RULES.get(base_table, ['id'])
+                    # Добавляем префикс таблицы для полей при JOIN с npa
+                    if has_npa and has_npa_column:
+                        order_fields = [f"{effective_table}.{field}" for field in sort_fields]
+                    else:
+                        order_fields = sort_fields
+                    order_by = f"ORDER BY {', '.join(order_fields)}"
+                # Если use_default_sort=True и sort_column=None, не добавляем ORDER BY (используется из VIEW)
+                
                 if has_npa and has_npa_column:
                     search_where, search_params = self._build_search_where(available_columns, add_date_filter=use_date_filter, table_prefix=effective_table)
-                    query, params = self._build_query_with_npa_join(cursor, effective_table, available_columns, search_where, search_params, limit, offset)
+                    query, params = self._build_query_with_npa_join(cursor, effective_table, available_columns, search_where, search_params, limit, offset, order_by)
                 else:
                     search_where, search_params = self._build_search_where(available_columns, add_date_filter=use_date_filter)
-                    query, params = self._build_select_query(effective_table, available_columns, search_where, search_params, limit, offset)
+                    query, params = self._build_select_query(effective_table, available_columns, search_where, search_params, limit, offset, order_by)
                 df = self._execute_query(conn, query, params)
                 available_columns = list(df.columns)
             conn.close()
@@ -1151,7 +1084,7 @@ class ReferencesManagementDialog(QDialog):
         if page is not None:
             self.current_page = page
         
-        # Сохраняем видимость столбцов текущей таблицы перед очисткой (при обновлении/пагинации; при переключении — уже сохранено)
+        # Сохраняем видимость столбцов перед очисткой
         if not skip_save_visibility:
             self._save_column_visibility()
         
